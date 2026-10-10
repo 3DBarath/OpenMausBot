@@ -77,3 +77,25 @@ The composer microphone uses Apple's local speech recognition in the macOS deskt
 ## Memory
 
 Each bot can keep plain-text memory that you can inspect, correct, or delete. Memory is not a hidden remote profile; it lives with the local OpenMausBot data.
+
+### Import from ChatGPT or Claude
+
+If you have used ChatGPT or Claude for a while, your bots can start out knowing what those assistants learned about you.
+
+1. Ask for your data. In ChatGPT: **Settings → Data controls → Export data**. In Claude: **Settings → Privacy → Export data**. A zip arrives by email.
+2. In OpenMausBot, open **Settings → Profile** and choose **Import from ChatGPT or Claude**. Pick the zip, or the `conversations.json` inside it if the zip is larger than 4 GB.
+3. The export is scanned on the computer running OpenMausBot, without an AI model. You see how many conversations it holds and what reading them will cost. The default is the last 12 months and at most 500 conversations.
+4. Pick the bot whose engine reads it, and start. You can pause, or close the window and come back.
+5. Review what was found. Untick what is wrong, edit what is nearly right, then **Save**.
+
+You can also paste text instead of a file. That is the way to bring over ChatGPT's saved memories, which an export may not include: copy them from **Settings → Personalization → Memory → Manage**, or ask either assistant to write out what it knows about you.
+
+**What is sent.** Your own messages, each conversation's title and its date, to the engine you picked. Nothing the assistant said, no images or files, and no code blocks.
+
+**What is kept.** The facts you ticked. A short list of core facts goes to **About me**, which every bot reads. The rest is filed by subject in **shared notes**, which a bot recalls only in a private chat with you, when your message touches the subject. Facts about health, money, relationships, politics or religion are left unticked unless you choose to keep them.
+
+**What is not kept.** The export file and the chats in it. They are deleted when you save or cancel. OpenMausBot keeps only a record of when you imported and how much, with no text.
+
+Everything imported can be seen, edited and deleted under **Imported notes** in Settings → Profile, and **Delete everything imported** removes it all at once.
+
+**If other people use the same installation.** What you import is yours. Shared notes are recalled only in chats you started yourself, never in a chat started from a device you paired with chat-only access or by someone who signs in with their own email, and those people cannot open the notes. Importing is offered to the owner only. On a hosted installation, where several admins share one About me, it is not offered.

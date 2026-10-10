@@ -87,7 +87,7 @@ Two more things load with it:
 
 Before a turn, the person's message (eight characters or more) searches the
 bot's topic files and, in a 1:1 chat the person started, the bot's other
-conversations and, for the installation's owner, the [shared notes](#shared-notes). Any matching word counts; a message with five or
+conversations and, for the installation's owner, the [shared notes](#shared-notes-and-import). Any matching word counts; a message with five or
 more content words needs two per hit. Up to four notes and four conversation
 passages — numbered, dated, and at most 6,000 characters — go in front of that
 turn's message, opened by a line saying they are the bot's own notes and that
@@ -280,7 +280,7 @@ bot follows when it writes are:
 Nothing about the panel depends on these: an older `MEMORY.md` written in
 free form, or one you rewrite by hand, works the same.
 
-## Shared notes
+## Shared notes and import
 
 Some facts about you belong to no single bot: where you live, who is in your
 family, what you like to eat. **Shared notes** hold them, one markdown file per
@@ -317,6 +317,63 @@ shares with the note's name, title or aliases.
   written atomically, and pass the same credential scrub as bot memory.
 - **Backups.** The folder is part of a full backup, like any other data.
 
+### Import from ChatGPT or Claude
+
+**Settings → Profile → Import from ChatGPT or Claude** reads a data export
+from either assistant, or text you paste, and proposes lasting facts about
+you. Nothing is saved before you have reviewed it, and the chats themselves
+are never kept. Only the installation's owner sees the button, because what
+it saves goes to the owner's About me and shared notes.
+
+1. **Choose a source.** The export zip (or the `conversations.json` inside
+   it), or pasted text of up to 100,000 characters. Paste is there because a
+   ChatGPT export may not hold its saved memories.
+2. **Scan.** No model is used. The export is read as a stream on the computer
+   running OpenMausBot, one conversation at a time, and the dialog shows how
+   many conversations it holds, the date range, and what reading them will
+   cost. The default is the last 12 months, newest first, at most 500
+   conversations; you can change the dates and the number (up to 2,000).
+3. **Read.** You pick which bot's engine reads it. Only your own messages are
+   sent, with each conversation's title and date: each message cut at 1,500
+   characters, code blocks dropped, 6,000 characters a conversation, about
+   24,000 characters a call. You can pause, resume and cancel, and close the
+   window while it runs.
+4. **Review.** Facts are listed in two groups. **Core** (at most 30) goes to
+   About me, which every bot reads on every message. The rest is filed by
+   subject in shared notes. Facts about health, money, relationships, politics
+   or religion start unticked. When two facts disagree, the newer one is kept
+   and the older one is shown unticked.
+5. **Save.** Core facts are added to About me as learned facts, so each has a
+   **Remove** button; subject facts are written to shared notes, each entry
+   ending in `(imported · ChatGPT)`. If About me is full, the core facts that
+   did not fit go to a shared note called "About me, continued".
+
+On save or cancel the uploaded file, the text cut from it and the proposed
+facts are deleted. What stays is one record per import in
+`~/.openmausbot/context-imports.json`: the source, the time, counts, the date
+range, and a hash of each conversation's id and update time, which is how a
+later import skips what was already read. It holds no text. An import in
+progress lives in `~/.openmausbot/context-import/` and is never part of a
+backup.
+
+**Imported notes** under About me lists the shared notes: open, edit or delete
+each one. **Delete everything imported** removes every imported entry from the
+shared notes, every imported line from About me, and the record of what was
+read, so a later import starts over.
+
+Calls are paced for engines whose limits are not known: one at a time, two
+seconds apart, one retry after 15 seconds, and after three parts in a row fail
+the import pauses itself and keeps what it has read. After a restart a running
+import comes back paused.
+
+The two export formats are not documented by their makers. The parsers read
+the shapes people have described and skip, and count, anything else. To see
+what a real export holds without using a model:
+
+```sh
+node --experimental-strip-types scripts/context-import-scan.ts ~/Downloads/export.zip
+```
+
 ## Routes
 
 | Method | Path | What it does |
@@ -334,7 +391,17 @@ shares with the note's name, title or aliases.
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
 | `GET` | `/api/shared-notes` | Every shared note: title, other words for it, size, entry counts. |
 | `GET` `PUT` `DELETE` | `/api/shared-notes/:name` | One note: its text, replace it with `{ text }`, or delete it. |
+| `DELETE` | `/api/shared-notes?imported=1` | Deletes everything an import wrote, here and in About me. |
+| `GET` | `/api/context-import` | The open import, which bots can read one, and past imports. |
+| `POST` | `/api/context-import` | Starts an import: `{ source: "chatgpt" \| "claude" \| "paste" }`. One at a time. |
+| `PUT` | `/api/context-import/:id/file` | The export as the request body (a zip or `conversations.json`, up to 4 GB). |
+| `POST` | `/api/context-import/:id/text` | Pasted text: `{ text }`. |
+| `GET` | `/api/context-import/:id?from=&to=&cap=` | State, scan, progress and, in review, the proposed facts. The query prices another range. |
+| `POST` | `/api/context-import/:id/extract` | Starts reading: `{ botId, from?, to?, cap? }`. |
+| `POST` | `/api/context-import/:id/pause`, `/resume`, `/cancel` | Job control. Cancel deletes the upload and everything read from it. |
+| `PATCH` | `/api/context-import/:id/candidates` | Tick, edit, move and rename: `{ changes?, renameSubject? }`. |
+| `POST` | `/api/context-import/:id/save` | Writes the kept facts and deletes the upload. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
-The shared-notes routes also refuse an admin who is not the owner
+The shared-notes and import routes also refuse an admin who is not the owner
 (`403`), and are not offered to a paired phone.
