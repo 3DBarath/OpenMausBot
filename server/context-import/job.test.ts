@@ -432,6 +432,19 @@ describe("what is refused", () => {
     expect(job.view(id).status).toBe("created");
   });
 
+  it("says a zip that was cut off is incomplete, in its own words", async () => {
+    const job = make(scripted());
+    const path = join(scratch, "whole.zip");
+    writeExportZip(path, conversations(3).map(chatGptConversation));
+    const whole = readFileSync(path);
+    const { id } = job.create("chatgpt");
+    // the download stopped before the zip's list of contents
+    await job.receiveFile(id, Readable.from([whole.subarray(0, Math.floor(whole.length / 2))]));
+    await job.idle();
+    expect(job.view(id)).toMatchObject({ status: "failed", error: "That zip file is incomplete or damaged: its list of contents could not be read. Download the export again, or upload the conversations.json from inside it by itself." });
+    await job.cancel(id);
+  });
+
   it("fails the scan of a file that holds no conversations, in words, and lets it be cancelled", async () => {
     const job = make(scripted());
     const path = join(scratch, "notes.json");

@@ -86,7 +86,7 @@ describe("the import dialog, step by step", () => {
   });
 
   it("shows progress with pause, and a paused job with its reason and resume", () => {
-    const progress = { batches: 81, done: 20, skipped: 2, candidates: 143, duplicates: 9 };
+    const progress = { batches: 81, done: 20, skipped: 2, candidates: 143, duplicates: 9, droppedSecrets: 0, droppedInstructions: 0 };
     const reading = render(job({ status: "extracting", progress }));
     expect(reading.words).toContain("Parts read: 20 of 81. Facts found so far: 143.");
     expect(reading.words).toContain("Parts that could not be read and were skipped: 2.");
