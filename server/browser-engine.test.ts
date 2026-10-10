@@ -664,6 +664,27 @@ describe("agentBrowserQuery", () => {
     await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["get", "box", "@e4"] })).resolves.toEqual({ ok: false, error: "Unknown ref: e4" });
   });
 
+  // A pipe hands the answer over in pieces, cut at any byte. Decoded piece
+  // by piece, a character cut in two became two replacement characters, and
+  // a field value that read differently the second time voided an approval
+  // as "page changed".
+  it("reads a character whose bytes arrive in two pieces as that character", async () => {
+    const value = "naïve — 日本語 😀 café";
+    const binaryPath = await fakeBinary(`
+      const bytes = Buffer.from(JSON.stringify({ success: true, data: { result: ${JSON.stringify(value)} }, error: null }));
+      // One byte at a time, each in its own write: every multi-byte character is split.
+      let at = 0;
+      const next = () => { if (at >= bytes.length) return; process.stdout.write(bytes.subarray(at, at + 1), () => { at += 1; setImmediate(next); }); };
+      next();
+    `);
+    await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["eval", "-b", "e30="] })).resolves.toEqual({ ok: true, data: { result: value } });
+  });
+
+  it("stops reading an answer past its size limit and calls it unreadable, never a cut-off one", async () => {
+    const binaryPath = await fakeBinary('process.stdout.write(JSON.stringify({ success: true, data: { result: "x".repeat(5_000_000) }, error: null }))');
+    await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["eval", "-b", "e30="] })).resolves.toEqual({ ok: false, error: "the browser gave no readable answer" });
+  });
+
   it("never rejects: a silent, garbled or hung engine is an answer too", async () => {
     await expect(agentBrowserQuery({ binaryPath: await fakeBinary("process.exitCode = 0"), env: {}, args: ["get", "url"] }))
       .resolves.toEqual({ ok: false, error: "the browser gave no readable answer" });

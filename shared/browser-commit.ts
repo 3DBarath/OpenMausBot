@@ -14,13 +14,40 @@ const SEND_WORDS = ["send", "reply", "post", "publish", "comment", "share", "mes
 const MONEY_WORDS = ["pay", "buy", "place order", "checkout", "bid", "book", "reserve", "subscribe", "donate", "transfer"];
 
 /** Whole words only, in any letter case: "Post" and "Post reply" match,
- * "Posts" and "Repost" do not. */
+ * "Posts" and "Repost" do not. A space in an entry is any white space. */
 function wholeWords(words: readonly string[]): RegExp {
   const any = words.map((word) => word.replace(/ /g, "\\s+")).join("|");
   return new RegExp(`(?<![\\p{L}\\p{N}_])(?:${any})(?![\\p{L}\\p{N}_])`, "iu");
 }
 const SEND = wholeWords(SEND_WORDS);
-const MONEY = wholeWords(MONEY_WORDS);
+
+/** The other ways a button says what the Money list says. Each is still a
+ * whole word or phrase.
+ * - "purchase" and "check out" are acts unless what follows makes them a
+ *   thing or an invitation to look ("Purchase history", "Check out our
+ *   new arrivals").
+ * - "order" is an act when it is the whole label, or says when
+ *   ("Order now"), or again ("Reorder", "Pre-order"). */
+const MONEY_PHRASES = [
+  "purchase(?! (?:history|orders?|details|summary|agreement|protection|price|date|receipts?|policy|terms|options|records?)(?![\\p{L}\\p{N}_]))",
+  "check out(?! (?:the|our|this|these|those|what|how|why|more|my|all|some|other|new|latest|an?)(?![\\p{L}\\p{N}_]))",
+  "order (?:now|again|online|here|today)",
+  "(?:pre|re)-?order",
+];
+const MONEY = wholeWords([...MONEY_WORDS, ...MONEY_PHRASES]);
+const ORDER_ALONE = /^\s*order\s*$/i;
+/** What money is spent on or through. Alone these name a thing ("Order
+ * history", "Payment methods") and hold nothing. Beside a word for
+ * committing, or a Send word, the button spends: "Confirm booking",
+ * "Make a payment", "Send money", "Submit order". */
+const MONEY_THINGS = wholeWords(["orders?", "purchases?", "payments?", "money", "bookings?", "reservations?", "donations?", "checkout"]);
+const COMMIT_VERBS = wholeWords(["place", "complete", "confirm", "finish", "finali[sz]e", "make", "authori[sz]e", "process"]);
+
+/** Does this label spend money? "Confirm" alone does not, and neither does
+ * a money word alone. */
+function spends(label: string): boolean {
+  return MONEY.test(label) || ORDER_ALONE.test(label) || (MONEY_THINGS.test(label) && (COMMIT_VERBS.test(label) || SEND.test(label)));
+}
 
 /** Controls a click only toggles or selects. Their label names a state
  * ("Subscribe to the newsletter"), not an action. */
@@ -69,7 +96,7 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   // A click into a text box only puts the cursor there, so its label ("Message")
   // is not an action. Enter in a one-line field acts through the submit button.
   const activates = (target.box === null || target.submits) && !PASSIVE_ROLES.has(target.role);
-  if (activates && MONEY.test(target.label)) return "money";
+  if (activates && spends(target.label)) return "money";
   if (target.submits && target.card) return "money";
   // Search is never a send, whatever the button says.
   if (target.search) return null;
@@ -102,11 +129,18 @@ export function enterPress(key: unknown): { shift: boolean } | null {
 
 export type ScriptAction = "click" | "network" | "write" | "event" | "navigation";
 
+/** A handler called by hand: `el.onclick()`, `el.onsubmit.call(el)`. */
+const called = (names: string): string => `\\.\\s*on(?:${names})\\s*(?:\\.\\s*(?:call|apply)\\s*)?\\(`;
+
 const SCRIPT_ACTIONS: ReadonlyArray<[ScriptAction, RegExp]> = [
-  ["click", /\.\s*(?:click|submit|requestSubmit)\s*\(/],
-  ["network", /\bfetch\s*\(|\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b/],
-  ["write", /\.\s*(?:value|checked|textContent|innerText|innerHTML)\s*[+-]?=(?!=)|\bsetRangeText\s*\(|\bexecCommand\s*\(/],
-  ["event", /\bdispatchEvent\s*\(/],
+  // A click or a submit, by the element's own method or by calling its handler.
+  ["click", new RegExp(`\\.\\s*(?:click|submit|requestSubmit)\\s*\\(|${called("click|dblclick|submit")}`)],
+  // The browser's own senders, and the libraries that wrap them: jQuery's $.post and friends, axios.
+  ["network", /\bfetch\s*\(|\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|(?:\$|\bjQuery)\s*\.\s*(?:ajax|post|get|getJSON|getScript)\s*\(|\baxios\s*(?:\.\s*\w+\s*)?\(/],
+  // A field's content, or what this gate reads an element by: its label, its role, its type, its attributes.
+  ["write", /\.\s*(?:value|checked|textContent|innerText|innerHTML|outerHTML|outerText|role|type|autocomplete|contentEditable|aria[A-Z]\w*)\s*[+-]?=(?!=)|\bsetRangeText\s*\(|\bexecCommand\s*\(|\b(?:set|remove|toggle)Attribute(?:NS|Node)?\s*\(/],
+  // An event made by hand: dispatchEvent, jQuery's trigger, or any other handler called directly.
+  ["event", new RegExp(`\\bdispatchEvent\\s*\\(|\\.\\s*trigger(?:Handler)?\\s*\\(|${called("[a-z]+")}`)],
   [
     "navigation",
     /(?<!\b(?:const|let|var)\s+)\blocation\s*(?:\.\s*(?:href|pathname|search|hash)\s*)?=(?!=)|\blocation\s*\.\s*(?:assign|replace|reload)\s*\(|\bhistory\s*\.\s*(?:pushState|replaceState|back|forward|go)\s*\(|\bwindow\s*\.\s*open\s*\(/,

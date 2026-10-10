@@ -641,7 +641,11 @@ export function agentBrowserQuery(input: {
     let child: ReturnType<typeof spawn>;
     try { child = spawn(input.binaryPath, [...input.args, "--json"], { env: browserRuntimeEnv(input.env), stdio: ["ignore", "pipe", "ignore"], windowsHide: true }); }
     catch { settle({ ok: false, error: "the browser engine could not start" }); return; }
-    let output = "";
+    // The answer is one UTF-8 text, and the pipe cuts it at any byte: it is
+    // kept as bytes and decoded once, whole. Decoding piece by piece turns a
+    // character cut in two into two replacement characters.
+    const pieces: Buffer[] = [];
+    let size = 0;
     let settled = false;
     const finish = (result: { ok: true; data: Record<string, unknown> } | { ok: false; error: string }) => {
       if (settled) return;
@@ -651,11 +655,16 @@ export function agentBrowserQuery(input: {
     };
     const timer = setTimeout(() => { child.kill("SIGKILL"); finish({ ok: false, error: "the browser did not answer in time" }); }, input.timeoutMs ?? QUERY_TIMEOUT_MS);
     timer.unref?.();
-    child.stdout?.on("data", (chunk: Buffer) => { if (output.length < QUERY_MAX_BYTES) output += String(chunk); });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      // Past the limit nothing more is kept, and what is there no longer parses: unreadable, not cut short.
+      if (size <= QUERY_MAX_BYTES) pieces.push(chunk);
+      size += chunk.byteLength;
+    });
     child.on("error", () => finish({ ok: false, error: "the browser engine could not start" }));
     child.on("close", () => {
       try {
-        const answer = JSON.parse(output) as { success?: unknown; data?: unknown; error?: unknown };
+        if (size > QUERY_MAX_BYTES) throw new Error("too long");
+        const answer = JSON.parse(Buffer.concat(pieces).toString("utf8")) as { success?: unknown; data?: unknown; error?: unknown };
         if (answer.success === true && answer.data && typeof answer.data === "object" && !Array.isArray(answer.data)) {
           finish({ ok: true, data: answer.data as Record<string, unknown> });
         } else finish({ ok: false, error: typeof answer.error === "string" && answer.error ? answer.error.slice(0, 300) : "the browser refused the request" });

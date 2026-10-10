@@ -139,7 +139,8 @@ it refuses the call or asks. It never lets it through unseen.
 | What the bot does | Held as |
 | --- | --- |
 | Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
-| Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer | Money |
+| Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
+| Clicks one whose label pairs a word for committing or sending (place, complete, confirm, finish, make, authorize, process, or any Send word) with what money is spent on (order, purchase, payment, money, booking, reservation, donation, checkout): "Place your order", "Confirm booking", "Make a payment", "Send money", "Submit order" | Money |
 | Submits a form that has a card field | Money |
 | Presses Enter in a message or comment box | Send |
 | Submits a form that has a multi-line text field, whatever its button says | Send |
@@ -147,7 +148,12 @@ it refuses the call or asks. It never lets it through unseen.
 
 Labels match whole words in any letter case, in English: "Post reply"
 matches, "Posts" and "Repost" do not. The multi-line row is what catches a
-send on a page in another language. Money wins when both match. A click that
+send on a page in another language. Money wins when both match, and a money
+word lifts a send to money ("Submit payment"), so it asks even under a daily
+allowance. A money word that only names a thing holds nothing: "Order
+history", "Payment methods", "Purchase history", "Check out our new
+arrivals". "Confirm" alone holds nothing. "Book a demo" is held as money,
+because "book" is on the list. A click that
 only puts the cursor in a text box, or ticks a checkbox, is never held.
 **Search is never a send**: a search field, anything inside a search region,
 or a form whose only text field is a search field.
@@ -251,9 +257,18 @@ browser result starts with a line telling it to re-read the page.
 ### Page scripts
 
 A bot can run a script in the page (`agent_browser_eval`). A script is
-refused, not held, when its text clicks or submits something, sends a network
-request (`fetch`, `XMLHttpRequest`, `sendBeacon`, `WebSocket`), writes into a
-field, dispatches an event, or navigates. The bot is told to use the click
+refused, not held, when its text:
+
+- clicks or submits something, by the element's own method or by calling its
+  handler (`el.click()`, `form.submit()`, `el.onclick()`);
+- sends a network request (`fetch`, `XMLHttpRequest`, `sendBeacon`,
+  `WebSocket`, jQuery's `$.post`, `$.ajax` and `$.get`, `axios`);
+- writes into a field, or changes what the rules above read an element by:
+  its text, its role, its type, its attributes (`setAttribute`,
+  `removeAttribute`, `el.ariaLabel = …`);
+- makes an event by hand (`dispatchEvent`, jQuery's `.trigger(…)`, any
+  `on…` handler called directly);
+- navigates. The bot is told to use the click
 and fill tools, which the rules above cover. A line break typed with
 `agent_browser_type` is a real Enter key press; it is refused the same way
 where it would send or submit. Typed text with a tab before the line break,
@@ -261,7 +276,9 @@ or with anything after it, is refused wherever it is typed: a tab moves the
 focus, so the server cannot tell where that Enter would land.
 
 This is a guard against a bot acting through a script by habit. **It is not a
-wall**: a script written to hide what it does gets past a check of its text.
+wall**: it reads the script's text, so a script written to hide what it does
+(a method name built from pieces, a library the list does not know) gets
+past it.
 
 ### Limits
 

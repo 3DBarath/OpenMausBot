@@ -66,6 +66,46 @@ describe("classifyCommit", () => {
   });
 });
 
+// Labels as shops, mail and social sites write them. The class is what a
+// person would say the button does; null is a button that commits nothing.
+describe("real button labels", () => {
+  it.each([
+    // Money: the list's own words, and the other ways sites say them.
+    ["Pay", "money"], ["Pay now", "money"], ["Pay $12.00", "money"], ["Buy", "money"], ["Buy now", "money"], ["Buy it now", "money"],
+    ["Place order", "money"], ["Place your order", "money"], ["Place Order & Pay", "money"], ["Purchase", "money"], ["Complete purchase", "money"],
+    ["Complete your purchase", "money"], ["Purchase tickets", "money"], ["Order now", "money"], ["Order", "money"], ["Order again", "money"],
+    ["Reorder", "money"], ["Pre-order", "money"], ["Checkout", "money"], ["Check out", "money"], ["Check out now", "money"], ["Check out as guest", "money"],
+    ["Proceed to checkout", "money"], ["Confirm booking", "money"], ["Complete booking", "money"], ["Book now", "money"], ["Book a demo", "money"],
+    ["Reserve a table", "money"], ["Confirm reservation", "money"], ["Subscribe", "money"], ["Donate now", "money"], ["Make a donation", "money"],
+    ["Transfer", "money"], ["Place bid", "money"], ["Confirm order", "money"], ["Confirm your order", "money"], ["Complete order", "money"],
+    ["Confirm and pay", "money"], ["Make a payment", "money"], ["Confirm purchase", "money"], ["Authorize payment", "money"], ["Finish checkout", "money"],
+    // A money word lifts a send to money: these go out with money attached.
+    ["Submit payment", "money"], ["Send payment", "money"], ["Send money", "money"], ["Submit order", "money"], ["Apply payment", "money"],
+    // Send.
+    ["Send", "send"], ["Send message", "send"], ["Reply", "send"], ["Reply all", "send"], ["Post", "send"], ["Post reply", "send"], ["Publish", "send"],
+    ["Comment", "send"], ["Share", "send"], ["Submit", "send"], ["Invite", "send"], ["Apply now", "send"], ["Apply coupon", "send"], ["List item", "send"],
+    // Nothing: reading, moving on, managing. A money word that names a thing, not an act, holds nothing.
+    ["Order history", null], ["Payment methods", null], ["Search", null], ["Next", null], ["Continue", null], ["Confirm", null], ["Cancel", null],
+    ["Cancel order", null], ["Track order", null], ["View order", null], ["Your orders", null], ["Order summary", null], ["Booking details", null],
+    ["Purchase history", null], ["Check out our new arrivals", null], ["Check out the docs", null], ["Bookmark", null], ["PayPal", null],
+    ["Log in", null], ["Sign up", null], ["Add to cart", null], ["Save", null], ["Back", null], ["Close", null], ["Confirm email", null],
+    ["Complete profile", null], ["Reservations", null], ["Donation receipts", null],
+  ] as const)("reads %j as %s", (label, kind) => {
+    expect(classifyCommit(click(label))).toBe(kind);
+  });
+
+  it("applies the same reading to the button Enter would press, and never to a toggle or a text box", () => {
+    expect(classifyCommit(enter({ label: "Place your order", role: "button", submits: true }))).toBe("money");
+    expect(classifyCommit(click("Send money", { role: "tab" }))).toBeNull();
+    expect(classifyCommit(click("Order now", { role: "textbox", box: "single" }))).toBeNull();
+  });
+
+  it("still never treats search as a send, and still holds money there", () => {
+    expect(classifyCommit(click("Submit order", { submits: true, search: true }))).toBe("money");
+    expect(classifyCommit(click("Send", { submits: true, search: true }))).toBeNull();
+  });
+});
+
 describe("Enter", () => {
   it("is a send in a message or comment box, and nothing in a search box", () => {
     expect(classifyCommit(enter({ label: "Write a message", box: "multiline", multiline: true }))).toBe("send");
@@ -148,6 +188,59 @@ describe("scriptAction", () => {
     ["window.open('https://example.com')", "navigation"],
   ] as const)("refuses %j as %s", (script, action) => {
     expect(scriptAction(script)).toBe(action);
+  });
+
+  // A guard against habit, not a wall: the families a bot reaches for when
+  // the click tool is held.
+  it.each([
+    ["$.post('/api/send', { to: 'ada' })", "network"],
+    ["jQuery.ajax({ url: '/pay', method: 'POST' })", "network"],
+    ["$.ajax('/pay')", "network"],
+    ["$.get('/unsubscribe?id=7')", "network"],
+    ["$.getJSON('/api/orders')", "network"],
+    ["axios.post('/api/send', body)", "network"],
+    ["axios({ method: 'post', url: '/pay' })", "network"],
+    ["window.axios.request(config)", "network"],
+    ["$('#send').trigger('click')", "event"],
+    ["jQuery(form).trigger(\"submit\")", "event"],
+    ["$('#send').triggerHandler('click')", "event"],
+    ["el.onclick()", "click"],
+    ["document.querySelector('#send').onclick(new MouseEvent('click'))", "click"],
+    ["form.onsubmit.call(form, event)", "click"],
+    ["button.onclick.apply(button)", "click"],
+    ["input.onchange()", "event"],
+    ["box.onkeydown({ key: 'Enter' })", "event"],
+    ["el.setAttribute('aria-label', 'Next')", "write"],
+    ["button.removeAttribute('disabled')", "write"],
+    ["el.toggleAttribute('hidden')", "write"],
+    ["el.setAttributeNS(null, 'role', 'tab')", "write"],
+    ["button.ariaLabel = 'Next'", "write"],
+    ["button.role = 'tab'", "write"],
+    ["field.type = 'search'", "write"],
+    ["card.autocomplete = 'off'", "write"],
+    ["el.outerHTML = '<span>Next</span>'", "write"],
+  ] as const)("refuses %j as %s", (script, action) => {
+    expect(scriptAction(script)).toBe(action);
+  });
+
+  it.each([
+    "document.querySelector('button').getAttribute('aria-label')",
+    "el.hasAttribute('disabled')",
+    "[...document.querySelectorAll('[onclick]')].length",
+    "document.querySelector('#send').onclick !== null",
+    "typeof el.onclick",
+    "el.ariaLabel",
+    "button.role === 'tab'",
+    "input.type == 'search'",
+    "[...document.querySelectorAll('input')].map((input) => ({ name: input.name, type: input.type, role: input.role }))",
+    "$('#price').text()",
+    "jQuery('.item').length",
+    "typeof axios",
+    "document.querySelector('.axios-badge').textContent",
+    "el.outerHTML",
+    "document.getElementById('user').focus()",
+  ])("lets the read %j through", (script) => {
+    expect(scriptAction(script)).toBeNull();
   });
 
   it.each([
