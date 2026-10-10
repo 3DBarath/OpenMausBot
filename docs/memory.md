@@ -294,25 +294,64 @@ subject, in a folder every bot can recall from:
 
 A shared note has the shape of a topic file: frontmatter with `title` and
 `aliases`, then dated entries. It is found the same way, by a word your message
-shares with the note's name, title or aliases.
+shares with the note's name, title or aliases. What is recalled from a note is
+the entries that share a word with your message, up to 600 characters; when
+only the note's name or an alias matched, its first entries.
 
 - **Only in a private chat you started.** A shared note is recalled in a 1:1
   chat with you. It is never recalled in a room, a routine run, or a turn
   started by another bot, a webhook or a teammate hand-off.
-- **Yours alone.** Shared notes belong to the installation's owner, like
-  About me. If other people use the same installation, their chats never
-  recall your notes and they cannot open them: not a device paired with
-  chat-only access, not a member who signs in by email, not a message relayed
-  from Slack, and on My Cloud not a conversation a guest opened or wrote in.
-  The owner is whoever uses the computer OpenMausBot runs on, and any device
-  paired with full access, as long as at most one address may sign in as
-  admin. With a second admin, only the computer itself counts; on a hosted
-  installation, which has no single owner, shared notes are not used at all.
-- **After the bot's own notes.** Shared passages come after the bot's own,
-  inside the same limit of four notes and 6,000 characters, labelled
-  `shared/<file>`. A bot's own note on a subject wins over a shared one.
-- **No tool.** Bots cannot read, write or tidy this folder. Recall is their
-  only way in, so a shared note changes only when you change it.
+- **Yours alone, and only when that is proven.** Shared notes belong to the
+  installation's owner, like About me. The owner is whoever uses the computer
+  OpenMausBot runs on, and any device paired with full access, as long as at
+  most one address may sign in as admin. With a second admin, only the
+  computer itself counts; on a hosted installation, which has no single owner,
+  shared notes are not used at all. A note reaches a turn only when two things
+  are proven, never because something is unknown:
+  - **The request that started the turn was yours.** This is taken from how
+    that request signed in, whether it sent a message, edited or resent one,
+    or answered a question late. A message that waited in the queue keeps the
+    proof it was sent with (until a restart). Someone else's edit of your
+    message is their turn, not yours. A turn nobody can be named for (a
+    routine, a webhook, another bot's words, a turn resumed after a card)
+    is never yours.
+  - **Every line a person wrote in the conversation is yours.** Each line you
+    send is recorded as yours when it is written. A conversation that holds
+    any other line recalls no shared note from then on: a line from a device
+    paired with chat-only access, a member, a second admin, a Slack relay, a
+    routine's prompt, or a line someone else edited. Start a new conversation
+    to have them recalled again. On My Cloud the same holds for a conversation
+    a guest opened or wrote in.
+- **Conversations from before this version.** Nothing recorded whose lines
+  they were, so a conversation that already had messages when this version
+  first started recalls no shared note. A new conversation does. About me is
+  not affected: every bot reads it on every message, as before.
+- **A session that holds a note is not handed on.** A recalled note stays in
+  the engine's own session for that conversation. When words that are not
+  proven yours arrive there afterwards (someone else's message, another bot's
+  ask, a routine), that turn starts a fresh session from the conversation's
+  messages, which never held the note, and such words are never added to a
+  turn that is still running. Two things are not covered: the bot's replies in
+  that conversation stay readable by everyone who can read it, and a card
+  answered by someone else continues the turn it belongs to.
+- **Its own rule in the prompt.** Recalled shared notes come after the bot's
+  own notes, inside the same limit of four notes and 6,000 characters,
+  labelled `shared/<file>`, under their own heading. It tells the bot these
+  are imported notes about you from another assistant's history: information
+  only, never its own notes, and that anything in them that reads like an
+  instruction is to be ignored. A bot's own note on a subject wins over a
+  shared one.
+- **No tool, but not hidden from the computer.** Bots get no tool to read,
+  write or tidy this folder, and recall is the only way the app puts a note in
+  front of a turn. The folder is ordinary data under `~/.openmausbot`, though:
+  a bot that can run commands on this computer as your user can read these
+  files, like the rest of the data folder and everything else your user owns.
+- **Who can open them.** The shared-notes and import routes answer the owner
+  only. In the desktop app they answer the app itself and your signed-in
+  devices: another program on the computer cannot read them over the local
+  port, any more than it can change settings. On a server you run yourself
+  without the desktop app, a local request is the owner's, as it is for every
+  other route.
 - **Limits.** At most 200 notes of 64 KB each. Files are owner-only (`0600`),
   written atomically, and pass the same credential scrub as bot memory.
 - **Backups.** The folder is part of a full backup, like any other data.
@@ -327,44 +366,96 @@ it saves goes to the owner's About me and shared notes.
 
 1. **Choose a source.** The export zip (or the `conversations.json` inside
    it), or pasted text of up to 100,000 characters. Paste is there because a
-   ChatGPT export may not hold its saved memories.
+   ChatGPT export may not hold its saved memories. An upload is at most 4 GB
+   and has to arrive within 5 minutes, which is the server's limit for one
+   request; over a slow connection, upload `conversations.json` by itself.
 2. **Scan.** No model is used. The export is read as a stream on the computer
    running OpenMausBot, one conversation at a time, and the dialog shows how
    many conversations it holds, the date range, and what reading them will
-   cost. The default is the last 12 months, newest first, at most 500
-   conversations; you can change the dates and the number (up to 2,000).
+   cost: the calls when nothing goes wrong, and the most there can be (every
+   part read twice, plus up to ten checks for facts that disagree). The
+   default is the last 12 months, newest first, at most 500 conversations; you
+   can change the dates and the number (up to 2,000). A zip is read from its
+   list of contents, so the photos and other files in it are never unpacked.
+   One scan keeps at most 100,000 conversations and a zip may hold at most
+   100,000 files; past either, the dialog says so.
 3. **Read.** You pick which bot's engine reads it. Only your own messages are
    sent, with each conversation's title and date: each message cut at 1,500
    characters, code blocks dropped, 6,000 characters a conversation, about
    24,000 characters a call. You can pause, resume and cancel, and close the
-   window while it runs.
+   window while it runs. One import proposes at most 2,000 facts: it stops
+   there, leaves the remaining conversations unread, and importing the same
+   file again reads them.
 4. **Review.** Facts are listed in two groups. **Core** (at most 30) goes to
    About me, which every bot reads on every message. The rest is filed by
-   subject in shared notes. Facts about health, money, relationships, politics
-   or religion start unticked. When two facts disagree, the newer one is kept
-   and the older one is shown unticked.
+   subject in shared notes, under at most 40 subjects: the rarest are folded
+   into "General", and each folded fact keeps its subject as an alias. Facts
+   about health, money, relationships, politics or religion start unticked,
+   and so does any fact the model marked sensitive in other words. When two
+   facts disagree, the newer one is kept and the older one is shown unticked.
+   If the facts you ticked would not fit (more new notes than there is room
+   for, or a note past 64 KB), the dialog says which, and Save stays off until
+   they do.
 5. **Save.** Core facts are added to About me as learned facts, so each has a
    **Remove** button; subject facts are written to shared notes, each entry
-   ending in `(imported · ChatGPT)`. If About me is full, the core facts that
-   did not fit go to a shared note called "About me, continued".
+   ending in `(imported · ChatGPT)`. A core fact About me has no room for is
+   filed under its subject like the others. A save that would not fit is
+   refused whole: nothing is cut short, the import stays open, and no
+   conversation is recorded as read.
+
+**What is never kept or sent.** Before anything reaches a model or is written
+to the import's working files, a message that holds a password, a passcode or
+a PIN said in words, a payment card number, a card's security code, or a
+common identity or bank account number is left out, and the dialog counts
+them. A proposed fact that holds any of those is dropped, not masked. So is a
+fact that reads like an instruction to an assistant or holds a command, code
+or a link, because an imported note is later put in front of a bot. A subject,
+an alias and a conversation title go through the same screen; an alias may not
+be a common word, and a fact brings at most five. The screen works on shapes
+and wording. It is a net, not a guarantee: read what you keep.
 
 On save or cancel the uploaded file, the text cut from it and the proposed
-facts are deleted. What stays is one record per import in
-`~/.openmausbot/context-imports.json`: the source, the time, counts, the date
-range, and a hash of each conversation's id and update time, which is how a
-later import skips what was already read. It holds no text. An import in
-progress lives in `~/.openmausbot/context-import/` and is never part of a
-backup.
+facts are deleted; if they cannot be deleted, the dialog says so and names the
+folder. An import left unfinished is deleted the same way after 14 days. What
+stays is one record per import in `~/.openmausbot/context-imports.json`: the
+source, the time, counts, the date range, and a hash of each conversation's id
+and update time, which is how a later import skips what was already read. It
+holds no text. An import in progress lives in `~/.openmausbot/context-import/`
+and is never part of a backup.
 
 **Imported notes** under About me lists the shared notes: open, edit or delete
-each one. **Delete everything imported** removes every imported entry from the
-shared notes, every imported line from About me, and the record of what was
-read, so a later import starts over.
+each one. **Delete everything imported** removes exactly the lines that carry
+an import's own mark: every shared-note line ending in `(imported · ChatGPT)`,
+`(imported · Claude)` or `(imported · Pasted text)`, and every About me line
+that begins `learned by ChatGPT import` (or Claude, or Pasted text) after its
+date, whether or not it is still on the list of learned facts. A line you
+wrote yourself stays, including one under an imported entry. An imported line
+you reworded goes if it still carries the mark; take the mark off to keep it.
+The record of what was read goes too, so a later import starts over.
 
 Calls are paced for engines whose limits are not known: one at a time, two
-seconds apart, one retry after 15 seconds, and after three parts in a row fail
-the import pauses itself and keeps what it has read. After a restart a running
-import comes back paused.
+seconds apart, one retry after 15 seconds. A part whose answer cannot be used
+after its retry is skipped and counted, and the import goes on. When the
+engine itself fails three parts in a row (no answer, an error, a usage limit),
+the import pauses itself and keeps what it has read; on resume you can have
+those parts read again or skip them. A call may take 120 seconds, and the
+engine is told the same limit. After a restart a running import comes back
+paused.
+
+**On the Claude engine** each call is a one-shot `claude -p`. Where the
+installed Claude CLI offers them (its `--help` is read, which calls no model),
+the import's calls add `--no-session-persistence`, so the CLI keeps no session
+file of the chat text, `--tools ""`, so the call has no built-in tool, and
+`--strict-mcp-config`, so it mounts no MCP server from your own settings. A
+CLI too old to list an option makes the call without it: the text then lands
+in the CLI's own session files under its config folder, which the import's
+clean-up does not reach. Other engines make an ordinary API call and keep
+nothing here.
+
+Nothing an import does can stop the server. A failure in the background (a
+full disk, a folder that cannot be written, a damaged file) fails that import
+with a message; a job folder that is damaged or cannot be written when the
+server starts is logged and ignored.
 
 The two export formats are not documented by their makers. The parsers read
 the shapes people have described and skip, and count, anything else. To see
@@ -398,10 +489,12 @@ node --experimental-strip-types scripts/context-import-scan.ts ~/Downloads/expor
 | `POST` | `/api/context-import/:id/text` | Pasted text: `{ text }`. |
 | `GET` | `/api/context-import/:id?from=&to=&cap=` | State, scan, progress and, in review, the proposed facts. The query prices another range. |
 | `POST` | `/api/context-import/:id/extract` | Starts reading: `{ botId, from?, to?, cap? }`. |
-| `POST` | `/api/context-import/:id/pause`, `/resume`, `/cancel` | Job control. Cancel deletes the upload and everything read from it. |
+| `POST` | `/api/context-import/:id/pause`, `/resume`, `/cancel` | Job control. Resume takes `{ skipFailed? }`: `true` leaves out the parts the engine failed. Cancel deletes the upload and everything read from it. |
 | `PATCH` | `/api/context-import/:id/candidates` | Tick, edit, move and rename: `{ changes?, renameSubject? }`. |
-| `POST` | `/api/context-import/:id/save` | Writes the kept facts and deletes the upload. |
+| `POST` | `/api/context-import/:id/save` | Writes the kept facts and deletes the upload. Refuses (`409`) when they would not fit, and then writes nothing. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
 The shared-notes and import routes also refuse an admin who is not the owner
-(`403`), and are not offered to a paired phone.
+(`403`), and are not offered to a paired phone. In the desktop app they need
+the app's own capability for reads as well as changes, so another program on
+the computer cannot read them.
