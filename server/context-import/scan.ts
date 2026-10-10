@@ -1,0 +1,166 @@
+// Step 2 of an import: read the whole export once, without a model, and say
+// what is in it. The scan keeps one small row per conversation (a hash of
+// its id and update time, the time, and how many characters of it would be
+// sent) and no text. From those rows it proposes which conversations to
+// read — newest first, the last 12 months, at most 500, never one an
+// earlier import already read — and what that will cost in model calls.
+import { createHash } from "node:crypto";
+
+import { conversationText, packBatches, pastePieces } from "./cuts.ts";
+import { isChatGptConversation, parseChatGptConversation } from "./chatgpt-export.ts";
+import { isClaudeConversation, parseClaudeConversation } from "./claude-export.ts";
+import { isRecord, type ExportConversation } from "./types.ts";
+import { readExport } from "./zip-source.ts";
+import { DEFAULT_SLICE_CAP, DEFAULT_SLICE_MONTHS, MAX_SLICE_CAP, type ImportEstimate, type ImportScanSummary, type ImportSlice } from "../../shared/context-import.ts";
+
+/** The pause between two model calls (job.ts), which the estimate counts. */
+export const CALL_GAP_MS = 2_000;
+/** How long one call takes, roughly. Not measured on any engine: see the plan's Checks. */
+const CALL_MIN_SECONDS = 8;
+const CALL_MAX_SECONDS = 45;
+
+export interface ScanRow {
+  /** conversationHash(); "" for a piece of pasted text. */
+  hash: string;
+  /** Epoch milliseconds; 0 when the export gave no time. */
+  updatedAt: number;
+  /** Characters that would be sent, after the cuts; 0 when the person wrote nothing in it. */
+  chars: number;
+}
+
+export interface ScanResult {
+  summary: ImportScanSummary;
+  rows: ScanRow[];
+  /** For a look at a real export (scripts/context-import-scan.ts): the top-level
+   * keys of shapes no parser knew, with counts, and a zip's entry names. Names
+   * and keys only, never a value. */
+  unknownShapes: Record<string, number>;
+  archiveEntries: string[];
+}
+
+/** What the import record keeps of a conversation: enough to know it was read, nothing of what it said. */
+export function conversationHash(conversation: Pick<ExportConversation, "id" | "title" | "updatedAt">): string {
+  return createHash("sha256").update(`${conversation.id || conversation.title}\n${conversation.updatedAt}`).digest("hex").slice(0, 24);
+}
+
+/** A conversation of either export, told apart by its shape, or null. */
+export function parseConversation(value: unknown): { format: "chatgpt" | "claude"; conversation: ExportConversation } | null {
+  if (isChatGptConversation(value)) {
+    const conversation = parseChatGptConversation(value);
+    return conversation ? { format: "chatgpt", conversation } : null;
+  }
+  if (isClaudeConversation(value)) {
+    const conversation = parseClaudeConversation(value);
+    return conversation ? { format: "claude", conversation } : null;
+  }
+  return null;
+}
+
+export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet<string>; signal?: AbortSignal } = {}): Promise<ScanResult> {
+  const rows: ScanRow[] = [];
+  const seen = new Set<string>();
+  const formats = { chatgpt: 0, claude: 0 };
+  const unknownShapes: Record<string, number> = {};
+  const summary: ImportScanSummary = {
+    format: "unknown", conversations: 0, withOwnMessages: 0, oldest: null, newest: null, ownChars: 0, alreadyRead: 0,
+    skipped: { conversations: 0, messages: 0, oversized: 0, entries: [] }, truncated: false,
+  };
+  const report = await readExport(path, (value) => {
+    const parsed = parseConversation(value);
+    if (!parsed) {
+      summary.skipped.conversations += 1;
+      const shape = isRecord(value) ? Object.keys(value).sort().slice(0, 12).join(",") || "(empty object)" : Array.isArray(value) ? "(list)" : `(${typeof value})`;
+      if (Object.keys(unknownShapes).length < 20 || Object.hasOwn(unknownShapes, shape)) unknownShapes[shape] = (unknownShapes[shape] ?? 0) + 1;
+      return;
+    }
+    const { conversation } = parsed;
+    const hash = conversationHash(conversation);
+    // the same conversation in two parts of an export is one conversation
+    if (seen.has(hash)) return;
+    seen.add(hash);
+    formats[parsed.format] += 1;
+    summary.conversations += 1;
+    summary.skipped.messages += conversation.skippedMessages;
+    const chars = conversationText(conversation.messages).length;
+    if (chars) summary.withOwnMessages += 1;
+    summary.ownChars += conversation.messages.reduce((total, message) => total + message.length, 0);
+    if (conversation.updatedAt) {
+      summary.oldest = summary.oldest === null ? conversation.updatedAt : Math.min(summary.oldest, conversation.updatedAt);
+      summary.newest = summary.newest === null ? conversation.updatedAt : Math.max(summary.newest, conversation.updatedAt);
+    }
+    if (opts.alreadyRead?.has(hash)) summary.alreadyRead += 1;
+    rows.push({ hash, updatedAt: conversation.updatedAt, chars });
+  }, { signal: opts.signal });
+  summary.skipped.conversations += report.unparseable;
+  summary.skipped.oversized = report.oversized;
+  summary.skipped.entries = report.refused;
+  summary.truncated = report.truncated;
+  if (formats.chatgpt || formats.claude) summary.format = formats.chatgpt >= formats.claude ? "chatgpt" : "claude";
+  return { summary, rows, unknownShapes, archiveEntries: report.entries };
+}
+
+/** Pasted text has no conversations: each piece is read as one. */
+export function scanPaste(text: string, now: number): ScanResult {
+  const pieces = pastePieces(text);
+  return {
+    summary: {
+      format: "paste", conversations: pieces.length, withOwnMessages: pieces.length, oldest: pieces.length ? now : null, newest: pieces.length ? now : null,
+      ownChars: text.length, alreadyRead: 0, skipped: { conversations: 0, messages: 0, oversized: 0, entries: [] }, truncated: false,
+    },
+    rows: pieces.map((piece) => ({ hash: "", updatedAt: now, chars: piece.length })),
+    unknownShapes: {},
+    archiveEntries: [],
+  };
+}
+
+/** `months` before `at`, by the calendar (in UTC, so the range does not move with the machine's zone). */
+function monthsBefore(at: number, months: number): number {
+  const date = new Date(at);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  return date.getTime();
+}
+
+const readable = (row: ScanRow, alreadyRead: ReadonlySet<string>) => row.chars > 0 && !(row.hash && alreadyRead.has(row.hash));
+/** A conversation with no time is in every range: the export did not say, so it is not left out for it. */
+const inRange = (row: ScanRow, slice: Pick<ImportSlice, "from" | "to">) => !row.updatedAt || (row.updatedAt >= slice.from && row.updatedAt <= slice.to);
+
+/** The default read: the last 12 months, at most 500 conversations. When
+ * everything in that range was read before and older conversations remain,
+ * the range moves back to end at the newest one not yet read ("Read more"). */
+export function proposeSlice(rows: readonly ScanRow[], now: number, alreadyRead: ReadonlySet<string> = new Set()): ImportSlice {
+  const slice: ImportSlice = { from: monthsBefore(now, DEFAULT_SLICE_MONTHS), to: now, cap: DEFAULT_SLICE_CAP };
+  const unread = rows.filter((row) => readable(row, alreadyRead));
+  if (unread.some((row) => inRange(row, slice))) return slice;
+  const newest = unread.reduce((latest, row) => Math.max(latest, row.updatedAt), 0);
+  return newest ? { from: monthsBefore(newest, DEFAULT_SLICE_MONTHS), to: newest, cap: DEFAULT_SLICE_CAP } : slice;
+}
+
+/** A slice as asked for, held to what is allowed: a whole range, a cap from 1 to 2,000. */
+export function clampSlice(wanted: Partial<ImportSlice>, fallback: ImportSlice): ImportSlice {
+  const number = (value: unknown, otherwise: number) => (typeof value === "number" && Number.isFinite(value) ? value : otherwise);
+  const from = Math.max(0, number(wanted.from, fallback.from));
+  const to = Math.max(from, number(wanted.to, fallback.to));
+  return { from, to, cap: Math.min(MAX_SLICE_CAP, Math.max(1, Math.round(number(wanted.cap, fallback.cap)))) };
+}
+
+/** The conversations a slice reads, newest first. */
+export function selectSlice(rows: readonly ScanRow[], slice: ImportSlice, alreadyRead: ReadonlySet<string> = new Set()): ScanRow[] {
+  return rows
+    .filter((row) => readable(row, alreadyRead) && inRange(row, slice))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, slice.cap);
+}
+
+/** What reading these conversations costs: one call per batch, and one more to check for conflicting facts. */
+export function estimateSlice(selected: readonly ScanRow[]): ImportEstimate {
+  const batches = packBatches(selected.map((row) => row.chars)).length;
+  const calls = batches ? batches + 1 : 0;
+  const gap = CALL_GAP_MS / 1000;
+  return {
+    conversations: selected.length,
+    chars: selected.reduce((total, row) => total + row.chars, 0),
+    calls,
+    minSeconds: Math.round(calls * (CALL_MIN_SECONDS + gap)),
+    maxSeconds: Math.round(calls * (CALL_MAX_SECONDS + gap)),
+  };
+}
