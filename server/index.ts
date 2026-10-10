@@ -654,7 +654,7 @@ import { prepareInkboxConversationState } from "./inkbox-conversation-state.ts";
 import { assertChannelCardTarget, assertChannelOutboundLease } from "./channel-card-guard.ts";
 import { InkboxSetup } from "./inkbox-setup.ts";
 import { InkboxProvider, InkboxSetupError } from "./inkbox-provider.ts";
-import { InkboxMcpRelay, type InkboxToolConnection } from "./inkbox-mcp.ts";
+import { INKBOX_INTERNAL_MCP_PATH, InkboxMcpRelay, type InkboxToolConnection } from "./inkbox-mcp.ts";
 import { createInkboxSecretStore } from "./inkbox-secrets.ts";
 import { createInkboxSetupRoutes } from "./routes/inkbox-setup.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
@@ -17167,7 +17167,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? "phone"
         : path.startsWith("/api/internal/connectors/")
         ? "connectors"
-        : path === "/api/internal/inkbox/mcp"
+        : path === INKBOX_INTERNAL_MCP_PATH
         ? "inkbox"
         : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp"
           ? "computer"
@@ -17229,7 +17229,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         task: store.taskByThread(internalSender.id, internalCapability.threadId),
         threadId: internalCapability.threadId,
       });
-      if (method === "POST" && path === "/api/internal/inkbox/mcp") {
+      if (method === "POST" && path === INKBOX_INTERNAL_MCP_PATH) {
         const body = await readInternalBody();
         const binding = internalCapability.inkboxBinding;
         if (!binding) return json(res, 403, { error: "This turn has no Inkbox connection." });

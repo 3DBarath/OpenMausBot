@@ -98,7 +98,7 @@ it("enforces scoped contact scheduling through the isolated server, durable rest
     expect((await api<Snapshot>("GET", root)).requests.find(row => row.id === proposal.id)?.status).toBe("pending");
 
     const file = join(dataDir, "trusted-contacts.json");
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
     const durable = readFileSync(file, "utf8");
     expect(durable).not.toContain(created.token);
     expect(JSON.parse(durable)).toMatchObject({ version: 1, requests: [{ status: "completed" }, { status: "pending" }] });
@@ -197,7 +197,7 @@ it("requests another isolated Mausbot's availability and refreshes its approved 
     const localState = await api<Snapshot & { peers: { peers: unknown[]; requests: PeerReply[] } }>(local.info.url, "GET", root);
     expect(localState.peers.requests).toHaveLength(2);
     expect(JSON.stringify(localState)).not.toContain(credential.token);
-    expect(statSync(join(local.info.dataDir, "trusted-peers.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(join(local.info.dataDir, "trusted-peers.json")).mode & 0o777).toBe(0o600);
     expect((await api<Snapshot>(remote.info.url, "GET", root)).requests).toHaveLength(2);
     await api(remote.info.url, "POST", `${root}/contacts/${credential.contact.id}/revoke`, {});
     const revoked = await api<PeerReply>(local.info.url, "POST", `${root}/peers/${peer.id}/requests`, { ...availabilityInput, id: "peer_revoked" });

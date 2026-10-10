@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 
+/** The harness route the Inkbox tool proxy posts to. */
+export const INKBOX_INTERNAL_MCP_PATH = "/api/internal/inkbox/mcp";
+
 export interface InkboxToolConnection { identityId: string; apiKey: string; binding: string }
 interface Options { connection(botId: string): InkboxToolConnection | null; fetch?: typeof fetch }
 interface Context { botId: string; binding: string; assertActive(): void;
