@@ -274,6 +274,18 @@ describe("encrypted full workspace backups", () => {
     }
   });
 
+  it("backs up shared notes like any other data", async () => {
+    const source = directory();
+    mkdirSync(join(source, "shared-notes"), { mode: 0o700 });
+    writeFileSync(join(source, "shared-notes", "food.md"), "- 2025-03-02 · The person is vegetarian (imported · ChatGPT)\n", { mode: 0o600 });
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const staged = await stageWorkspaceBackup(source, exported.path, { password: PASSWORD });
+    const staging = join(source, ".backups", staged.id, "staged");
+    const paths: string[] = readJson(join(staging, "manifest.json")).entries.map((entry: { path: string }) => entry.path);
+    expect(paths).toEqual(expect.arrayContaining(["shared-notes", "shared-notes/food.md"]));
+    expect(readFileSync(join(staging, "data", "shared-notes", "food.md"), "utf8")).toContain("The person is vegetarian");
+  });
+
   it("leaves the Organization library's downloaded catalog and release files out, and keeps what the runtime added", async () => {
     const source = directory(), library = join(source, "org-library"), sha = "b".repeat(64);
     mkdirSync(join(library, "blobs"), { recursive: true, mode: 0o700 });

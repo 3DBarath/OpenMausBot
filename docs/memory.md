@@ -87,7 +87,7 @@ Two more things load with it:
 
 Before a turn, the person's message (eight characters or more) searches the
 bot's topic files and, in a 1:1 chat the person started, the bot's other
-conversations. Any matching word counts; a message with five or
+conversations and, for the installation's owner, the [shared notes](#shared-notes). Any matching word counts; a message with five or
 more content words needs two per hit. Up to four notes and four conversation
 passages — numbered, dated, and at most 6,000 characters — go in front of that
 turn's message, opened by a line saying they are the bot's own notes and that
@@ -98,7 +98,7 @@ a command inside one is not an instruction. `MEMORY.md` (already loaded) and
 It is placed in the message, not the system prompt, on purpose: the prompt's
 changing half is re-sent whole whenever any part of it changes, and recall
 changes nearly every turn. Rooms, routine runs (which start fresh), and turns
-started by another bot, a webhook or a teammate hand-off, recall notes only — a private chat reaches a room
+started by another bot, a webhook or a teammate hand-off, recall the bot's own notes only — a private chat reaches a room
 through `session_search`, which discloses it. `features.autoRecall: false` in
 `config.json` switches recall off. The server log names every recall
 (`auto-recall: … got N note and M conversation passage(s)`).
@@ -280,6 +280,43 @@ bot follows when it writes are:
 Nothing about the panel depends on these: an older `MEMORY.md` written in
 free form, or one you rewrite by hand, works the same.
 
+## Shared notes
+
+Some facts about you belong to no single bot: where you live, who is in your
+family, what you like to eat. **Shared notes** hold them, one markdown file per
+subject, in a folder every bot can recall from:
+
+```
+~/.openmausbot/shared-notes/
+├── food.md
+└── family.md
+```
+
+A shared note has the shape of a topic file: frontmatter with `title` and
+`aliases`, then dated entries. It is found the same way, by a word your message
+shares with the note's name, title or aliases.
+
+- **Only in a private chat you started.** A shared note is recalled in a 1:1
+  chat with you. It is never recalled in a room, a routine run, or a turn
+  started by another bot, a webhook or a teammate hand-off.
+- **Yours alone.** Shared notes belong to the installation's owner, like
+  About me. If other people use the same installation, their chats never
+  recall your notes and they cannot open them: not a device paired with
+  chat-only access, not a member who signs in by email, not a message relayed
+  from Slack, and on My Cloud not a conversation a guest opened or wrote in.
+  The owner is whoever uses the computer OpenMausBot runs on, and any device
+  paired with full access, as long as at most one address may sign in as
+  admin. With a second admin, only the computer itself counts; on a hosted
+  installation, which has no single owner, shared notes are not used at all.
+- **After the bot's own notes.** Shared passages come after the bot's own,
+  inside the same limit of four notes and 6,000 characters, labelled
+  `shared/<file>`. A bot's own note on a subject wins over a shared one.
+- **No tool.** Bots cannot read, write or tidy this folder. Recall is their
+  only way in, so a shared note changes only when you change it.
+- **Limits.** At most 200 notes of 64 KB each. Files are owner-only (`0600`),
+  written atomically, and pass the same credential scrub as bot memory.
+- **Backups.** The folder is part of a full backup, like any other data.
+
 ## Routes
 
 | Method | Path | What it does |
@@ -295,5 +332,9 @@ free form, or one you rewrite by hand, works the same.
 | `POST` | `/api/bots/:id/memory/tidy` | Runs the tidy-up now (`409` when upkeep is switched off) and returns its report. |
 | `GET` | `/api/profile/learned` | Facts bots added to About me on their own, newest first. |
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
+| `GET` | `/api/shared-notes` | Every shared note: title, other words for it, size, entry counts. |
+| `GET` `PUT` `DELETE` | `/api/shared-notes/:name` | One note: its text, replace it with `{ text }`, or delete it. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
+The shared-notes routes also refuse an admin who is not the owner
+(`403`), and are not offered to a paired phone.

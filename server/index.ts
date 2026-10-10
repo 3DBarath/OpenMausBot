@@ -139,7 +139,7 @@ import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall, sharedNotesAllowed } from "./recall.ts";
-import { ownerLine, type OwnerFacts } from "./shared-notes-owner.ts";
+import { ownerLine, ownerRequest, type OwnerFacts } from "./shared-notes-owner.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
@@ -648,6 +648,7 @@ import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
+import { createSharedNotesRoutes } from "./routes/shared-notes.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
@@ -16286,6 +16287,8 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
+// Shared notes every bot can recall from (server/shared-notes.ts); owner only.
+ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()) }));
 ROUTES.push(createDeciderRoutes({ decider }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({
