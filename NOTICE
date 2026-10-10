@@ -15,6 +15,10 @@ Copyright 2026 T3 Tools Inc., used under the MIT License.
 The secure phone credential transport uses @hpke/core and @hpke/common from
 hpke-js, Copyright 2023-2024 Ajitomi Daisuke, used under the MIT License.
 
+The context import reads ChatGPT and Claude export archives with fflate,
+Copyright (c) 2026 Arjun Barrett, used under the MIT License. The full license
+text is in third_party/fflate/LICENSE.
+
 The Android companion app bundles a prebuilt WebRTC library for Live calls
 (io.github.webrtc-sdk:android), built from the WebRTC project, Copyright (c)
 2011, The WebRTC project authors, used under the BSD 3-Clause License. WebRTC

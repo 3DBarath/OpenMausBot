@@ -66,6 +66,9 @@ extraResources:
     to: licenses/hpke-core-LICENSE.txt
   - from: third_party/hpke-js/common-LICENSE.txt
     to: licenses/hpke-common-LICENSE.txt
+  # The context import's zip reader, inlined into the server bundle.
+  - from: third_party/fflate/LICENSE
+    to: licenses/fflate-LICENSE.txt
   # The model provider catalog: models.dev data and OpenCode's refresh logic.
   - from: third_party/models-dev/LICENSE
     to: licenses/models-dev-LICENSE.txt
