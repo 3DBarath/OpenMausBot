@@ -319,7 +319,8 @@ export class ChannelConversation {
         if (pending.applying) return "The previous reply has an unknown result. Check the task in Mausbot; it will not be applied again automatically.";
         const prompt = this.prompt(pending, card);
         if (pending.presentedAt === undefined) { pending.presentedAt = this.now(); this.save(); }
-        if (pending.kind === "approval" && this.approvalMode === "auto" && prompt !== tooLong && prompt !== review) {
+        // A send on the owner's behalf always asks, in every approval mode.
+        if (pending.kind === "approval" && this.approvalMode === "auto" && !card.outboundRequest && prompt !== tooLong && prompt !== review) {
           const result = await this.apply(pending, "allow", undefined, true);
           // Do not await transport while holding the owner dispatch queue.
           // The durable applying fence above makes this notice non-replayable.

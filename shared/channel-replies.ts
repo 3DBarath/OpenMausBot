@@ -74,7 +74,9 @@ export function formatChannelApproval(card: OptionCardData, _code: string): stri
     lines.push(`Command:\n${card.commandAllowlist.command}`, `Working directory: ${card.commandAllowlist.cwd}`);
   }
   if (card.held) lines.push(card.held);
-  lines.push('Reply "yes" or "approve" to allow this request once, or "no" or "deny" to reject it.\n\nFor automatic approvals in this messaging conversation, reply "approve for me". Reply "ask me first" to switch back. NEW starts a separate task with Ask first.');
+  lines.push(card.outboundRequest
+    ? 'Reply "yes" or "approve" to allow this request once, or "no" or "deny" to reject it.\n\nA send on your behalf always asks, even with automatic approvals on.'
+    : 'Reply "yes" or "approve" to allow this request once, or "no" or "deny" to reject it.\n\nFor automatic approvals in this messaging conversation, reply "approve for me". Reply "ask me first" to switch back. NEW starts a separate task with Ask first.');
   const result = lines.join("\n\n");
   return result.length <= 16_000 ? result : null;
 }

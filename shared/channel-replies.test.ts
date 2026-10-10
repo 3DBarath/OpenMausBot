@@ -117,6 +117,12 @@ describe("channel approval content", () => {
   it("refuses outbound scope that cannot fit completely in the approval message", () => {
     expect(formatChannelApproval({ ...permission, outboundRequest: { tool: "send_messages", app: null, calls: [{ app: null, label: "x".repeat(16_000) }] } }, "A1B2")).toBeNull();
   });
+  it("does not offer automatic approval on a send on the owner's behalf", () => {
+    const output = formatChannelApproval({ ...permission, outboundRequest: { tool: "GMAIL_SEND_EMAIL", app: "Gmail" } }, "A1B2");
+    expect(output).toContain('Reply "yes"');
+    expect(output).not.toContain("approve for me");
+    expect(output).toMatch(/always asks/i);
+  });
   it("shows the full request and command with only request-specific once/deny instructions", () => {
     const output = formatChannelApproval(permission, "A1B2");
     expect(output).toContain(permission.title);

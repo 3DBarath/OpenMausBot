@@ -65,6 +65,13 @@ it("persists automatic approval for this conversation, revokes it, and resets it
  expect(await restored.handle("ask","ask me first")).toMatch(/Ask first/);expect(f.make().approvalMode).toBe("ask");
  await restored.handle("auto-again","approve for me");await restored.handle("new","NEW Separate task");expect(restored.approvalMode).toBe("ask");
 });
+it("automatic mode still asks before a send on the owner's behalf, and yes allows it once",async()=>{
+ const outbound:OptionCardData={...approval,title:"Send on your behalf?",requestId:"outbound-1",tool:"GMAIL_SEND_EMAIL",outboundRequest:{tool:"GMAIL_SEND_EMAIL",app:"Gmail"}};
+ const f=fixture(outbound),c=f.make();await c.handle("auto","approve for me");
+ const prompt=await c.handle("first","Email the invoice");expect(f.respond).not.toHaveBeenCalled();expect(c.approvalMode).toBe("auto");
+ expect(prompt).toContain("Send on your behalf?");expect(prompt).toContain('Reply "yes"');expect(prompt).not.toContain("approve for me");
+ await c.handle("yes","yes");expect(f.respond).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({requestId:"outbound-1"}),"allow",undefined);
+});
 it("automatic mode leaves questions and oversized approvals for the owner",async()=>{
  for(const card of [question,{...approval,subtitle:"x".repeat(16000)},{...approval,profileRequest:{}} as OptionCardData]){
  const f=fixture(card),c=f.make();await c.handle("auto","approve for me");await c.handle("first","Run");expect(f.respond).not.toHaveBeenCalled();

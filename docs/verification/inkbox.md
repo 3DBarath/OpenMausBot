@@ -90,7 +90,9 @@ queued or duplicate replies cannot authorize a different action.
 
 The linked owner can send `approve for me` to enable automatic ordinary tool
 approvals for this messaging conversation. Mausbot confirms the change and
-sends short action notices. `ask me first` turns it off. The preference is
+sends short action notices. A send on the owner's behalf (a connected-app
+send, an Inkbox message or call, a payment) is never approved automatically:
+it still asks, and `yes` allows that one action. `ask me first` turns it off. The preference is
 saved across restart and shown in Inkbox settings; `NEW <request>` starts a
 new conversation in Ask mode. It does not change the bot's other conversations
 or answer clarification questions. Native account/proposal review still uses
