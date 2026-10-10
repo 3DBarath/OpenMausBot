@@ -131,19 +131,41 @@ export type ScriptAction = "click" | "network" | "write" | "event" | "navigation
 
 /** A handler called by hand: `el.onclick()`, `el.onsubmit.call(el)`. */
 const called = (names: string): string => `\\.\\s*on(?:${names})\\s*(?:\\.\\s*(?:call|apply)\\s*)?\\(`;
+/** The handlers a person's own action on a page runs. Calling one by hand
+ * acts on the page; `x.onload()` and `emitter.once()` do not. */
+const INTERACTION = "change|input|beforeinput|key(?:down|up|press)|mouse(?:down|up|over|enter|leave|move)|pointer(?:down|up|over|enter|leave|move)|touch(?:start|end|move)|focus(?:in|out)?|blur|reset|select|contextmenu|auxclick|paste|cut|copy|drop|drag\\w*|wheel|scroll";
 
-const SCRIPT_ACTIONS: ReadonlyArray<[ScriptAction, RegExp]> = [
+/** A property whose write changes a field's content, or what this gate
+ * reads an element by: its label, its role, its type. */
+const WRITES = /\.\s*(?:value|checked|textContent|innerText|innerHTML|outerHTML|outerText|role|type|autocomplete|contentEditable|aria[A-Z]\w*)\s*[+-]?=(?!=)/g;
+const OTHER_WRITES = /\bsetRangeText\s*\(|\bexecCommand\s*\(|\b(?:set|remove|toggle)Attribute(?:NS|Node)?\s*\(/;
+
+/** Does the script write one of those properties on anything but an object
+ * of its own? `out.value = el.value` is a read when the script itself says
+ * `const out = {}` (or `[]`): a plain name, declared once, as a literal.
+ * Anything else (an element, a call, a longer chain, a `let`) is a write. */
+function writesToPage(script: string): boolean {
+  if (OTHER_WRITES.test(script)) return true;
+  for (const write of script.matchAll(WRITES)) {
+    const receiver = /(?:^|[^\w$.)\]])([A-Za-z_$][\w$]*)\s*$/.exec(script.slice(0, write.index))?.[1];
+    const own = receiver !== undefined && new RegExp(`\\bconst\\s+${receiver.replace(/\$/g, "\\$")}\\s*=\\s*[{[]`).test(script);
+    if (!own) return true;
+  }
+  return false;
+}
+
+const SCRIPT_ACTIONS: ReadonlyArray<[ScriptAction, (script: string) => boolean]> = [
   // A click or a submit, by the element's own method or by calling its handler.
-  ["click", new RegExp(`\\.\\s*(?:click|submit|requestSubmit)\\s*\\(|${called("click|dblclick|submit")}`)],
+  ["click", (script) => new RegExp(`\\.\\s*(?:click|submit|requestSubmit)\\s*\\(|${called("click|dblclick|submit")}`).test(script)],
   // The browser's own senders, and the libraries that wrap them: jQuery's $.post and friends, axios.
-  ["network", /\bfetch\s*\(|\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|(?:\$|\bjQuery)\s*\.\s*(?:ajax|post|get|getJSON|getScript)\s*\(|\baxios\s*(?:\.\s*\w+\s*)?\(/],
-  // A field's content, or what this gate reads an element by: its label, its role, its type, its attributes.
-  ["write", /\.\s*(?:value|checked|textContent|innerText|innerHTML|outerHTML|outerText|role|type|autocomplete|contentEditable|aria[A-Z]\w*)\s*[+-]?=(?!=)|\bsetRangeText\s*\(|\bexecCommand\s*\(|\b(?:set|remove|toggle)Attribute(?:NS|Node)?\s*\(/],
-  // An event made by hand: dispatchEvent, jQuery's trigger, or any other handler called directly.
-  ["event", new RegExp(`\\bdispatchEvent\\s*\\(|\\.\\s*trigger(?:Handler)?\\s*\\(|${called("[a-z]+")}`)],
+  ["network", (script) => /\bfetch\s*\(|\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|(?:\$|\bjQuery)\s*\.\s*(?:ajax|post|get|getJSON|getScript)\s*\(|\baxios\s*(?:\.\s*\w+\s*)?\(/.test(script)],
+  // A field's content, or what this gate reads an element by, written on the page.
+  ["write", writesToPage],
+  // An event made by hand: dispatchEvent, jQuery's trigger, or a handler of a person's own action called directly.
+  ["event", (script) => new RegExp(`\\bdispatchEvent\\s*\\(|\\.\\s*trigger(?:Handler)?\\s*\\(|${called(INTERACTION)}`).test(script)],
   [
     "navigation",
-    /(?<!\b(?:const|let|var)\s+)\blocation\s*(?:\.\s*(?:href|pathname|search|hash)\s*)?=(?!=)|\blocation\s*\.\s*(?:assign|replace|reload)\s*\(|\bhistory\s*\.\s*(?:pushState|replaceState|back|forward|go)\s*\(|\bwindow\s*\.\s*open\s*\(/,
+    (script) => /(?<!\b(?:const|let|var)\s+)\blocation\s*(?:\.\s*(?:href|pathname|search|hash)\s*)?=(?!=)|\blocation\s*\.\s*(?:assign|replace|reload)\s*\(|\bhistory\s*\.\s*(?:pushState|replaceState|back|forward|go)\s*\(|\bwindow\s*\.\s*open\s*\(/.test(script),
   ],
 ];
 
@@ -151,7 +173,7 @@ const SCRIPT_ACTIONS: ReadonlyArray<[ScriptAction, RegExp]> = [
  * bot acting through agent_browser_eval by habit, not a wall: a script that
  * hides its calls gets past a text check. */
 export function scriptAction(script: string): ScriptAction | null {
-  for (const [action, pattern] of SCRIPT_ACTIONS) if (pattern.test(script)) return action;
+  for (const [action, acts] of SCRIPT_ACTIONS) if (acts(script)) return action;
   return null;
 }
 

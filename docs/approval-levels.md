@@ -282,9 +282,11 @@ refused, not held, when its text:
   `WebSocket`, jQuery's `$.post`, `$.ajax` and `$.get`, `axios`);
 - writes into a field, or changes what the rules above read an element by:
   its text, its role, its type, its attributes (`setAttribute`,
-  `removeAttribute`, `el.ariaLabel = …`);
-- makes an event by hand (`dispatchEvent`, jQuery's `.trigger(…)`, any
-  `on…` handler called directly);
+  `removeAttribute`, `el.ariaLabel = …`). A script that fills an object of
+  its own (`const out = {}; out.value = el.value`) is a read and runs;
+- makes an event by hand (`dispatchEvent`, jQuery's `.trigger(…)`, or a
+  handler of a person's own action called directly: `el.onchange()`,
+  `el.onkeydown(…)`). `x.onload()` and `emitter.once(…)` are not that;
 - navigates.
 
 The bot is told to use the click and fill tools, which the rules above

@@ -243,6 +243,44 @@ describe("scriptAction", () => {
     expect(scriptAction(script)).toBeNull();
   });
 
+  // A script that builds its own result object is a read, whatever its
+  // properties are called; so is a call that only looks like a handler.
+  it.each([
+    "const out = {}; out.type = el.type; out.value = el.value; out",
+    "const row = {}; row.value = cell.innerText; row",
+    "const r = {}; r.role = el.getAttribute('role'); r",
+    "const list = []; list.type = 'rows'; list",
+    "[...document.querySelectorAll('tr')].map((tr) => { const row = {}; row.value = tr.cells[1].innerText; row.checked = tr.querySelector('input').checked; return row; })",
+    "emitter.once('ready', done)",
+    "new Promise((resolve) => bus.once('loaded', resolve))",
+    "x.onload()",
+    "img.onerror()",
+    "typeof worker.onmessage",
+  ])("lets the read %j through", (script) => {
+    expect(scriptAction(script)).toBeNull();
+  });
+
+  // The same shapes when the thing written to, or called on, is the page.
+  it.each([
+    ["el.type = 'search'", "write"],
+    ["const out = document.querySelector('input'); out.value = 'x'", "write"],
+    ["let out = {}; out = document.body; out.innerHTML = ''", "write"],
+    ["var out = {}; out.value = 1; document.querySelector('input').value = out.value", "write"],
+    ["const out = {}; out.el = document.querySelector('input'); out.el.value = 'x'", "write"],
+    ["const out = {}; document.querySelector('#to').value = 'mallory@example.com'", "write"],
+    ["const out = {}; rows.forEach((row) => { row.checked = true; })", "write"],
+    ["x.onclick()", "click"],
+    ["form.onsubmit()", "click"],
+    ["x.onchange()", "event"],
+    ["el.oninput.call(el)", "event"],
+    ["node.onkeydown({ key: 'Enter' })", "event"],
+    ["btn.onpointerdown()", "event"],
+    ["el.onmouseup.apply(el)", "event"],
+    ["el.onfocus()", "event"],
+  ] as const)("still refuses %j as %s", (script, action) => {
+    expect(scriptAction(script)).toBe(action);
+  });
+
   it.each([
     "document.title",
     "location.href",
