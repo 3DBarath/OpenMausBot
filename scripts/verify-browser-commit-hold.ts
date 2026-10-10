@@ -19,9 +19,7 @@ if (!binaryPath || !executablePath) throw new Error("Set OMB_VERIFY_BROWSER_BINA
 
 const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Commit hold test</title>
 <form id="message"><label for="body">Message</label><textarea id="body" name="body">Hello from the fixture</textarea><button>Send</button></form>
-<form id="login"><label for="user">Username</label><input id="user" value="ada"><label for="pw">Password</label><input id="pw" type="password" value="not-a-real-secret"><button>Log in</button></form>
 <form id="find" role="search"><input type="search" aria-label="Search" value="shoes"><button>Search</button></form>
-<form id="pay"><label for="cc">Card number</label><input id="cc" autocomplete="cc-number" value="4111111111111111"><button>Continue</button></form>
 <div id="composer" contenteditable="true" role="textbox" aria-label="Write a message">On my way</div>
 <button id="details" type="button">Show details</button>
 <button id="later" type="button">Change the draft in a moment</button>
@@ -41,6 +39,9 @@ const doc = (title: string, body: string) => `<!doctype html><html lang="en"><me
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 /** One local page per reviewer scenario (docs/verification/browser-commit-hold.md, "Cases"). */
 const CASE_PAGES: Record<string, string> = {
+  // The walkthrough's second page: a sign-in and a card form. Nothing on it is ever pictured.
+  "/account": doc("Account", `<form id="login"><label for="user">Username</label><input id="user" value="ada"><label for="pw">Password</label><input id="pw" type="password" value="not-a-real-secret"><button>Log in</button></form>
+    <form id="pay"><label for="cc">Card number</label><input id="cc" autocomplete="cc-number" value="4111111111111111"><button>Continue</button></form>`),
   "/enter-on-controls": doc("Enter on a control", `<form id="buy"><label><input id="agree" type="checkbox"> I agree</label>
     <label><input id="gift" type="radio" name="wrap"> Gift wrap</label><select id="size" aria-label="Size"><option>S<option>M</select>
     <input id="qty" type="range" aria-label="Quantity"><button>Buy now</button></form>`),
@@ -139,12 +140,12 @@ try {
   const ref = (line: string) => `@${(opened.text.split("\n").find((row) => row.includes(line)) ?? "").match(/ref=(e\d+)/)?.[1]}`;
 
   // Clicks that commit nothing go straight through.
-  for (const line of ['button "Show details"', 'button "Log in"', 'button "Search"', 'textbox "Message"']) {
+  for (const line of ['button "Show details"', 'button "Search"', 'textbox "Message"']) {
     const clicked = await tool("agent_browser_click", { selector: ref(line) });
     assert.equal(clicked.isError, false, `${line}: ${clicked.text}`);
   }
   assert.equal((await cards()).length, 0, "an ordinary click raised a card");
-  evidence.push({ step: "ordinary clicks, a login and a search pass without a card", log: await log() });
+  evidence.push({ step: "ordinary clicks and a search pass without a card", log: await log() });
 
   // A send waits; the card shows the site, the button and the message; Allow clicks.
   await tool("agent_browser_eval", { script: "document.getElementById('log').textContent" });
@@ -162,20 +163,33 @@ try {
   assert.equal(await log(), "submitted:message");
   evidence.push({ step: "send held, evidence shown, Allow clicked it", card: { title: send.title, subtitle: send.subtitle, screenshotBytes: (await picture.arrayBuffer()).byteLength } });
 
-  // Money asks, shows only the length of the card number, and Deny clicks nothing.
-  // Opened again, not reloaded: a reload after an approved send is itself held (case A4).
-  assert.equal((await tool("agent_browser_open", { url: pageUrl })).isError, false);
-  const page = await tool("agent_browser_snapshot");
-  const fresh = (line: string) => `@${(page.text.split("\n").find((row) => row.includes(line)) ?? "").match(/ref=(e\d+)/)?.[1]}`;
-  const paying = tool("agent_browser_click", { selector: fresh('button "Continue"') });
+  // A page with a sign-in and a card form. Signing in passes. Money asks,
+  // shows only the length of the card number, takes no picture of a page
+  // that shows one, and Deny clicks nothing.
+  const account = await tool("agent_browser_open", { url: `${origin}/account` });
+  assert.equal(account.isError, false, account.text);
+  const onAccount = (line: string) => `@${(account.text.split("\n").find((row) => row.includes(line)) ?? "").match(/ref=(e\d+)/)?.[1]}`;
+  const before = (await cards()).length;
+  assert.equal((await tool("agent_browser_click", { selector: onAccount('button "Log in"') })).isError, false);
+  assert.equal((await cards()).length, before, "signing in raised a card");
+  assert.equal(await log(), "submitted:login");
+  await tool("agent_browser_open", { url: `${origin}/account` });
+  const paying = tool("agent_browser_click", { selector: "#pay button" });
   const money = await pending();
   assert.equal(money.title, "Spend money?");
   assert.match(money.subtitle, /Card number: 16 characters, not shown/);
   assert.ok(!JSON.stringify(money).includes("4111111111111111"), "the card number reached the card");
+  assert.equal(money.browserCommit.shot, undefined, "a page showing a card number was pictured");
+  assert.equal(money.browserCommit.noShot, true);
   await respond(money, "deny");
   assert.match((await paying).text, /the user declined/);
   assert.equal(await log(), "");
-  evidence.push({ step: "money held, card number never read, Deny clicked nothing", card: { title: money.title, subtitle: money.subtitle } });
+  evidence.push({ step: "a login passes; money held, card number never on the card, no picture, Deny clicked nothing", card: { title: money.title, subtitle: money.subtitle } });
+
+  // Back on the first page. Opened, not reloaded: a reload after an approved send is itself held (case A4).
+  assert.equal((await tool("agent_browser_open", { url: pageUrl })).isError, false);
+  const page = await tool("agent_browser_snapshot");
+  const fresh = (line: string) => `@${(page.text.split("\n").find((row) => row.includes(line)) ?? "").match(/ref=(e\d+)/)?.[1]}`;
 
   // Enter in a message box is a send; typed as a line break it is refused; Shift+Enter is a new line.
   await tool("agent_browser_click", { selector: fresh('textbox "Write a message"') });
@@ -416,6 +430,22 @@ try {
       assert.match(shown, /… \(3,000 characters in all\)\n/);
       assert.ok(!shown.includes("Field 33"), "field 33 was meant to be off the card");
       return { first: shown };
+    } },
+    // ── C: secrets ──
+    { id: "C13", title: "card numbers, codes, PINs and unmasked passwords are length-only, and the page is not pictured", run: async () => {
+      const page = await visit("/secrets");
+      const { card, result } = await ask("agent_browser_click", { selector: refIn(page, 'button "Pay"') });
+      await respond(card, "deny");
+      await result;
+      const rows = ((await api("GET", "/api/decisions?limit=200")).body.decisions as any[]).filter((row) => row.requestId === card.requestId);
+      const seen = `${card.subtitle}\n${JSON.stringify(card.browserCommit)}\n${JSON.stringify(rows)}`;
+      for (const secret of ["4242424242424242", "9173", "246810", "correct-horse-battery", "5555 5555 5555 4444", "4821", "ADA LOVELACE"]) {
+        assert.ok(!seen.includes(secret), `${secret} is in clear on the card or in the log`);
+      }
+      assert.match(card.subtitle, /City: Baramati/);
+      assert.equal(card.browserCommit.shot, undefined, "a page with secret fields was pictured");
+      assert.equal(card.browserCommit.noShot, true);
+      return { subtitle: card.subtitle };
     } },
   ];
   // OMB_VERIFY_CASES=A4,B9 runs only those cases.

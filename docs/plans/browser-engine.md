@@ -139,6 +139,11 @@ recording controls are intentionally not added to the live browser chrome.
   after a commitment is held the same way. The gate's header comment lists
   every browser tool and why it can or cannot commit. User-facing behaviour
   is in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
+- Values a card must not carry (passwords, card fields, codes, PINs, card
+  numbers by the Luhn check) are counted in the page and only their length
+  is returned. A page that shows one is not screenshotted. Hold screenshots
+  are listed in `browser-hold-shots.json` under the data directory and any
+  left listed are deleted at server start (`server/browser-commit-shots.ts`).
 - The page script reads elements through the accessors on their prototype
   chain, because a form control named `tagName` or `elements` shadows the
   form's own property of that name.

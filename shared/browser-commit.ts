@@ -29,8 +29,9 @@ const PASSIVE_ROLES: ReadonlySet<string> = new Set([
   "menuitemcheckbox", "menuitemradio",
 ]);
 
-/** One visible field of the form a commitment would submit. A password or a
- * card number is never read, only how long it is. */
+/** One visible field of the form a commitment would submit. A password, a
+ * card field or a code is read only inside the page, to count it: the
+ * server gets its length, never its value. */
 export interface CommitField {
   name: string;
   type: string;
@@ -155,6 +156,9 @@ export interface BrowserCommitCard {
   more?: number;
   /** The server's own screenshot, as an attachment path, while the card is open. */
   shot?: string;
+  /** No screenshot was taken, while the card is open: the page shows a
+   * field whose value the card masks, or could not be checked for one. */
+  noShot?: boolean;
   /** The page changed after the answer, so the approval was not used. */
   pageChanged?: boolean;
 }

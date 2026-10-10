@@ -28,6 +28,9 @@ export interface PageTarget {
   identity: string;
   /** The visible text of the row, list item, card or dialog it is in. */
   context: string;
+  /** The page shows a field whose value the card masks (a password, a card
+   * field, a code), anywhere on it. A picture of the page would show it. */
+  secrets: boolean;
   /** Other elements in the same box, when nothing says which of them the
    * engine would act on. Any of them may be the one. */
   also?: PageTarget[];
@@ -71,7 +74,7 @@ const PAGE_READ = String.raw`(input) => {
     const textOf = prop("textContent"), editableOf = prop("isContentEditable"), ownerOf = prop("form"), focusOf = prop("activeElement"), rootOf = method("getRootNode");
     const getAttr = method("getAttribute"), hasAttr = method("hasAttribute"), matches = method("matches"), byId = method("getElementById"), pointIn = method("elementFromPoint");
     const queryIn = method("querySelector"), queryAllIn = method("querySelectorAll"), rectOf = method("getBoundingClientRect"), visible = method("checkVisibility");
-    const outerOf = prop("outerHTML"), innerTextOf = prop("innerText"), beforeOf = prop("previousElementSibling");
+    const outerOf = prop("outerHTML"), innerTextOf = prop("innerText"), beforeOf = prop("previousElementSibling"), frameDoc = prop("contentDocument");
     const FORM_OWNED = ["INPUT", "BUTTON", "SELECT", "TEXTAREA"];
     const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const clip = (value, max) => (value.length > max ? value.slice(0, max) : value);
@@ -181,6 +184,37 @@ const PAGE_READ = String.raw`(input) => {
       }
       return around ? clip(seenText(around), 300) : "";
     };
+    // A value the card must never carry. The script reads it here, in the
+    // page, to count it and to test it; only its length leaves the page.
+    // Names are compared as words: "cardNumber", "card_number" and
+    // "cardnumber" are one name.
+    const words = (value) => String(value || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[^A-Za-z0-9]+/g, " ").toLowerCase();
+    const SECRET_NAMES = [
+      ["password", /\bpass ?(?:word|code|phrase)\b|\bpwd\b|\bpasswd\b/],
+      ["card", /\b(?:card|cc) ?(?:number|num|no|nr)\b|\b(?:credit|debit) ?card\b|\bccn\b|\bcv[cv]\d?\b|\bcsc\b|\b(?:security|card) ?code\b|\bcard ?verification\b/],
+      ["code", /\botp\b|\btotp\b|\bone ?time\b|\b(?:verification|verify|authentication|authenticator|auth|login|sms) ?code\b|\b2fa\b|\bmfa\b|\btwo ?factor\b|\bpin\b(?! ?code)/],
+    ];
+    // Thirteen to nineteen digits that pass the Luhn check are a card number, whatever the field is called.
+    const cardNumber = (value) => {
+      const digits = String(value).replace(/[\s-]/g, "");
+      if (!/^\d{13,19}$/.test(digits)) return false;
+      let sum = 0;
+      for (let i = 0; i < digits.length; i += 1) { let digit = digits.charCodeAt(digits.length - 1 - i) - 48; if (i % 2 === 1) { digit *= 2; if (digit > 9) digit -= 9; } sum += digit; }
+      return sum % 10 === 0;
+    };
+    const secretKind = (field, type, auto, name) => {
+      if (type === "password") return "password";
+      for (const token of auto.split(/\s+/)) {
+        if (token.indexOf("cc-") === 0) return "card";
+        if (token === "one-time-code") return "code";
+        if (token === "current-password" || token === "new-password") return "password";
+      }
+      // A message is what the person is asked to approve: only a one-line field is hidden for its name.
+      if (tag(field) !== "INPUT") return null;
+      const named = [attr(field, "name"), attr(field, "id"), attr(field, "placeholder"), name].map(words).join(" | ");
+      const found = SECRET_NAMES.find((entry) => entry[1].test(named));
+      return found ? found[0] : null;
+    };
     // One field as the card and the approval have it, or null for a control
     // that carries nothing a person typed or chose, or that is not shown.
     const fieldOf = (field) => {
@@ -189,14 +223,29 @@ const PAGE_READ = String.raw`(input) => {
       const type = tag(field) === "TEXTAREA" ? "textarea" : tag(field) === "SELECT" ? "select" : editable(field) ? "contenteditable" : tag(field) === "INPUT" ? inputType(field) : kind ? "textbox" : "";
       if (!type || ["hidden", "submit", "button", "image", "reset", "file"].includes(type) || !shown(field)) return null;
       const name = clip(labelOf(field) || attr(field, "id") || type, 80);
+      if (type === "checkbox" || type === "radio") return { kind, type, entry: { name, type, value: field.checked ? "checked" : "unchecked" } };
+      if (type === "select") return { kind, type, entry: { name, type, value: Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ") } };
       const typed = type === "contenteditable" || type === "textbox";
-      if (type === "password" || /(^|\s)cc-(number|csc)/.test(auto)) return { kind, auto, type, entry: { name, type: type === "password" ? "password" : "card", length: String(field.value || "").length } };
-      const value = type === "checkbox" || type === "radio" ? (field.checked ? "checked" : "unchecked")
-        : type === "select" ? Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ")
-        : typed ? String(innerTextOf(field) == null ? textOf(field) : innerTextOf(field))
-        : String(field.value == null ? "" : field.value);
-      return { kind, auto, type, entry: { name, type, value } };
+      const value = typed ? String(innerTextOf(field) == null ? textOf(field) : innerTextOf(field)) : String(field.value == null ? "" : field.value);
+      const secret = secretKind(field, type, auto, name) || (cardNumber(value) ? "card" : null);
+      return { kind, type, entry: secret ? { name, type: secret, length: value.length } : { name, type, value } };
     };
+    // Is anything on the screen that the card would mask? A picture of the
+    // page would show it, so none is taken. A frame this script can read is
+    // looked into; another site's frame cannot be, and one that names a
+    // payment or a sign-in is taken to hold one.
+    const FRAME_HINT = /\b(?:card|cvc|cvv|payment|pay|checkout|secure|password|login|signin|sign in|otp|verification|3ds|stripe|adyen|braintree|paypal|razorpay)\b/;
+    const masksSomething = (root, depth) => all(root, []).some((el) => {
+      if (tag(el) === "IFRAME" || tag(el) === "FRAME") {
+        if (!shown(el)) return false;
+        const inner = frameDoc(el);
+        if (inner) return depth < 3 && masksSomething(inner, depth + 1);
+        return FRAME_HINT.test(words([attr(el, "title"), attr(el, "name"), attr(el, "id"), attr(el, "src")].join(" ")));
+      }
+      if (!matches(el, TYPED)) return false;
+      const read = fieldOf(el);
+      return Boolean(read) && read.entry.value === undefined;
+    });
     const REGION = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="region"], [role="form"], section, article, [role="article"], main, [role="main"]';
     const TYPED = 'input, textarea, select, [contenteditable], [role="textbox"], [role="searchbox"]';
 
@@ -297,7 +346,8 @@ const PAGE_READ = String.raw`(input) => {
     }
     if (described.length > 9) return { found: false, error: "too many elements share this box" };
     const [first, ...rest] = described.map((one) => one.target);
-    return rest.length ? { found: true, ...first, also: rest } : { found: true, ...first };
+    const secrets = masksSomething(document, 0);
+    return rest.length ? { found: true, ...first, secrets, also: rest } : { found: true, ...first, secrets };
   } catch (error) {
     return { found: false, error: String(error) };
   }
@@ -328,7 +378,9 @@ export function parsePageTarget(value: unknown): PageTarget | null {
   const also = (value as { also?: unknown }).also;
   const others = (Array.isArray(also) ? also : []).filter((entry) => entry && typeof entry === "object").slice(0, MAX_ALSO).map((entry) => parseTarget(entry as Record<string, unknown>));
   if (!target || others.some((other) => other === null)) return null;
-  return { ...target, ...(others.length ? { also: others as PageTarget[] } : {}) };
+  // The page is one page: what is on its screen is so for every element in the box.
+  const secrets = target.secrets;
+  return { ...target, ...(others.length ? { also: (others as PageTarget[]).map((other) => ({ ...other, secrets })) } : {}) };
 }
 
 function parseTarget(raw: Record<string, unknown>): PageTarget | null {
@@ -356,6 +408,7 @@ function parseTarget(raw: Record<string, unknown>): PageTarget | null {
     fields,
     identity: text(raw.identity, 4_000),
     context: text(raw.context, 300),
+    secrets: raw.secrets === true,
   };
 }
 

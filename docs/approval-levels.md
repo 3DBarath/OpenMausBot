@@ -196,10 +196,34 @@ fields of the dialog or region around the button stand in for the form's, or
 those of the whole page when there is no such region. The card shows the
 first twelve fields and the first 200 characters of each. It says when a
 value was shortened, with its full length, and how many fields it left out.
-A password or a card number is never read: the card says only how long
-it is. Text that looks like a credential is masked. While the card is open it
-also shows a screenshot the server takes itself; the picture is removed once
-the card is answered.
+Text that looks like a credential is masked, and so is a card number written
+inside other text.
+
+**Values the card never carries.** Some values are counted inside the page
+and never leave it: the card, the notification and both logs say only how
+long each is ("16 characters, not shown"). The server's own script does read
+them in the page, to count them and to test for a card number. It sends back
+the length and nothing else. These are:
+
+- a password field, and a field whose autofill type is a current or new
+  password, a one-time code, or anything of a card (`cc-number`, `cc-csc`,
+  `cc-exp`, `cc-name` and the rest);
+- a one-line field whose name, id, label or placeholder says it is a card
+  number, a security code (CVC, CVV), a one-time or verification code, a
+  PIN, a password or a passcode. A password shown as plain text is still one;
+- any value that is 13 to 19 digits and passes the card-number check (Luhn),
+  whatever the field is called.
+
+A multi-line message is never hidden for its label, because it is what you
+are asked to approve. "PIN code" and "Pincode" are read as a postal code.
+
+**The picture.** While the card is open it also shows a screenshot the
+server takes itself, removed once the card is answered. No screenshot is
+taken when the page shows any of the fields above, anywhere on it, or a
+payment or sign-in frame from another site that cannot be looked into, or
+when the page could not be read at all: the picture would show what the card
+masks. The card says so. A screenshot left by a server that stopped while a
+card was open is deleted the next time the server starts.
 
 **An approval covers what you were shown, and everything that goes with it.**
 It is bound to the address, to the element itself (where it sits in the page
@@ -246,6 +270,10 @@ wall**: a script written to hide what it does gets past a check of its text.
 - A one-line box outside any form that sends on Enter is not recognised.
 - A page whose text around the button keeps changing by itself (a countdown
   in the same row) voids every approval: each Allow raises a new card.
+- A secret in a field that nothing marks as one (no type, no autofill hint,
+  no telling name, not a card number) is shown like any other value. A frame
+  from another site that holds one, and does not name a payment or a
+  sign-in, is in the picture.
 - A list or checkbox that submits its form from a listener added in script
   (`addEventListener`), not from a handler written on the element, is not
   recognised. Neither is a field that submits as it is filled.

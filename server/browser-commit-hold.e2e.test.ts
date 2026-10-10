@@ -141,6 +141,9 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     const picture = await fetch(session.info.url + shot, { headers: { origin: session.info.url } });
     expect(picture.status).toBe(200);
     expect(picture.headers.get("content-type")).toBe("image/jpeg");
+    // It is listed while the card is open, so a server that stops now deletes it at its next start.
+    const listed = () => JSON.parse(readFileSync(join(session.info.dataDir, "browser-hold-shots.json"), "utf8"));
+    expect(listed()).toEqual([String(card.card.browserCommit.shot).split("/").pop()]);
     expect((await api("GET", "/api/bots")).body.bots.find((row: any) => row.id === botId).tasks.find((task: any) => task.threadId === threadId).activity).toBe("waiting-on-you");
     // While it waits, the bot may read the page but not change it.
     expect((await tool("agent_browser_snapshot")).status).toBe(200);
@@ -158,6 +161,7 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     expect(settled.card.answered).toBe("allow");
     expect(settled.card.browserCommit.shot).toBeUndefined();
     expect((await fetch(session.info.url + shot, { headers: { origin: session.info.url } })).status).toBe(404);
+    expect(listed()).toEqual([]);
 
     const decisions = ((await api("GET", "/api/decisions?limit=50")).body.decisions as any[]).filter((row) => row.requestId === card.card.requestId);
     expect(decisions.map((row) => [row.decision, row.source, row.rule, row.tool])).toEqual([
@@ -209,15 +213,18 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     await past;
 
     expect((await api("PATCH", `/api/bots/${botId}`, { outbound: { policy: "allow", dailyCap: 100 } })).status).toBe(200);
-    page({ url: "https://shop.example.com/checkout", target: PAY });
+    // The page shows a card field, so the server takes no picture of it.
+    page({ url: "https://shop.example.com/checkout", target: { ...PAY, secrets: true } });
     const paying = click("@e11");
     const money = await pending();
     expect(money.card).toMatchObject({
       title: "Spend money?",
       subtitle: "shop.example.com · Continue\nCard number: 16 characters, not shown",
       heldCode: "approval.held.money",
-      browserCommit: { class: "money", host: "shop.example.com" },
+      browserCommit: { class: "money", host: "shop.example.com", noShot: true },
     });
+    expect(money.card.browserCommit.shot).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(session.info.dataDir, "browser-hold-shots.json"), "utf8"))).toEqual([]);
     await respond(money, "deny");
     await paying;
     expect((await api("GET", `/api/bots/${botId}/outbound`)).body.today).toBe(1);

@@ -21,17 +21,20 @@ its temporary data and exits. The server log stays at the printed `logPath`.
 
 It exits 0 and prints `"ok": true` with one evidence entry per step:
 
-1. Ordinary clicks, a login and a search pass without a card.
+1. Ordinary clicks and a search pass without a card.
 2. A click on **Send** waits. The card is titled "Send on your behalf?", its
    subtitle is the site, the label and the message, and its screenshot is
    served as a JPEG. During the hold a snapshot works and a fill is refused.
    Allow clicks it: the page reports `submitted:message`.
-3. A submit on the card form waits as "Spend money?". The card number is
-   never on the card, only "16 characters, not shown". Deny clicks nothing.
-4. Enter in the message box waits as "Enter in Write a message". The page
-   then edits its own draft; Allow is void, the first card is marked as page
-   changed, and a second card shows the edited text. Shift+Enter passed, and
-   a line break typed with `agent_browser_type` was refused.
+3. On a second page with a sign-in and a card form, **Log in** passes
+   without a card. A submit on the card form waits as "Spend money?". The
+   card number is never on the card, only "16 characters, not shown", and no
+   screenshot is taken of a page that shows it. Deny clicks nothing.
+4. Back on the first page (opened, not reloaded: see case A4), Enter in the
+   message box waits as "Enter in Write a message". The page then edits its
+   own draft; Allow is void, the first card is marked as page changed, and a
+   second card shows the edited text. Shift+Enter passed, and a line break
+   typed with `agent_browser_type` was refused.
 5. `/api/decisions` holds `card-shown`, `user-approved`, `user-denied` and
    `auto-denied … page-changed` rows under `browser-commit:send` and
    `browser-commit:money`, and the bot's activity lists them under Browser.
@@ -57,6 +60,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
+| C13 | A field named `cardnumber`, a plain CVC field, a one-time code, a password shown as text, a PIN, the name on a card and an unlabelled card number are on the card, and in the decision log, by length only. The page is not pictured, and the card says so. |
 
 Keep the printed JSON and the log path as evidence.
 
@@ -65,6 +69,7 @@ Focused automated coverage:
 ```sh
 pnpm exec vitest run shared/browser-commit.test.ts server/browser-commit-page.test.ts \
   server/browser-commit-gate.test.ts server/browser-commit-hold.e2e.test.ts \
+  server/browser-commit-shots.test.ts server/browser-commit-shots-startup.test.ts \
   server/browser-runtime.test.ts server/browser-engine.test.ts server/harness-mcp-proxy.test.ts \
   server/activity.test.ts src/lib/approval-summary.test.ts src/components/ApprovalCard.test.ts
 ```

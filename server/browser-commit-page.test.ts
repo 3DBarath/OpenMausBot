@@ -55,7 +55,8 @@ function patched<T>(proto: object, name: string, descriptor: PropertyDescriptor,
 describe("the fixed page read", () => {
   it("describes a submit button with its form's visible fields, and never a hidden one", () => {
     expect(click("send")).toEqual({
-      found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true,
+      // The page has a password field and a card field elsewhere on it.
+      found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true,
       fields: [{ name: "Message", type: "textarea", value: "Hello there" }],
       // The form's own fields say what it is; there is nothing around it to add.
       identity: expect.stringMatching(/^html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/), context: "",
@@ -76,7 +77,8 @@ describe("the fixed page read", () => {
   it("flags a card form and reads only the length of the card number", () => {
     const read = click("continue");
     expect(read).toMatchObject({ label: "Continue", submits: true, card: true });
-    expect(read.fields).toEqual([{ name: "Card number", type: "card", length: 16 }, { name: "Expiry", type: "text", value: "12/30" }]);
+    expect(read.fields).toEqual([{ name: "Card number", type: "card", length: 16 }, { name: "Expiry", type: "card", length: 5 }]);
+    expect(JSON.stringify(read)).not.toContain("12/30");
   });
 
   it("marks search, whether by the form's role or its only field", () => {
@@ -103,7 +105,7 @@ describe("the fixed page read", () => {
     { name: "Password", type: "password", length: 14 },
     { name: "Search", type: "search", value: "shoes" },
     { name: "Card number", type: "card", length: 16 },
-    { name: "Expiry", type: "text", value: "12/30" },
+    { name: "Expiry", type: "card", length: 5 },
   ];
 
   it("shows a box outside any form first, then every other filled field around it", () => {
@@ -350,6 +352,92 @@ describe("a button with no form around it", () => {
   });
 });
 
+describe("values that never leave the page", () => {
+  const field = (attrs: string, value: string) => `<input ${attrs} value="${value}">`;
+  const form = (fields: string) => `<form id="checkout">${fields}<button id="pay">Pay</button></form>`;
+  const read = (fields: string) => clickIn(form(fields), "pay");
+
+  it.each([
+    ["a field named cardnumber", field('name="cardnumber" aria-label="Number"', "4000056655665556"), "Number", "card", 16],
+    ["a field with the id ccNum", field('id="ccNum"', "4000056655665556"), "ccNum", "card", 16],
+    ["a plain CVC field", field('id="cvc" placeholder="CVC"', "9173"), "CVC", "card", 4],
+    ["a security code", field('aria-label="Security code"', "9173"), "Security code", "card", 4],
+    ["a card's expiry", field('autocomplete="cc-exp" aria-label="Expiry"', "12/30"), "Expiry", "card", 5],
+    ["the name on a card", field('autocomplete="section-pay cc-name" aria-label="Name on card"', "ADA LOVELACE"), "Name on card", "card", 12],
+    ["a one-time code", field('autocomplete="one-time-code" aria-label="Code from your phone"', "246810"), "Code from your phone", "code", 6],
+    ["a verification code", field('name="verificationCode" aria-label="Enter it"', "246810"), "Enter it", "code", 6],
+    ["an OTP box", field('id="otp_1"', "2"), "otp_1", "code", 1],
+    ["a PIN", field('aria-label="PIN"', "4821"), "PIN", "code", 4],
+    ["a password shown as text", field('type="text" id="password" aria-label="Sign-in secret"', "correct-horse"), "Sign-in secret", "password", 13],
+    ["a new password", field('type="text" autocomplete="new-password" aria-label="Choose one"', "correct-horse"), "Choose one", "password", 13],
+    ["a passcode", field('aria-label="Passcode"', "007007"), "Passcode", "password", 6],
+    ["a card number with nothing to name it", field('aria-label="Reference"', "5555 5555 5555 4444"), "Reference", "card", 19],
+    ["a card number written with dashes", field('aria-label="Reference"', "4242-4242-4242-4242"), "Reference", "card", 19],
+  ])("reads only the length of %s", (_what, html, name, type, length) => {
+    const got = read(html);
+    expect(got.fields).toEqual([{ name, type, length }]);
+    expect(got.secrets).toBe(true);
+  });
+
+  it.each([
+    ["a city", field('aria-label="City"', "Baramati"), "Baramati"],
+    ["a postal PIN code", field('aria-label="PIN code"', "413102"), "413102"],
+    ["a pincode", field('name="pincode" aria-label="Pincode"', "413102"), "413102"],
+    ["a promo code", field('aria-label="Promo code"', "SAVE10"), "SAVE10"],
+    ["sixteen digits that are no card number", field('aria-label="Order number"', "1234567890123456"), "1234567890123456"],
+    ["a phone number", field('type="tel" aria-label="Phone"', "+91 98765 43210"), "+91 98765 43210"],
+    ["shipping notes", field('name="shipping" aria-label="Shipping"', "leave at door"), "leave at door"],
+  ])("still shows %s", (_what, html, value) => {
+    const got = read(html);
+    expect(got.fields).toEqual([expect.objectContaining({ value })]);
+    expect(got.secrets).toBe(false);
+  });
+
+  // A message is what the person is asked to approve: its label does not hide it.
+  it("shows a multi-line message whatever its label says, unless all of it is a card number", () => {
+    expect(read(`<textarea aria-label="Describe your password problem">It will not reset</textarea>`).fields).toEqual([{ name: "Describe your password problem", type: "textarea", value: "It will not reset" }]);
+    expect(read(`<textarea aria-label="Notes">4242 4242 4242 4242</textarea>`).fields).toEqual([{ name: "Notes", type: "card", length: 19 }]);
+  });
+});
+
+describe("a page that must not be pictured", () => {
+  const SEND = `<form id="f"><textarea aria-label="Message">Hello</textarea><button id="send">Send</button></form>`;
+
+  it("says so when any visible field on the page is length-only, wherever it is", () => {
+    expect(clickIn(SEND, "send").secrets).toBe(false);
+    expect(clickIn(`${SEND}<aside><input type="password" aria-label="Password"></aside>`, "send").secrets).toBe(true);
+    expect(clickIn(`${SEND}<input aria-label="Card number" value="">`, "send").secrets).toBe(true);
+    // The fields of the form being sent are unchanged by what is elsewhere.
+    expect(clickIn(`${SEND}<input type="password" aria-label="Password" value="hunter2">`, "send").fields).toEqual([{ name: "Message", type: "textarea", value: "Hello" }]);
+  });
+
+  it("does not count a field nobody can see", () => {
+    expect(clickIn(`${SEND}<input type="password" aria-label="Password" style="display:none"><input type="hidden" name="cvc" value="1">`, "send").secrets).toBe(false);
+  });
+
+  it("looks inside a frame it can read, and takes a payment or sign-in frame it cannot read to hold one", () => {
+    // A <span> stands in for the frame, so happy-dom loads nothing: the read
+    // knows a frame by its tag name and its contentDocument, which it asks
+    // the prototype for.
+    const framed = (attrs: string, inner: string | null) => {
+      page.body.innerHTML = `${SEND}<span id="frame" ${attrs}></span>`;
+      const frame = page.getElementById("frame")!;
+      const proto = Object.getPrototypeOf(frame) as object;
+      const tagName = Object.getOwnPropertyDescriptor(dom.Element!.prototype, "tagName")!.get!;
+      const doc = inner === null ? null : new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): unknown } }).DOMParser().parseFromString(inner, "text/html");
+      return patched(proto, "tagName", { get(this: object) { return this === frame ? "IFRAME" : tagName.call(this); } }, () =>
+        patched(proto, "contentDocument", { get: () => doc }, () => run({ box: boxOf("send"), enter: false }).secrets));
+    };
+    expect(framed('title="Comments"', `<body><input aria-label="Name" value="Ada"></body>`)).toBe(false);
+    expect(framed('title="Comments"', `<body><input type="password" aria-label="Password"></body>`)).toBe(true);
+    expect(framed('title="Video player" src="https://videos.example/embed/7"', null)).toBe(false);
+    expect(framed('title="Secure card number input frame" src="https://js.stripe.com/v3/elements-inner-card.html"', null)).toBe(true);
+    expect(framed('name="__privateStripeFrame5" src="https://pay.example/x"', null)).toBe(true);
+    expect(framed('src="https://accounts.example/signin/challenge"', null)).toBe(true);
+    expect(framed('title="Secure card number input frame" style="display:none"', null)).toBe(false);
+  });
+});
+
 describe("a long form", () => {
   const LONG = `<form id="long">${Array.from({ length: 35 }, (_, index) => `<input id="f${index + 1}" aria-label="Field ${index + 1}" value="value ${index + 1}">`).join("")}
     <textarea id="essay" aria-label="Essay">${"long ".repeat(4_000)}</textarea><button id="send">Send</button></form>`;
@@ -379,8 +467,10 @@ describe("parsePageTarget", () => {
     expect(parsePageTarget("found")).toBeNull();
     expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", fields: [{ name: "n", type: "text", value: "v", length: "3" }, null, "x"] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "",
+      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "", secrets: false,
     });
+    expect(parsePageTarget({ found: true, secrets: true })).toMatchObject({ secrets: true });
+    expect(parsePageTarget({ found: true, secrets: "no" })).toMatchObject({ secrets: false });
   });
 
   it("keeps every field and every character of a value: the approval is bound to all of it", () => {

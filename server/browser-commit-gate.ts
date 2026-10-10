@@ -181,6 +181,15 @@ interface Sent {
   movedOn: boolean;
 }
 
+/** A card that is settled, or that nobody can answer any more, shows no
+ * picture and no note about one: the screenshot was evidence for the
+ * decision, and it is deleted with it. */
+export function cardWithoutPicture(card: OptionCardData): OptionCardData {
+  if (!card.browserCommit) return card;
+  const { shot: _shot, noShot: _noShot, ...evidence } = card.browserCommit;
+  return { ...card, browserCommit: evidence };
+}
+
 function refusal(text: string): { isError: true; content: Array<{ type: "text"; text: string }> } {
   return { isError: true, content: [{ type: "text", text }] };
 }
@@ -257,12 +266,30 @@ const SHOWN_VALUE = 200;
 const SHOWN_FIELDS = 12;
 const SUBTITLE_MAX = 1_500;
 
+/** Thirteen to nineteen digits, in groups or not, that pass the Luhn check. */
+function cardNumber(digits: string): boolean {
+  let sum = 0;
+  for (let index = 0; index < digits.length; index += 1) {
+    let digit = digits.charCodeAt(digits.length - 1 - index) - 48;
+    if (index % 2 === 1) { digit *= 2; if (digit > 9) digit -= 9; }
+    sum += digit;
+  }
+  return sum % 10 === 0;
+}
+
+/** Text as the card and the log may carry it: anything that looks like a
+ * credential masked, and a card number written inside other text too. (A
+ * field that holds a card number and nothing else never leaves the page.) */
+function masked(text: string): string {
+  return redactSecretsInText(text).replace(/(?<!\d)\d(?:[ -]?\d){12,18}(?!\d)/g, (run) => (cardNumber(run.replace(/[ -]/g, "")) ? "«card number»" : run));
+}
+
 /** A field as a person reads it on the card and as the log keeps it:
  * credentials masked, line breaks flattened, a long value shortened with
  * its full length beside it. */
 function shownField(field: CommitField): CommitField {
   if (field.value === undefined) return { name: field.name, type: field.type, length: field.length ?? 0 };
-  const flat = redactSecretsInText(field.value.replace(/\s+/g, " ").trim());
+  const flat = masked(field.value.replace(/\s+/g, " ").trim());
   return flat.length > SHOWN_VALUE
     ? { name: field.name, type: field.type, value: `${flat.slice(0, SHOWN_VALUE)}…`, length: field.value.length }
     : { name: field.name, type: field.type, value: flat };
@@ -377,9 +404,8 @@ export class BrowserCommitGate {
       if (shot) this.deps.dropShot(shot);
       const settle = (change: (card: OptionCardData) => Partial<OptionCardData> = () => ({}), pageChanged = false) => {
         this.deps.patch(call.threadId, messageId, (card) => {
-          if (!card.browserCommit) return { ...card, ...change(card) };
-          const { shot: _shot, ...evidence } = card.browserCommit;
-          return { ...card, ...change(card), browserCommit: pageChanged ? { ...evidence, pageChanged: true } : evidence };
+          const settled = { ...cardWithoutPicture(card), ...change(card) };
+          return pageChanged && settled.browserCommit ? { ...settled, browserCommit: { ...settled.browserCommit, pageChanged: true } } : settled;
         });
       };
       const kind = seen.class;
@@ -532,8 +558,11 @@ export class BrowserCommitGate {
       address, intent.via, known?.name ?? null,
       targets.map((each) => [each.label, each.role, each.identity, each.context, each.fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null])]),
     ])).digest("hex");
-    const head = { host, label: clip(label, 120), context: redactSecretsInText(target.context) };
-    return { class: pick.kind, ...head, ...fit(head, target.fields.map(shownField)), digest, picture: true };
+    const head = { host, label: clip(label, 120), context: masked(target.context) };
+    // No picture of a page that shows a field the card masks, nor of one
+    // the read could not look at: the picture would show what the card hides.
+    const picture = found !== "hidden" && !found.secrets;
+    return { class: pick.kind, ...head, ...fit(head, target.fields.map(shownField)), digest, picture };
   }
 
   private summary(seen: Sighting): string {
@@ -559,6 +588,7 @@ export class BrowserCommitGate {
         fields: seen.shown,
         ...(seen.more ? { more: seen.more } : {}),
         ...(shot ? { shot } : {}),
+        ...(seen.picture ? {} : { noShot: true }),
       },
     };
   }

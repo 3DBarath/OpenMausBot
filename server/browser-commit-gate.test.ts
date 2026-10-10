@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BrowserCommitGate, browserCallTimeoutMs, type CommitCall } from "./browser-commit-gate.ts";
+import { BrowserCommitGate, browserCallTimeoutMs, cardWithoutPicture, type CommitCall } from "./browser-commit-gate.ts";
 import { BrowserRuntime, type BrowserRef } from "./browser-runtime.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 const element = (extra: Partial<PageTarget> = {}): PageTarget => ({
-  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", ...extra,
+  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", secrets: false, ...extra,
 });
 const SEND = element({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = element({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -54,6 +54,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     /** What the engine answers, when not the usual result. */
     result: undefined as unknown,
     dropped: [] as string[],
+    shots: 0,
     resumed: 0,
   };
   const gate = new BrowserCommitGate({
@@ -76,7 +77,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
       url: async () => state.url,
       target: async (selector, enter) => { state.reads.push({ selector, enter }); state.onRead?.(state.reads.length); return state.target; },
     },
-    shot: async () => "/data/attachments/shot.jpg",
+    shot: async () => { state.shots += 1; return "/data/attachments/shot.jpg"; },
     admit: () => {},
     active: () => state.active,
     signal: abort.signal,
@@ -925,6 +926,80 @@ describe("reload after a commitment", () => {
     await f.answer("deny");
     await held;
     expect(f.state.dispatched).toEqual([click()]);
+  });
+});
+
+describe("the picture on the card", () => {
+  it("is not taken when the page shows a field the card masks, and the card says so", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, secrets: true };
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(f.state.shots).toBe(0);
+    expect(card.browserCommit).not.toHaveProperty("shot");
+    expect(card.browserCommit).toMatchObject({ noShot: true });
+    await f.answer("allow");
+    await held;
+    expect(f.state.dropped).toEqual([]);
+  });
+
+  it("is not taken of a page the read could not look at: a frame may hold a card form", async () => {
+    const f = fixture();
+    f.state.target = "hidden";
+    f.refs.set("e4", { role: "button", name: "Pay" });
+    const held = f.call(click("@e4"));
+    const card = await f.pending();
+    expect(f.state.shots).toBe(0);
+    expect(card.browserCommit).toMatchObject({ noShot: true });
+    await f.answer("deny");
+    await held;
+  });
+
+  it("is not taken when any element sharing the box is on a page with one", async () => {
+    const f = fixture();
+    f.state.target = { ...element({ label: "Cancel", secrets: true }), also: [SEND] };
+    const held = f.call(click());
+    expect((await f.pending()).browserCommit).toMatchObject({ noShot: true });
+    expect(f.state.shots).toBe(0);
+    await f.answer("deny");
+    await held;
+  });
+
+  it("is taken otherwise, and the card carries no note", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(f.state.shots).toBe(1);
+    expect(card.browserCommit).toMatchObject({ shot: "/data/attachments/shot.jpg" });
+    expect(card.browserCommit).not.toHaveProperty("noShot");
+    await f.answer("deny");
+    await held;
+  });
+
+  it("masks a card number written inside other text, on the card and in the log", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, context: "Paying with 4242 4242 4242 4242 Send", fields: [
+      { name: "Message", type: "textarea", value: "Charge my card 5555-5555-5555-4444 please, order 1234567890123456" },
+    ] };
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(card.subtitle).toBe("mail.example.com · Send\nWhere: Paying with «card number» Send\nMessage: Charge my card «card number» please, order 1234567890123456");
+    expect(JSON.stringify([card, f.rows])).not.toMatch(/4242 4242|5555-5555/);
+    await f.answer("deny");
+    await held;
+  });
+});
+
+describe("a card nobody can answer any more", () => {
+  // After a restart the picture a card pointed at has been deleted.
+  it("loses its picture and its no-picture note, and nothing else", () => {
+    const card: OptionCardData = {
+      title: "Send on your behalf?", subtitle: "mail.example.com · Send", options: ["Allow", "Deny"], requestId: "r",
+      browserCommit: { class: "send", host: "mail.example.com", label: "Send", fields: [], more: 2, shot: "/data/attachments/shot.jpg", noShot: true },
+    };
+    expect(cardWithoutPicture(card)).toEqual({ ...card, browserCommit: { class: "send", host: "mail.example.com", label: "Send", fields: [], more: 2 } });
+    const plain: OptionCardData = { title: "Approval needed", subtitle: "git push", options: ["Allow", "Deny"] };
+    expect(cardWithoutPicture(plain)).toBe(plain);
   });
 });
 

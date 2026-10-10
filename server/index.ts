@@ -477,7 +477,8 @@ import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
 import { BrowserLive } from "./browser-live.ts";
-import { BrowserCommitGate, browserCallTimeoutMs } from "./browser-commit-gate.ts";
+import { BrowserCommitGate, browserCallTimeoutMs, cardWithoutPicture } from "./browser-commit-gate.ts";
+import { HoldShots } from "./browser-commit-shots.ts";
 import { browserPageReader } from "./browser-commit-page.ts";
 import {
   agentBrowserFrame,
@@ -12123,6 +12124,10 @@ const teamMemory = new TeamMemory(join(DATA_DIR, "team-memory.json"));
 const outboundRequests = new OutboundRequestService();
 const outboundCounts = new OutboundCounts(join(DATA_DIR, "outbound-counts.json"));
 const OUTBOUND_HOLD_MS = 9 * 60_000;
+/** The screenshots open commit cards show. One left listed by a server that
+ * stopped mid-hold is deleted here, at the next start. */
+const browserHoldShots = new HoldShots(join(DATA_DIR, "browser-hold-shots.json"), ATTACHMENTS_DIR, deleteAttachment);
+browserHoldShots.sweep();
 /** Browser clicks that send or pay wait on the same cards, for the same
  * window, and spend the same daily allowance as connected-app sends. */
 const browserCommitGate = new BrowserCommitGate({
@@ -12164,7 +12169,7 @@ const browserCommitGate = new BrowserCommitGate({
     }
   },
   log: (row) => appendDecision(DATA_DIR, row),
-  dropShot: deleteAttachment,
+  dropShot: (path) => browserHoldShots.drop(path),
 });
 
 function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: string, behavior: "allow" | "deny" | "answer"): boolean {
@@ -12208,7 +12213,7 @@ function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: s
       // relay that was waiting on it, so close it rather than leave an
       // approval nobody can deliver owning the composer.
       if (!outboundCard.card.answered) {
-        store.patchMessage(threadId, outboundCard.id, { card: { ...outboundCard.card, answered: "unavailable", dismissed: true } });
+        store.patchMessage(threadId, outboundCard.id, { card: { ...cardWithoutPicture(outboundCard.card), answered: "unavailable", dismissed: true } });
       }
       json(res, 200, { ok: true, outcome: "unavailable" });
       return true;
@@ -17190,7 +17195,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             page: browserPageReader((args) => agentBrowserQuery({ ...engine, args })),
             shot: async () => {
               const frame = await browserRuntime.withAgentAction(browser.session, () => agentBrowserFrame(engine), "read");
-              return saveImage(Buffer.from(frame.png, "base64"), "image/jpeg").path;
+              return browserHoldShots.keep(saveImage(Buffer.from(frame.png, "base64"), "image/jpeg").path);
             },
             admit,
             active: () => internalCapabilityIsActive(internalCapability),

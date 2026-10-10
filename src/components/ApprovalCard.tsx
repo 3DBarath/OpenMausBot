@@ -298,6 +298,8 @@ export function ApprovalCard({
   const outbound = outboundSummary(card);
   // The server's own picture of the page, for as long as the card is open.
   const shot = card.browserCommit?.shot && !settled && !expired ? attachmentImageUrl(card.browserCommit.shot) : null;
+  // No picture was taken: it would have shown what the card masks.
+  const noShot = Boolean(card.browserCommit?.noShot) && !settled && !expired;
   const displayTool = isRoutineRequest
     ? routineAction === "create" ? "schedule_routine" : "manage_routine"
     : isSkillRequest
@@ -366,6 +368,8 @@ export function ApprovalCard({
           className="mt-2 max-h-72 w-full rounded-lg border border-hairline/30 object-contain object-left"
         />
       )}
+
+      {noShot && <div className="mt-2 text-[12.5px] text-ink-secondary">{t("approval.browserCommit.noShot")}</div>}
 
       {heldNote && (
         <div className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12.5px] text-warning">

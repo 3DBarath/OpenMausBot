@@ -597,6 +597,16 @@ describe("ApprovalCard for a held browser click", () => {
     expect(render(remote)).not.toContain("<img");
   });
 
+  it("says why there is no picture when the page shows something the card masks, for as long as the card is open", () => {
+    const message = held();
+    message.card!.browserCommit = { ...message.card!.browserCommit!, shot: undefined, noShot: true };
+    const html = render(message);
+    expect(html).not.toContain("<img");
+    expect(html).toContain("No picture of the page: it shows a password, card or code field, or could not be checked for one.");
+    expect(render({ ...message, card: { ...message.card!, answered: "deny" } })).not.toContain("No picture of the page");
+    expect(render(held())).not.toContain("No picture of the page");
+  });
+
   it("says the approval was not used when the page changed under it", () => {
     const message = held({ answered: "unavailable", dismissed: true });
     message.card!.browserCommit = { ...message.card!.browserCommit!, shot: undefined, pageChanged: true };

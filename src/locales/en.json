@@ -222,6 +222,7 @@
   "approval.browserCommit.send": "Send on {host}?",
   "approval.browserCommit.money": "Spend money on {host}?",
   "approval.browserCommit.shotAlt": "The page on {host} when this was asked",
+  "approval.browserCommit.noShot": "No picture of the page: it shows a password, card or code field, or could not be checked for one.",
   "approval.aria.routineDetails": "Routine details",
   "approval.aria.skillDetails": "Skill details",
   "approval.aria.profileChange": "Profile change",
