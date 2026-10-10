@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentBrowserFrame,
   agentBrowserIntegration,
+  agentBrowserQuery,
   browserEngineEncryptionKey,
   cachedAgentBrowserVersion,
   pendingAgentBrowserVersionProbe,
@@ -640,6 +641,41 @@ describe("what a bot gets", () => {
   });
 });
 
+
+describe("agentBrowserQuery", () => {
+  /** A real Node child stands in for the engine, as in agentBrowserFrame below. */
+  async function fakeBinary(body: string): Promise<string> {
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(spawn).mockImplementationOnce((_binary, args, options) => {
+      expect(_binary).toBe("fixture-agent-browser");
+      return actual.spawn(process.execPath, ["-e", body, ...args ?? []], options);
+    });
+    return "fixture-agent-browser";
+  }
+
+  it("returns the engine's data for the mount's own session, asking for JSON", async () => {
+    const binaryPath = await fakeBinary('process.stdout.write(JSON.stringify({ success: true, data: { args: process.argv.slice(1), session: process.env.AGENT_BROWSER_SESSION }, error: null }))');
+    await expect(agentBrowserQuery({ binaryPath, env: { AGENT_BROWSER_SESSION: "profile-x" }, args: ["get", "box", "@e4"] }))
+      .resolves.toEqual({ ok: true, data: { args: ["get", "box", "@e4", "--json"], session: "profile-x" } });
+  });
+
+  it("reports the engine's own refusal, such as a ref the page no longer has", async () => {
+    const binaryPath = await fakeBinary('process.stdout.write(JSON.stringify({ success: false, data: null, error: "Unknown ref: e4" })); process.exitCode = 1');
+    await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["get", "box", "@e4"] })).resolves.toEqual({ ok: false, error: "Unknown ref: e4" });
+  });
+
+  it("never rejects: a silent, garbled or hung engine is an answer too", async () => {
+    await expect(agentBrowserQuery({ binaryPath: await fakeBinary("process.exitCode = 0"), env: {}, args: ["get", "url"] }))
+      .resolves.toEqual({ ok: false, error: "the browser gave no readable answer" });
+    await expect(agentBrowserQuery({ binaryPath: await fakeBinary('process.stdout.write(JSON.stringify({ success: true, data: [1] }))'), env: {}, args: ["get", "url"] }))
+      .resolves.toEqual({ ok: false, error: "the browser refused the request" });
+    await expect(agentBrowserQuery({ binaryPath: await fakeBinary("setTimeout(() => {}, 5000)"), env: {}, args: ["get", "url"], timeoutMs: 150 }))
+      .resolves.toEqual({ ok: false, error: "the browser did not answer in time" });
+    vi.mocked(spawn).mockImplementationOnce(() => { throw new Error("ENOENT"); });
+    await expect(agentBrowserQuery({ binaryPath: "missing", env: {}, args: ["get", "url"] }))
+      .resolves.toEqual({ ok: false, error: "the browser engine could not start" });
+  });
+});
 
 describe("agentBrowserFrame", () => {
   /** Use a real Node child on every OS, not an unlaunchable Windows shebang.
