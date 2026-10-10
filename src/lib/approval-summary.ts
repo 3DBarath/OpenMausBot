@@ -81,8 +81,13 @@ export interface OutboundSummary {
 }
 
 /** Headline and summary for an outbound card; undefined for any other card. */
-export function outboundSummary(card: Pick<OptionCardData, "outboundRequest" | "subtitle">): OutboundSummary | undefined {
+export function outboundSummary(card: Pick<OptionCardData, "outboundRequest" | "subtitle" | "browserCommit">): OutboundSummary | undefined {
   if (!card.outboundRequest) return undefined;
+  // A held browser click names the site, and says when it is money.
+  if (card.browserCommit) {
+    const { host, label } = card.browserCommit;
+    return { headline: t(card.browserCommit.class === "money" ? "approval.browserCommit.money" : "approval.browserCommit.send", { host }), summary: label };
+  }
   const calls = outboundCalls(card);
   const app = outboundApp(calls);
   return {

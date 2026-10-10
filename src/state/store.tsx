@@ -127,6 +127,8 @@ export interface OptionCardData {
   /** calls: one per outbound call the card covers, in subtitle order. Absent
    * on cards from older computers. */
   outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
+  /** A held browser click or Enter press: what it would send or pay for. */
+  browserCommit?: import("../../shared/browser-commit").BrowserCommitCard;
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   /** Persisted profile proposal used by the server when the user confirms it. */
   profileRequest?: ProfileRequestCardData;

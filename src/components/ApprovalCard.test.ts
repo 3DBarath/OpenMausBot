@@ -551,6 +551,70 @@ describe("ApprovalCard outbound holds", () => {
   });
 });
 
+describe("ApprovalCard for a held browser click", () => {
+  const shot = "/data/attachments/123e4567-e89b-12d3-a456-426614174000.jpg";
+  const held = (card: Partial<NonNullable<Message["card"]>> = {}, kind: "send" | "money" = "send"): Message => ({
+    id: "commit-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: kind === "money" ? "Spend money?" : "Send on your behalf?",
+      subtitle: "mail.example.com · Send\nMessage: Hello there",
+      options: ["Allow", "Deny"],
+      requestId: "req-commit",
+      tool: "agent_browser_click",
+      heldCode: kind === "money" ? "approval.held.money" : "approval.held.outbound",
+      held: "This sends something on your behalf, so it always asks first.",
+      outboundRequest: { tool: "agent_browser_click", app: "mail.example.com", calls: [{ app: "mail.example.com", label: "Send" }] },
+      browserCommit: { class: kind, host: "mail.example.com", label: "Send", fields: [{ name: "Message", type: "textarea", value: "Hello there" }], shot },
+      ...card,
+    },
+  });
+  const bot = { id: "bot-1", name: "Pepper" } as never as Bot;
+  const render = (message: Message) => renderToStaticMarkup(createElement(ApprovalCard, { bot, message }));
+
+  it("names the site, shows what would be sent and the server's picture of the page", () => {
+    const html = render(held());
+    expect(html).toContain("Send on mail.example.com?");
+    expect(html).toContain("Message: Hello there");
+    expect(html).toContain('src="/api/attachments/123e4567-e89b-12d3-a456-426614174000.jpg"');
+    expect(html).toContain("The page on mail.example.com when this was asked");
+    expect(html).not.toContain("agent_browser_click");
+    expect(html).toContain("Waiting for your answer below");
+  });
+
+  it("says money plainly, with the money note", () => {
+    const html = render(held({}, "money"));
+    expect(html).toContain("Spend money on mail.example.com?");
+    expect(html).toContain("This spends money, so it always asks first.");
+  });
+
+  it("drops the picture once the card is settled, and never loads a path that is not an attachment", () => {
+    expect(render(held({ answered: "allow" }))).not.toContain("<img");
+    const remote = held();
+    remote.card!.browserCommit!.shot = "https://evil.example/pixel.gif?x=y";
+    expect(render(remote)).not.toContain("<img");
+  });
+
+  it("says the approval was not used when the page changed under it", () => {
+    const message = held({ answered: "unavailable", dismissed: true });
+    message.card!.browserCommit = { ...message.card!.browserCommit!, shot: undefined, pageChanged: true };
+    const html = render(message);
+    expect(html).toContain("The page changed, so this approval was not used");
+    expect(html).not.toContain("Denied");
+  });
+
+  it("heads the composer strip the same way, and speaks the call in words", () => {
+    const [pending] = pendingApprovals([held()]);
+    const strip = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0 }));
+    expect(strip).toContain("Send on mail.example.com?");
+    expect(strip).not.toContain("agent_browser_click");
+    expect(spokenApprovalPrompt(pending!, "Pepper")).toContain("click in the browser");
+    expect(spokenApprovalPrompt({ ...pending!, tool: "agent_browser_press" }, "Pepper")).toContain("press Enter in the browser");
+  });
+});
+
 describe("ApprovalCard for a change that applied on its own", () => {
   const applied = (card: Partial<NonNullable<Message["card"]>>): Message => ({
     id: "applied-card",

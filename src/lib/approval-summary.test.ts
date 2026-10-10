@@ -81,6 +81,20 @@ describe("outboundSummary", () => {
     expect(outboundSummary(card)).toEqual({ headline: "Send on your behalf?", summary: "Send a message" });
   });
 
+  it("names the site of a held browser click, and says when it is money", () => {
+    const held = (kind: "send" | "money", label: string): OptionCardData => ({
+      ...outbound([{ app: "shop.example.com", label }], `shop.example.com · ${label}\nMessage: Hello`),
+      tool: "agent_browser_click",
+      outboundRequest: { tool: "agent_browser_click", app: "shop.example.com", calls: [{ app: "shop.example.com", label }] },
+      browserCommit: { class: kind, host: "shop.example.com", label, fields: [{ name: "Message", type: "textarea", value: "Hello" }] },
+    });
+    expect(outboundSummary(held("send", "Send"))).toEqual({ headline: "Send on shop.example.com?", summary: "Send" });
+    expect(outboundSummary(held("money", "Place order"))).toEqual({ headline: "Spend money on shop.example.com?", summary: "Place order" });
+    // A client that does not know browserCommit reads the same card as a send to that site.
+    const { browserCommit: _unknown, ...older } = held("send", "Send");
+    expect(outboundSummary(older)).toEqual({ headline: "Send to shop.example.com?", summary: "Send" });
+  });
+
   it("is undefined for a card that is not an outbound hold", () => {
     const permission: OptionCardData = { title: "Approval needed", subtitle: "git push", options: ["Allow", "Deny"], tool: "Bash" };
     expect(outboundSummary(permission)).toBeUndefined();

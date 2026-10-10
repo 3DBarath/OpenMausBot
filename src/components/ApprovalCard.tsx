@@ -12,6 +12,7 @@ import { t, tFromServer } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { SkillRequestPreview } from "@/components/SkillRequestPreview";
 import { composioActionPhrase, outboundSummary } from "@/lib/approval-summary";
+import { attachmentImageUrl } from "@/lib/composer-attachments";
 import { niceDate, niceTime, scheduleLabel } from "@/lib/schedule-label";
 import { cronScheduleLabel } from "../../shared/cron-label";
 import { PROFILE_REQUEST_FIELDS, type ProfileRequestField } from "../../shared/profile-request";
@@ -64,6 +65,8 @@ const PROFILE_FIELD_LABEL: Record<ProfileRequestField, LocaleKey> = {
  * so a chat that ends on the card never says one thing in each place. */
 export function approvalCardOutcome(card: OptionCardData): string | undefined {
   if (card.expired === true) return t("approval.status.expired");
+  // The approval was given for a page that then changed: nothing was done with it.
+  if (card.browserCommit?.pageChanged) return t("approval.status.pageChanged");
   if (!card.answered) return undefined;
   if (card.undone === true) return t("approval.status.undone");
   const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest || card.teamSetupRequest);
@@ -98,6 +101,8 @@ export function toolLabel(tool?: string): string {
     stage_skill: "approval.tool.enableSkill",
     update_skill: "approval.tool.updateSkill",
     update_profile: "approval.tool.updateProfile",
+    agent_browser_click: "approval.tool.browserClick",
+    agent_browser_press: "approval.tool.browserPress",
     // An ACP driver can know the protocol's toolCall kind but not the
     // tool's name, and sends the kind as the card's tool
     // (server/drivers/acp/core.ts). Kinds are not verb phrases —
@@ -287,6 +292,8 @@ export function ApprovalCard({
   // A held outbound action reads as what it sends and where, the way the
   // phones show it, not as the slug the bot happened to call.
   const outbound = outboundSummary(card);
+  // The server's own picture of the page, for as long as the card is open.
+  const shot = card.browserCommit?.shot && !settled && !expired ? attachmentImageUrl(card.browserCommit.shot) : null;
   const displayTool = isRoutineRequest
     ? routineAction === "create" ? "schedule_routine" : "manage_routine"
     : isSkillRequest
@@ -347,6 +354,14 @@ export function ApprovalCard({
       </pre>
 
       {card.skillRequest && <SkillRequestPreview request={card.skillRequest} />}
+
+      {shot && (
+        <img
+          src={shot}
+          alt={t("approval.browserCommit.shotAlt", { host: card.browserCommit?.host ?? "" })}
+          className="mt-2 max-h-72 w-full rounded-lg border border-hairline/30 object-contain object-left"
+        />
+      )}
 
       {heldNote && (
         <div className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12.5px] text-warning">
