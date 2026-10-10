@@ -141,28 +141,37 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     const approval = async () => (await messages(older.threadId)).find(message => message.card?.requestId === requestId)?.card;
     await expect.poll(async () => Boolean(await approval()), { timeout: 10_000 }).toBe(true);
     const originalApproval = await approval();
-    await api("PATCH", `/api/bots/${bot.id}/tasks/${firstTask.threadId}`, { modelSelection: { instanceId: "followup", model: "claude-sonnet-5" } });
+    // A bare YES with nothing pending in this conversation fails closed: it
+    // is not passed to the bot and cannot answer another task's request.
     await post("owner_event_yes", "YES");
     await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(2);
-    expect(sends()[1]?.body.text).toBe("followup fixture reply");
+    expect(sends()[1]?.body.text).toBe("There is no matching pending request. Send STATUS to check the task.");
+    expect((await messages(firstTask.threadId)).some(message => message.role === "user" && message.text === "YES")).toBe(false);
+    expect(await approval()).toEqual(originalApproval);
+    expect(permissionAnswer).toBe("");
+    // An ordinary follow-up continues the same Ask task.
+    await api("PATCH", `/api/bots/${bot.id}/tasks/${firstTask.threadId}`, { modelSelection: { instanceId: "followup", model: "claude-sonnet-5" } });
+    await post("owner_event_followup", "Please continue the owner fixture.");
+    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(3);
+    expect(sends()[2]?.body.text).toBe("followup fixture reply");
     const afterYes = await state();
     expect(afterYes.tasks).toHaveLength(afterFirst.tasks.length);
     expect(afterYes.threadId).toBe(bot.threadId);
     const yesTask = afterYes.tasks.find(task => task.threadId === firstTask.threadId)!;
     expect(yesTask).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    expect((await messages(yesTask.threadId)).some(message => message.role === "user" && message.text === "YES")).toBe(true);
+    expect((await messages(yesTask.threadId)).some(message => message.role === "user" && message.text === "Please continue the owner fixture.")).toBe(true);
     expect(await approval()).toEqual(originalApproval);
     expect(permissionAnswer).toBe("");
     // Continuation must recheck Ask mode instead of inheriting an app edit.
     await api("PATCH", `/api/bots/${bot.id}/tasks/${firstTask.threadId}`, { approvalMode: "auto" });
     await post("owner_changed_mode", "Do not run this in Auto mode.");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(3);
-    expect(sends()[2]?.body.text).toMatch(/could not be confirmed|Ask task|changed/);
+    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(4);
+    expect(sends()[3]?.body.text).toMatch(/could not be confirmed|Ask task|changed/);
     expect((await messages(firstTask.threadId)).some(message => message.text === "Do not run this in Auto mode.")).toBe(false);
     await post("owner_explicit_new", "NEW Separate fixture request");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(4);
+    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(5);
     expect((await state()).tasks).toHaveLength(afterFirst.tasks.length + 1);
-    expect(sends()[3]?.body.text).toBe("owner fixture reply");
+    expect(sends()[4]?.body.text).toBe("owner fixture reply");
     const latestDump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8"));
     expect(latestDump.env).not.toHaveProperty("OMB_INKBOX_API_KEY");
     expect(latestDump.env).not.toHaveProperty("OMB_INKBOX_SIGNING_SECRET");
