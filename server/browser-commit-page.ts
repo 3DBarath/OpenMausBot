@@ -19,7 +19,15 @@ export interface PageTarget {
   search: boolean;
   card: boolean;
   multiline: boolean;
+  /** Every visible field that would go: the form's, or with no form the
+   * filled fields around the control. Each at full length. */
   fields: CommitField[];
+  /** Which element this is: where it sits in the document and a hash of
+   * its own markup (for Enter, the focused field and the button it would
+   * press). Empty when the read could not say. */
+  identity: string;
+  /** The visible text of the row, list item, card or dialog it is in. */
+  context: string;
   /** Other elements in the same box, when nothing says which of them the
    * engine would act on. Any of them may be the one. */
   also?: PageTarget[];
@@ -63,6 +71,7 @@ const PAGE_READ = String.raw`(input) => {
     const textOf = prop("textContent"), editableOf = prop("isContentEditable"), ownerOf = prop("form"), focusOf = prop("activeElement"), rootOf = method("getRootNode");
     const getAttr = method("getAttribute"), hasAttr = method("hasAttribute"), matches = method("matches"), byId = method("getElementById"), pointIn = method("elementFromPoint");
     const queryIn = method("querySelector"), queryAllIn = method("querySelectorAll"), rectOf = method("getBoundingClientRect"), visible = method("checkVisibility");
+    const outerOf = prop("outerHTML"), innerTextOf = prop("innerText"), beforeOf = prop("previousElementSibling");
     const FORM_OWNED = ["INPUT", "BUTTON", "SELECT", "TEXTAREA"];
     const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const clip = (value, max) => (value.length > max ? value.slice(0, max) : value);
@@ -140,6 +149,57 @@ const PAGE_READ = String.raw`(input) => {
     const handlers = (el, names) => names.map((name) => { const set = handlerOf[name](el); return attr(el, name) + " " + (typeof set === "function" ? Function.prototype.toString.call(set) : ""); }).join(" ");
     const handlerSubmits = (control, form) => SUBMITS.test(handlers(control, ["onchange", "oninput", "onclick"]) + " " + handlers(form, ["onchange", "oninput"]));
 
+    // 64 bits of a string: enough to tell that an element's markup changed.
+    const hash = (value) => {
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < value.length; i += 1) { const code = value.charCodeAt(i); h1 = Math.imul(h1 ^ code, 2654435761); h2 = Math.imul(h2 ^ code, 1597334677); }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+    };
+    // Which element this is: its tag and place among its siblings at every
+    // level up (through shadow hosts), and a hash of its own markup. A ref
+    // or a selector that comes to resolve to another element has another.
+    const identify = (el) => {
+      const steps = [];
+      for (let n = el; n; n = up(n)) { let place = 0; for (let s = beforeOf(n); s; s = beforeOf(s)) place += 1; steps.unshift(String(tag(n)).toLowerCase() + ":" + place); }
+      return steps.join("/") + "#" + hash(String(outerOf(el) || ""));
+    };
+    const seenText = (el) => { const shownText = innerTextOf(el); return text(shownText == null ? textOf(el) : shownText); };
+    const CONTAINER = 'tr, li, [role="row"], [role="listitem"], article, [role="article"], dialog, [role="dialog"], [role="alertdialog"]';
+    // What is around the control, for a person to tell which one it is: the
+    // nearest row, list item, article or dialog. With none of those, the
+    // nearest wrapper that says more than the control does, unless that is
+    // a page of text, or the control's own form when its fields already say
+    // what it is.
+    const contextOf = (acting, form, fielded) => {
+      let around = climb(up(acting), (n) => matches(n, CONTAINER));
+      if (!around) {
+        const own = seenText(acting);
+        const wider = climb(up(acting), (n) => tag(n) === "BODY" || tag(n) === "HTML" || seenText(n) !== own);
+        if (wider && tag(wider) !== "BODY" && tag(wider) !== "HTML" && seenText(wider).length <= 600 && !(wider === form && fielded)) around = wider;
+      }
+      return around ? clip(seenText(around), 300) : "";
+    };
+    // One field as the card and the approval have it, or null for a control
+    // that carries nothing a person typed or chose, or that is not shown.
+    const fieldOf = (field) => {
+      const auto = attr(field, "autocomplete").toLowerCase();
+      const kind = boxKind(field);
+      const type = tag(field) === "TEXTAREA" ? "textarea" : tag(field) === "SELECT" ? "select" : editable(field) ? "contenteditable" : tag(field) === "INPUT" ? inputType(field) : kind ? "textbox" : "";
+      if (!type || ["hidden", "submit", "button", "image", "reset", "file"].includes(type) || !shown(field)) return null;
+      const name = clip(labelOf(field) || attr(field, "id") || type, 80);
+      const typed = type === "contenteditable" || type === "textbox";
+      if (type === "password" || /(^|\s)cc-(number|csc)/.test(auto)) return { kind, auto, type, entry: { name, type: type === "password" ? "password" : "card", length: String(field.value || "").length } };
+      const value = type === "checkbox" || type === "radio" ? (field.checked ? "checked" : "unchecked")
+        : type === "select" ? Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ")
+        : typed ? String(innerTextOf(field) == null ? textOf(field) : innerTextOf(field))
+        : String(field.value == null ? "" : field.value);
+      return { kind, auto, type, entry: { name, type, value } };
+    };
+    const REGION = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="region"], [role="form"], section, article, [role="article"], main, [role="main"]';
+    const TYPED = 'input, textarea, select, [contenteditable], [role="textbox"], [role="searchbox"]';
+
     const describe = (el) => {
       const control = controlOf(el);
       const box = boxKind(control);
@@ -163,33 +223,41 @@ const PAGE_READ = String.raw`(input) => {
         submits = true;
       } else if (box === null) submits = Boolean(form) && submitter(control);
 
-      const fieldEls = form ? owned.concat(queryAll(form, "[contenteditable]").filter(editable)) : box ? [control] : [];
+      // The fields that decide what the control is: its form's, or the box
+      // itself when it is one. Every one of them is read, at full length:
+      // the approval is bound to all of it, whatever fits on the card.
+      const own = form ? owned.concat(queryAll(form, "[contenteditable]").filter(editable)) : box ? [control] : [];
       const fields = [];
       let card = false;
       let multiline = false;
       let boxes = 0;
       let searches = 0;
-      for (const field of fieldEls) {
-        const auto = attr(field, "autocomplete").toLowerCase();
-        if (/(^|\s)cc-/.test(auto)) card = true;
-        const kind = boxKind(field);
-        const fieldType = tag(field) === "TEXTAREA" ? "textarea" : tag(field) === "SELECT" ? "select" : editable(field) ? "contenteditable" : inputType(field);
-        if (!fieldType || ["hidden", "submit", "button", "image", "reset", "file"].includes(fieldType) || !shown(field)) continue;
-        if (kind) boxes += 1;
-        if (kind === "search") searches += 1;
-        if (kind === "multiline") multiline = true;
-        if (fieldType === "radio" && !field.checked) continue;
-        if (fields.length >= 30) continue;
-        const name = clip(labelOf(field) || attr(field, "id") || fieldType, 80);
-        if (fieldType === "password" || /(^|\s)cc-(number|csc)/.test(auto)) { fields.push({ name, type: fieldType === "password" ? "password" : "card", length: String(field.value || "").length }); continue; }
-        const value = fieldType === "checkbox" || fieldType === "radio" ? (field.checked ? "checked" : "unchecked")
-          : fieldType === "select" ? Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ")
-          : fieldType === "contenteditable" ? String(field.innerText == null ? textOf(field) : field.innerText)
-          : String(field.value == null ? "" : field.value);
-        fields.push(value.length > 10000 ? { name, type: fieldType, value: value.slice(0, 10000), length: value.length } : { name, type: fieldType, value });
+      for (const field of own) {
+        if (/(^|\s)cc-/.test(attr(field, "autocomplete").toLowerCase())) card = true;
+        const read = fieldOf(field);
+        if (!read) continue;
+        if (read.kind) boxes += 1;
+        if (read.kind === "search") searches += 1;
+        if (read.kind === "multiline") multiline = true;
+        if (read.type === "radio" && !field.checked) continue;
+        fields.push(read.entry);
+      }
+      if (!form) {
+        // No form says what goes with this control. What would go is what is
+        // typed around it: the filled, visible fields of the nearest dialog
+        // or region, or of the page. They are shown and bound; they never
+        // decide what the control is.
+        const region = climb(up(control), (n) => matches(n, REGION)) || document;
+        for (const field of all(region, [])) {
+          if (field === control || !matches(field, TYPED)) continue;
+          const read = fieldOf(field);
+          if (!read || !(read.kind || read.type === "select")) continue;
+          if (read.entry.value === undefined ? read.entry.length > 0 : read.entry.value.trim() !== "") fields.push(read.entry);
+        }
       }
       const search = box === "search" || Boolean(climb(control, (n) => matches(n, '[role="search"], search'))) || (boxes === 1 && searches === 1);
-      return { control, target: { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, fields } };
+      const identity = acting === control ? identify(control) : identify(control) + " " + identify(acting);
+      return { control, target: { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, fields, identity, context: contextOf(acting, form, fields.length > 0) } };
     };
 
     let picks = [];
@@ -248,23 +316,32 @@ const text = (value: unknown, max: number): string => (typeof value === "string"
 
 /** How many other elements in one box are worth judging; the page script stops at the same number. */
 const MAX_ALSO = 8;
+/** More fields than any form a person fills in. Past it the answer is not
+ * bound in part: it is not accepted at all. */
+const MAX_FIELDS = 5_000;
 
-/** The page wrote this answer, so nothing in it is trusted to be well formed. */
+/** The page wrote this answer, so nothing in it is trusted to be well
+ * formed. Null for anything that is not a whole description. */
 export function parsePageTarget(value: unknown): PageTarget | null {
   if (!value || typeof value !== "object" || (value as { found?: unknown }).found !== true) return null;
+  const target = parseTarget(value as Record<string, unknown>);
   const also = (value as { also?: unknown }).also;
-  const others = (Array.isArray(also) ? also : []).flatMap((entry) => (entry && typeof entry === "object" ? [parseTarget(entry as Record<string, unknown>)] : [])).slice(0, MAX_ALSO);
-  return { ...parseTarget(value as Record<string, unknown>), ...(others.length ? { also: others } : {}) };
+  const others = (Array.isArray(also) ? also : []).filter((entry) => entry && typeof entry === "object").slice(0, MAX_ALSO).map((entry) => parseTarget(entry as Record<string, unknown>));
+  if (!target || others.some((other) => other === null)) return null;
+  return { ...target, ...(others.length ? { also: others as PageTarget[] } : {}) };
 }
 
-function parseTarget(raw: Record<string, unknown>): PageTarget {
-  const fields = (Array.isArray(raw.fields) ? raw.fields : []).slice(0, 30).flatMap((entry): CommitField[] => {
+function parseTarget(raw: Record<string, unknown>): PageTarget | null {
+  const listed = Array.isArray(raw.fields) ? raw.fields : [];
+  if (listed.length > MAX_FIELDS) return null;
+  // Values are kept whole: the approval is bound to every character.
+  const fields = listed.flatMap((entry): CommitField[] => {
     if (!entry || typeof entry !== "object") return [];
     const field = entry as Record<string, unknown>;
     return [{
       name: text(field.name, 80),
       type: text(field.type, 40),
-      ...(typeof field.value === "string" ? { value: field.value.slice(0, 10_000) } : {}),
+      ...(typeof field.value === "string" ? { value: field.value } : {}),
       ...(typeof field.length === "number" && Number.isFinite(field.length) ? { length: field.length } : {}),
     }];
   });
@@ -277,6 +354,8 @@ function parseTarget(raw: Record<string, unknown>): PageTarget {
     card: raw.card === true,
     multiline: raw.multiline === true,
     fields,
+    identity: text(raw.identity, 4_000),
+    context: text(raw.context, 300),
   };
 }
 

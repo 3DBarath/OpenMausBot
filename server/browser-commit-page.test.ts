@@ -57,6 +57,8 @@ describe("the fixed page read", () => {
     expect(click("send")).toEqual({
       found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true,
       fields: [{ name: "Message", type: "textarea", value: "Hello there" }],
+      // The form's own fields say what it is; there is nothing around it to add.
+      identity: expect.stringMatching(/^html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/), context: "",
     });
   });
 
@@ -84,17 +86,32 @@ describe("the fixed page read", () => {
   });
 
   it("describes controls outside any form by their own label and role", () => {
-    expect(click("icon")).toMatchObject({ found: true, label: "Send message", role: "button", submits: false, fields: [] });
+    expect(click("icon")).toMatchObject({ found: true, label: "Send message", role: "button", submits: false, multiline: false, card: false, search: false });
     expect(click("share")).toMatchObject({ label: "Share", role: "link", submits: false });
     expect(click("news")).toMatchObject({ label: "Subscribe to the newsletter", role: "checkbox" });
   });
 
   it("says a click into a text box lands in a text box", () => {
     expect(click("msg")).toMatchObject({ label: "Message", role: "textbox", box: "multiline", submits: false });
-    expect(click("composer")).toMatchObject({
-      label: "Write a message", role: "textbox", box: "multiline", submits: false,
-      fields: [{ name: "Write a message", type: "contenteditable", value: "draft text" }],
-    });
+    expect(click("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, card: false, search: false });
+  });
+
+  // The test page has no dialog or region, so "around it" is the page.
+  const AROUND = [
+    { name: "Message", type: "textarea", value: "Hello there" },
+    { name: "Username", type: "text", value: "omkar" },
+    { name: "Password", type: "password", length: 14 },
+    { name: "Search", type: "search", value: "shoes" },
+    { name: "Card number", type: "card", length: 16 },
+    { name: "Expiry", type: "text", value: "12/30" },
+  ];
+
+  it("shows a box outside any form first, then every other filled field around it", () => {
+    expect(click("composer").fields).toEqual([{ name: "Write a message", type: "contenteditable", value: "draft text" }, ...AROUND]);
+  });
+
+  it("shows the filled fields around a button that has no form", () => {
+    expect(click("icon").fields).toEqual([...AROUND, { name: "Write a message", type: "contenteditable", value: "draft text" }]);
   });
 
   it("answers found: false for a box no element has", () => {
@@ -103,7 +120,7 @@ describe("the fixed page read", () => {
   });
 
   it("reads Enter in a message box as typed there", () => {
-    expect(focus("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true });
+    expect(focus("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, search: false, card: false });
     expect(focus("msg")).toMatchObject({ label: "Message", box: "multiline", submits: false });
   });
 
@@ -254,6 +271,98 @@ describe("two elements in one box", () => {
   });
 });
 
+describe("which element it is", () => {
+  const SHOP = `<ul id="list"><li id="row1">Sticker $1 <button id="b1" type="button">Buy now</button></li><li id="row2">Laptop $18,000 <button id="b2" type="button">Buy now</button></li></ul>`;
+
+  it("tells two buttons with the same label apart by where they are, and shows what is around each", () => {
+    const first = clickIn(SHOP, "b1");
+    const second = clickIn(SHOP, "b2");
+    expect(first).toMatchObject({ label: "Buy now", context: "Sticker $1 Buy now" });
+    expect(second).toMatchObject({ label: "Buy now", context: "Laptop $18,000 Buy now" });
+    expect(first.identity).toMatch(/^html:0\/body:\d+\/ul:0\/li:0\/button:0#[0-9a-f]{16}$/);
+    expect(second.identity).toMatch(/\/li:1\/button:0#[0-9a-f]{16}$/);
+  });
+
+  it("gives the same element the same identity twice, and another one once its own markup changes", () => {
+    const first = clickIn(SHOP, "b1").identity;
+    expect(run({ box: boxOf("b1"), enter: false }).identity).toBe(first);
+    (page.getElementById("b1") as unknown as { setAttribute(name: string, value: string): void }).setAttribute("formaction", "/buy-everything");
+    const changed = run({ box: boxOf("b1"), enter: false }).identity as string;
+    expect(changed.split("#")[0]).toBe(String(first).split("#")[0]);
+    expect(changed).not.toBe(first);
+  });
+
+  it("identifies both the focused field and the button Enter would press", () => {
+    const read = focus("user");
+    expect(read.identity).toMatch(/\/form:\d+\/input:\d+#[0-9a-f]{16} \S+\/form:\d+\/button:\d+#[0-9a-f]{16}$/);
+  });
+
+  it.each([
+    ["a table row", `<table><tbody><tr><td>Invoice 7</td> <td>$40</td> <td><button id="b" type="button">Pay</button></td></tr><tr><td>Invoice 8</td> <td>$900</td> <td><button type="button">Pay</button></td></tr></tbody></table>`, "Invoice 7 $40 Pay"],
+    ["an article", `<article><h2>Trip to Pune</h2> <p>Two nights</p> <button id="b" type="button">Book</button></article><article><h2>Trip to Goa</h2> <button type="button">Book</button></article>`, "Trip to Pune Two nights Book"],
+    ["a dialog", `<div role="dialog" aria-label="Confirm"><p>Delete 3 files and send the report?</p> <div><span><button id="b" type="button">Send</button></span></div></div>`, "Delete 3 files and send the report? Send"],
+    ["a card with no role, by the nearest wrapper that says more than the button", `<div class="tile"><div><b>Plan Pro</b> $89 a month</div> <div><button id="b" type="button">Subscribe</button></div></div>`, "Plan Pro $89 a month Subscribe"],
+  ])("takes the context from %s", (_what, html, context) => {
+    expect(clickIn(html, "b").context).toBe(context);
+  });
+
+  it("gives no context when the nearest text is a whole page, and bounds what it gives", () => {
+    expect(clickIn(`<main><p>${"All the news of the day. ".repeat(60)}</p><button id="b" type="button">Share</button></main>`, "b").context).toBe("");
+    const long = clickIn(`<div role="dialog"><p>${"Terms and conditions apply. ".repeat(60)}</p><button id="b" type="button">Send</button></div>`, "b").context as string;
+    expect(long).toHaveLength(300);
+    expect(long.startsWith("Terms and conditions apply.")).toBe(true);
+  });
+});
+
+describe("a button with no form around it", () => {
+  const DM = `<nav><input id="find" type="search" aria-label="Search" value="invoices"></nav>
+    <div id="dialog" role="dialog" aria-label="New message"><input id="to" aria-label="To" value="ada@example.com"><input id="cc" aria-label="Cc" value="">
+      <input id="secret" type="hidden" value="token"><input id="gone" aria-label="Old" value="stale" style="display:none">
+      <div id="body" contenteditable="true" role="textbox" aria-label="Message body">Lunch at one?</div><div id="send" role="button" tabindex="0">Send</div></div>`;
+
+  it("collects the filled, visible fields of the dialog it is in, and nothing outside it", () => {
+    const read = clickIn(DM, "send");
+    expect(read).toMatchObject({ label: "Send", role: "button", submits: false, multiline: false, card: false, search: false });
+    expect(read.fields).toEqual([
+      { name: "To", type: "text", value: "ada@example.com" },
+      { name: "Message body", type: "contenteditable", value: "Lunch at one?" },
+    ]);
+  });
+
+  it("falls back to the whole page when there is no dialog or region", () => {
+    const read = clickIn(DM.replace('role="dialog"', ""), "send");
+    expect(read.fields).toEqual([
+      { name: "Search", type: "search", value: "invoices" },
+      { name: "To", type: "text", value: "ada@example.com" },
+      { name: "Message body", type: "contenteditable", value: "Lunch at one?" },
+    ]);
+    // What is around a button never decides what the button is.
+    expect(read).toMatchObject({ submits: false, multiline: false, search: false });
+  });
+
+  it("does the same for Enter in a box there, with the box itself first", () => {
+    page.body.innerHTML = DM;
+    page.getElementById("body")!.focus();
+    expect(run({ box: null, enter: true }).fields).toEqual([
+      { name: "Message body", type: "contenteditable", value: "Lunch at one?" },
+      { name: "To", type: "text", value: "ada@example.com" },
+    ]);
+  });
+});
+
+describe("a long form", () => {
+  const LONG = `<form id="long">${Array.from({ length: 35 }, (_, index) => `<input id="f${index + 1}" aria-label="Field ${index + 1}" value="value ${index + 1}">`).join("")}
+    <textarea id="essay" aria-label="Essay">${"long ".repeat(4_000)}</textarea><button id="send">Send</button></form>`;
+
+  it("reads every field, each at full length", () => {
+    const fields = clickIn(LONG, "send").fields as Array<{ name: string; value: string }>;
+    expect(fields).toHaveLength(36);
+    expect(fields[32]).toEqual({ name: "Field 33", type: "text", value: "value 33" });
+    expect(fields[35]!.value).toHaveLength(20_000);
+    expect(fields[35]).not.toHaveProperty("length");
+  });
+});
+
 describe("the script as an engine argument", () => {
   // It is base64 on the engine's command line. Windows refuses a command
   // line over 32,767 characters, and a refused read refuses every click.
@@ -270,8 +379,21 @@ describe("parsePageTarget", () => {
     expect(parsePageTarget("found")).toBeNull();
     expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", fields: [{ name: "n", type: "text", value: "v", length: "3" }, null, "x"] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      fields: [{ name: "n", type: "text", value: "v" }],
+      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "",
     });
+  });
+
+  it("keeps every field and every character of a value: the approval is bound to all of it", () => {
+    const fields = Array.from({ length: 400 }, (_, index) => ({ name: `Field ${index}`, type: "text", value: index === 399 ? "x".repeat(250_000) : `value ${index}` }));
+    const parsed = parsePageTarget({ found: true, label: "Send", role: "button", fields, identity: "html:0/body:1/button:0#0123456789abcdef", context: "Laptop $18,000 Buy now" })!;
+    expect(parsed.fields).toHaveLength(400);
+    expect(parsed.fields[399]!.value).toHaveLength(250_000);
+    expect(parsed).toMatchObject({ identity: "html:0/body:1/button:0#0123456789abcdef", context: "Laptop $18,000 Buy now" });
+  });
+
+  it("refuses an answer with more fields than it will bind, rather than bind some of them", () => {
+    const fields = Array.from({ length: 5_001 }, (_, index) => ({ name: `Field ${index}`, type: "text", value: "v" }));
+    expect(parsePageTarget({ found: true, label: "Send", role: "button", fields })).toBeNull();
   });
 });
 

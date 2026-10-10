@@ -133,7 +133,9 @@ recording controls are intentionally not added to the live browser chrome.
   selector, then one fixed script that describes the element in that box
   and its form, then `get url`. Rules in `shared/browser-commit.ts` decide.
   A commitment waits on the card and counter that connected-app sends use;
-  the approval is bound to a digest of address, target and fields. A reload
+  the approval is bound to a digest of the address, the element's identity
+  (its path in the document and a hash of its markup), the text around it
+  and every field at full length. A reload
   after a commitment is held the same way. The gate's header comment lists
   every browser tool and why it can or cannot commit. User-facing behaviour
   is in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).

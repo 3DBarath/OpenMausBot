@@ -189,15 +189,26 @@ refused when it has none.
 
 ### What the card shows
 
-The site, the button's label, and the form's visible fields as they are right
-now. A password or a card number is never read: the card says only how long
+The site, the button's label, the text of the row, list item, card or dialog
+the button is in (so you can tell which "Buy now" it is), and the form's
+visible fields as they are right now. On a page with no form, the filled
+fields of the dialog or region around the button stand in for the form's, or
+those of the whole page when there is no such region. The card shows the
+first twelve fields and the first 200 characters of each. It says when a
+value was shortened, with its full length, and how many fields it left out.
+A password or a card number is never read: the card says only how long
 it is. Text that looks like a credential is masked. While the card is open it
 also shows a screenshot the server takes itself; the picture is removed once
 the card is answered.
 
-**An approval covers what you were shown, nothing else.** If the address, the
-button or any field changed by the time you answer, nothing is clicked, the
-card says the page changed, and a new card is raised for the page as it is.
+**An approval covers what you were shown, and everything that goes with it.**
+It is bound to the address, to the element itself (where it sits in the page
+and its own markup), to the text around it, and to every field at full
+length, including the fields and the text the card had no room for. When you
+answer, the bot's selector is resolved again. If it now points at another
+element, or any of the rest changed, nothing is clicked, the card says the
+page changed, and a new card is raised for the page as it is. If the bot's
+request has gone away by then, nothing is clicked either.
 
 The bot's call waits up to nine minutes, the same as a connected-app send, or
 up to the configured MCP call timeout when that is shorter. Then the card
@@ -233,6 +244,8 @@ wall**: a script written to hide what it does gets past a check of its text.
   judged by its label alone and the card shows no fields; Enter there is not
   checked.
 - A one-line box outside any form that sends on Enter is not recognised.
+- A page whose text around the button keeps changing by itself (a countdown
+  in the same row) voids every approval: each Allow raises a new card.
 - A list or checkbox that submits its form from a listener added in script
   (`addEventListener`), not from a handler written on the element, is not
   recognised. Neither is a field that submits as it is filled.

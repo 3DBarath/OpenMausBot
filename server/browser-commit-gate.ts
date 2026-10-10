@@ -147,8 +147,13 @@ interface Sighting {
   host: string;
   /** What the card calls the action. */
   label: string;
-  /** Fields as the card and the log show them: redacted and bounded. */
+  /** The visible text around the element, redacted: which one it is. */
+  context: string;
+  /** The fields the card and the log show: the first of them, redacted and
+   * shortened. The digest covers every field at full length. */
   shown: CommitField[];
+  /** How many fields the card does not show. */
+  more: number;
   digest: string;
   /** The server may take its own picture of the page for the card. */
   picture: boolean;
@@ -171,6 +176,7 @@ interface Sent {
   class: CommitClass;
   label: string;
   shown: CommitField[];
+  more: number;
   /** The bot has opened another address since, so a reload repeats nothing. */
   movedOn: boolean;
 }
@@ -245,14 +251,54 @@ const failed = (result: unknown): boolean => (result as { isError?: unknown } | 
 
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
 
-/** A field as a person reads it on the card and as the log keeps it. */
+/** How much of a value the card shows, how many fields, and how long the
+ * whole subtitle may be. The approval itself is bound to everything. */
+const SHOWN_VALUE = 200;
+const SHOWN_FIELDS = 12;
+const SUBTITLE_MAX = 1_500;
+
+/** A field as a person reads it on the card and as the log keeps it:
+ * credentials masked, line breaks flattened, a long value shortened with
+ * its full length beside it. */
 function shownField(field: CommitField): CommitField {
   if (field.value === undefined) return { name: field.name, type: field.type, length: field.length ?? 0 };
-  return { name: field.name, type: field.type, value: clip(redactSecretsInText(field.value.replace(/\s+/g, " ").trim()), 200) };
+  const flat = redactSecretsInText(field.value.replace(/\s+/g, " ").trim());
+  return flat.length > SHOWN_VALUE
+    ? { name: field.name, type: field.type, value: `${flat.slice(0, SHOWN_VALUE)}…`, length: field.value.length }
+    : { name: field.name, type: field.type, value: flat };
 }
 
 function fieldLine(field: CommitField): string {
-  return field.value === undefined ? `${field.name}: ${field.length ?? 0} characters, not shown` : `${field.name}: ${field.value}`;
+  if (field.value === undefined) return `${field.name}: ${field.length ?? 0} characters, not shown`;
+  return field.length === undefined ? `${field.name}: ${field.value}` : `${field.name}: ${field.value} (${field.length.toLocaleString("en-US")} characters in all)`;
+}
+
+const moreLine = (more: number): string => `and ${more.toLocaleString("en-US")} more field${more === 1 ? "" : "s"}, not shown here`;
+
+/** The card's plain text: host and label first, the way every send card's
+ * subtitle starts, then where the element is, then the fields, then how
+ * many fields are left out. Enough to decide on for a client that knows
+ * nothing else. */
+function subtitle(seen: Pick<Sighting, "host" | "label" | "context" | "shown" | "more">): string {
+  return [
+    `${seen.host} · ${seen.label}`,
+    ...(seen.context ? [`Where: ${seen.context}`] : []),
+    ...seen.shown.map(fieldLine),
+    ...(seen.more ? [moreLine(seen.more)] : []),
+  ].join("\n");
+}
+
+/** As many of the fields as the card has room for, from the first. What
+ * does not fit is counted, so the card can say so, and is never cut off
+ * mid-line: the last line always says how many are missing. */
+function fit(seen: Pick<Sighting, "host" | "label" | "context">, fields: CommitField[], unseen = 0): { shown: CommitField[]; more: number } {
+  const shown: CommitField[] = [];
+  for (const field of fields) {
+    const more = fields.length - shown.length - 1 + unseen;
+    if (shown.length >= SHOWN_FIELDS || subtitle({ ...seen, shown: [...shown, field], more: Math.max(more, 1) }).length > SUBTITLE_MAX) break;
+    shown.push(field);
+  }
+  return { shown, more: fields.length - shown.length + unseen };
 }
 
 export class BrowserCommitGate {
@@ -291,6 +337,7 @@ export class BrowserCommitGate {
     // Money always asks. A send spends from the bot's daily allowance when it
     // has one, and asks once that is used up.
     if (seen.class === "send" && policy.policy === "allow") {
+      if (this.gone(call)) return refusal(UNANSWERED);
       let reserved: number | null;
       try { reserved = this.deps.counts.reserve(call.botId, 1, policy.dailyCap); }
       catch { return refusal(NOT_SAVED); }
@@ -362,6 +409,15 @@ export class BrowserCommitGate {
       }
       const now = await this.look(call, intent).catch(() => "unreadable" as const);
       if (now && typeof now !== "string" && now.digest === seen.digest) {
+        // The answer was Allow, but the bot's request may have closed while
+        // the person had the browser or the page was read again. Then
+        // nobody is waiting for this click, and it is not made.
+        if (this.gone(call)) {
+          release();
+          settle(() => ({ answered: "unavailable", dismissed: true }));
+          close("gone");
+          return refusal(UNANSWERED);
+        }
         settle();
         release();
         this.remember(call.session, seen);
@@ -398,13 +454,18 @@ export class BrowserCommitGate {
     return result;
   }
 
+  /** The bot's call is no longer waiting: its request closed or its turn ended. */
+  private gone(call: CommitCall): boolean {
+    return call.signal.aborted || !call.active();
+  }
+
   /** A commitment is about to be sent: a reload in this browser can repeat
    * it. Money stays the class once money was spent here. */
   private remember(session: string, seen: Sighting): void {
     if (seen.repeat) return;
     const before = this.sent.get(session);
     this.sentCount += 1;
-    this.sent.set(session, { id: this.sentCount, class: before?.class === "money" ? "money" : seen.class, label: seen.label, shown: seen.shown, movedOn: false });
+    this.sent.set(session, { id: this.sentCount, class: before?.class === "money" ? "money" : seen.class, label: seen.label, shown: seen.shown, more: seen.more, movedOn: false });
   }
 
   /** What the call would act on right now. Null when it is no commitment
@@ -417,8 +478,9 @@ export class BrowserCommitGate {
       if (!sent || sent.movedOn) return null;
       const { address, host } = place(await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read"));
       const digest = createHash("sha256").update(JSON.stringify([address, "reload", sent.id])).digest("hex");
+      const head = { host, label: `Reload, which can repeat “${clip(sent.label, 80)}”`, context: "" };
       // No picture: the page a form posted to was never read for secrets.
-      return { class: sent.class, host, label: `Reload, which can repeat “${clip(sent.label, 80)}”`, shown: sent.shown, digest, picture: false, repeat: true };
+      return { class: sent.class, ...head, ...fit(head, sent.shown, sent.more), digest, picture: false, repeat: true };
     }
     const [found, url] = await this.deps.runtime.withAgentAction(
       call.session,
@@ -430,7 +492,7 @@ export class BrowserCommitGate {
     if (found === "unreadable" || found === "unusable") return found;
     const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
     const known = ref ? this.deps.runtime.ref(call.session, ref) : undefined;
-    let targets: Array<CommitTarget & { fields: CommitField[] }>;
+    let targets: Array<CommitTarget & Pick<PageTarget, "fields" | "identity" | "context">>;
     if (found === "hidden") {
       // The engine found an element the page read cannot describe: it is
       // inside a frame, or it has no area. The snapshot's own name for the
@@ -438,12 +500,13 @@ export class BrowserCommitGate {
       // Enter, nothing is.
       if (!known || intent.via !== "click") return "undescribed";
       const box = known.role === "searchbox" ? "search" : known.role === "textbox" ? "single" : null;
-      targets = [{ via: "click", label: known.name, role: known.role, box, submits: false, search: box === "search", card: false, multiline: false, fields: [] }];
+      targets = [{ via: "click", label: known.name, role: known.role, box, submits: false, search: box === "search", card: false, multiline: false, fields: [], identity: "", context: "" }];
     } else {
       // More than one element can share the box. Each is judged.
       targets = [found, ...(found.also ?? [])].map((target: PageTarget) => ({
         via: intent.via as "click" | "enter", shift: intent.shift, label: target.label, role: target.role, box: target.box,
-        submits: target.submits, search: target.search, card: target.card, multiline: target.multiline, fields: target.fields,
+        submits: target.submits, search: target.search, card: target.card, multiline: target.multiline,
+        fields: target.fields, identity: target.identity, context: target.context,
       }));
     }
     // The snapshot's name is the browser's own; the page read's is ours. A
@@ -462,17 +525,19 @@ export class BrowserCommitGate {
     const label = intent.via === "enter" && target.box === "multiline" && !target.submits ? `Enter in ${named}` : named;
 
     const { address, host } = place(url);
+    // What the approval is bound to: the address, which element it is and
+    // what is around it, and every field at full length, for every element
+    // the call might act on. The card shows less; this is all of it.
     const digest = createHash("sha256").update(JSON.stringify([
       address, intent.via, known?.name ?? null,
-      targets.map((each) => [each.label, each.role, each.fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null])]),
+      targets.map((each) => [each.label, each.role, each.identity, each.context, each.fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null])]),
     ])).digest("hex");
-    return { class: pick.kind, host, label: clip(label, 120), shown: target.fields.map(shownField), digest, picture: true };
+    const head = { host, label: clip(label, 120), context: redactSecretsInText(target.context) };
+    return { class: pick.kind, ...head, ...fit(head, target.fields.map(shownField)), digest, picture: true };
   }
 
-  /** Host and label first, the way every send card's subtitle starts, then
-   * the fields: enough to decide on for a client that knows nothing else. */
   private summary(seen: Sighting): string {
-    return clip([`${seen.host} · ${seen.label}`, ...seen.shown.map(fieldLine)].join("\n"), 1_500);
+    return clip(subtitle(seen), SUBTITLE_MAX);
   }
 
   private card(seen: Sighting, tool: string, requestId: string, shot: string | undefined): OptionCardData {
@@ -488,7 +553,13 @@ export class BrowserCommitGate {
       // The marker every send card carries, so every rule written for sends
       // applies to a browser hold unchanged.
       outboundRequest: { tool, app: seen.host, calls: [{ app: seen.host, label: seen.label }] },
-      browserCommit: { class: seen.class, host: seen.host, label: seen.label, fields: seen.shown, ...(shot ? { shot } : {}) },
+      browserCommit: {
+        class: seen.class, host: seen.host, label: seen.label,
+        ...(seen.context ? { context: seen.context } : {}),
+        fields: seen.shown,
+        ...(seen.more ? { more: seen.more } : {}),
+        ...(shot ? { shot } : {}),
+      },
     };
   }
 

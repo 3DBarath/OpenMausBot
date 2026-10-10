@@ -35,6 +35,8 @@ export interface CommitField {
   name: string;
   type: string;
   value?: string;
+  /** With no value: how long the hidden value is. Beside a value on a card:
+   * the value was shortened, and this is its full length. */
   length?: number;
 }
 
@@ -145,7 +147,12 @@ export interface BrowserCommitCard {
   class: CommitClass;
   host: string;
   label: string;
+  /** The visible text of the row, list item, card or dialog the element is in. */
+  context?: string;
+  /** The first fields, each value shortened to fit. */
   fields: CommitField[];
+  /** How many more fields the approval covers than `fields` shows. */
+  more?: number;
   /** The server's own screenshot, as an attachment path, while the card is open. */
   shot?: string;
   /** The page changed after the answer, so the approval was not used. */

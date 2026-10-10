@@ -70,8 +70,8 @@ const CASE_PAGES: Record<string, string> = {
     <button id="swap" type="button">Swap the draft in a moment</button>
     <script>document.getElementById("send").addEventListener("click", () => window.note("sent:" + document.getElementById("to").value + ":" + document.getElementById("body").textContent));
     document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("to").value = "mallory@example.com"; document.getElementById("body").textContent = "Wire the money"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
-  "/long-form": doc("Long form", `<form id="long">${Array.from({ length: 35 }, (_, index) => `<input id="f${index + 1}" aria-label="Field ${index + 1}" value="value ${index + 1}">`).join("")}
-    <textarea aria-label="Essay">${"long ".repeat(600)}</textarea><button>Send</button></form><button id="edit" type="button">Edit field 33 in a moment</button>
+  "/long-form": doc("Long form", `<form id="long"><textarea aria-label="Essay">${"long ".repeat(600)}</textarea>
+    ${Array.from({ length: 35 }, (_, index) => `<input id="f${index + 1}" aria-label="Field ${index + 1}" value="value ${index + 1}">`).join("")}<button>Send</button></form><button id="edit" type="button">Edit field 33 in a moment</button>
     <script>document.getElementById("edit").addEventListener("click", () => setTimeout(() => { document.getElementById("f33").value = "CHANGED"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
   "/secrets": doc("Secrets", `<form id="checkout"><input name="cardnumber" aria-label="Number" value="4242424242424242"><input id="cvc" placeholder="CVC" value="9173">
     <input aria-label="Code from your phone" autocomplete="one-time-code" value="246810"><input type="text" id="password" aria-label="Sign-in secret" value="correct-horse-battery">
@@ -264,6 +264,31 @@ try {
     assert.equal((await cards()).length, open, `${name} raised a card`);
   };
   const focus = (id: string) => tool("agent_browser_eval", { script: `document.getElementById(${JSON.stringify(id)}).focus()` });
+  const changed = async () => {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if ((await tool("agent_browser_get_text", { selector: "#state" })).text.includes("changed")) return;
+      await sleep(100);
+    }
+    throw new Error("the page never made its change");
+  };
+  /** Allow a card whose page changed underneath: the approval must be void and a new card raised. */
+  const voided = async (first: { card: any; result: Promise<Result> }) => {
+    const known = new Set((await cards()).map((row) => row.card.requestId));
+    let done: Result | undefined;
+    void first.result.then((value) => (done = value));
+    await respond(first.card, "allow");
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      const next = (await cards()).find((row) => !row.card.answered && !known.has(row.card.requestId))?.card;
+      if (next) {
+        assert.equal((await cards()).find((row) => row.card.requestId === first.card.requestId).card.browserCommit.pageChanged, true);
+        return next;
+      }
+      if (done) throw new Error(`the approval was used although the page had changed (page log: ${JSON.stringify(await log())}; result: ${done.text.replace(/\s+/g, " ").slice(0, 120)})`);
+      await sleep(100);
+    }
+    throw new Error("no second card appeared");
+  };
+
   const cases: Array<{ id: string; title: string; run(): Promise<Record<string, unknown> | void> }> = [
     // ── A: a send or a payment with no card ──
     { id: "A1", title: "Enter on a checkbox, radio, select or range submits its form", run: async () => {
@@ -294,6 +319,8 @@ try {
       const paying = await ask("agent_browser_click", { selector: refIn(page, 'button "Pay"') });
       await respond(paying.card, "allow");
       assert.equal((await paying.result).isError, false);
+      // The click returns before the form's POST has reached the site.
+      for (let attempt = 0; attempt < 50 && paid === before; attempt += 1) await sleep(100);
       assert.equal(paid, before + 1);
       const again = await ask("agent_browser_reload");
       assert.equal(again.card.title, "Spend money?");
@@ -301,6 +328,7 @@ try {
       assert.match(again.card.subtitle, /Pay/);
       await respond(again.card, "deny");
       await again.result;
+      await sleep(500);
       assert.equal(paid, before + 1, "the payment was repeated");
       await visit("/elsewhere");
       await passes("agent_browser_reload");
@@ -308,6 +336,7 @@ try {
       const back = await ask("agent_browser_reload");
       await respond(back.card, "deny");
       await back.result;
+      await sleep(500);
       assert.equal(paid, before + 1, "the payment was repeated after going back");
       return { paid: paid - before };
     } },
@@ -341,6 +370,52 @@ try {
       await visit("/clobbered");
       const card = await heldThenDenied("agent_browser_click", { selector: "#go" }, { title: "Send on your behalf?", label: /^Go$/ });
       assert.match(card.subtitle, /Feedback: Great/);
+    } },
+    // ── B: an approval that covers more than was shown ──
+    { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {
+      const page = await visit("/shop");
+      await passes("agent_browser_click", { selector: "#resort" });
+      const first = await ask("agent_browser_click", { selector: refIn(page, 'button "Buy now"') });
+      const shown = String(first.card.subtitle);
+      await changed();
+      assert.equal((await tool("agent_browser_snapshot")).isError, false);
+      const second = await voided(first);
+      await respond(second, "deny");
+      await first.result;
+      assert.equal(await log(), "");
+      assert.match(shown, /Sticker \$1/, "the card did not say which item");
+      assert.match(second.subtitle, /Laptop \$18,000/);
+      return { first: shown, second: second.subtitle };
+    } },
+    { id: "B10", title: "with no form, the fields around the button are shown and bound", run: async () => {
+      const page = await visit("/dm");
+      await passes("agent_browser_click", { selector: "#swap" });
+      const first = await ask("agent_browser_click", { selector: refIn(page, 'button "Send"') });
+      const shown = String(first.card.subtitle);
+      await changed();
+      const second = await voided(first);
+      await respond(second, "deny");
+      await first.result;
+      assert.equal(await log(), "");
+      assert.match(shown, /To: ada@example\.com/);
+      assert.match(shown, /Message body: Lunch at one\?/);
+      assert.match(second.subtitle, /To: mallory@example\.com/);
+      return { first: shown, second: second.subtitle };
+    } },
+    { id: "B11", title: "every field is bound at full length; the card says what it left out", run: async () => {
+      const page = await visit("/long-form");
+      await passes("agent_browser_click", { selector: "#edit" });
+      const first = await ask("agent_browser_click", { selector: refIn(page, 'button "Send"') });
+      const shown = String(first.card.subtitle);
+      await changed();
+      const second = await voided(first);
+      await respond(second, "deny");
+      await first.result;
+      assert.equal(await log(), "");
+      assert.match(shown, /\nand 24 more fields, not shown here$/);
+      assert.match(shown, /… \(3,000 characters in all\)\n/);
+      assert.ok(!shown.includes("Field 33"), "field 33 was meant to be off the card");
+      return { first: shown };
     } },
   ];
   // OMB_VERIFY_CASES=A4,B9 runs only those cases.

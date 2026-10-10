@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 const element = (extra: Partial<PageTarget> = {}): PageTarget => ({
-  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], ...extra,
+  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", ...extra,
 });
 const SEND = element({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = element({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -48,6 +48,8 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     policy: options.policy as OutboundPolicy | undefined,
     active: true,
     reads: [] as Array<{ selector: string | null; enter: boolean }>,
+    /** Runs as each read of the page starts, with how many there have been. */
+    onRead: undefined as ((count: number) => void) | undefined,
     dispatched: [] as unknown[],
     /** What the engine answers, when not the usual result. */
     result: undefined as unknown,
@@ -72,7 +74,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     botId: "bot-1", botName: "Pepper", threadId: "thread-1", session: "s", params,
     page: {
       url: async () => state.url,
-      target: async (selector, enter) => { state.reads.push({ selector, enter }); return state.target; },
+      target: async (selector, enter) => { state.reads.push({ selector, enter }); state.onRead?.(state.reads.length); return state.target; },
     },
     shot: async () => "/data/attachments/shot.jpg",
     admit: () => {},
@@ -340,6 +342,158 @@ describe("the answer", () => {
     expect(f.state.dispatched).toEqual([]);
     expect(f.cards.size).toBe(1);
     expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+});
+
+describe("what an approval is bound to", () => {
+  const BUY = element({ label: "Buy now", identity: "html:0/body:1/ul:0/li:0/button:0#aaaaaaaaaaaaaaaa", context: "Sticker $1 Buy now" });
+
+  // A snapshot taken while the card is open can give the same ref to
+  // another element (measured: "Buy now" on a $1 item, then on an $18,000 one).
+  it("is void when the selector now resolves to another element with the same label", async () => {
+    const f = fixture();
+    f.state.target = BUY;
+    f.state.url = "https://shop.example.com/cart";
+    const held = f.call(click("@e1"));
+    const first = await f.pending();
+    expect(first).toMatchObject({ title: "Spend money?", subtitle: "shop.example.com · Buy now\nWhere: Sticker $1 Buy now", browserCommit: { context: "Sticker $1 Buy now" } });
+    f.state.target = { ...BUY, identity: "html:0/body:1/ul:0/li:1/button:0#aaaaaaaaaaaaaaaa", context: "Laptop $18,000 Buy now" };
+    await f.answer("allow");
+    const second = await f.pending();
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(second.subtitle).toBe("shop.example.com · Buy now\nWhere: Laptop $18,000 Buy now");
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", browserCommit: { pageChanged: true } });
+    await f.answer("deny");
+    await held;
+  });
+
+  it.each([
+    ["the element's own markup", { identity: "html:0/body:1/ul:0/li:0/button:0#bbbbbbbbbbbbbbbb" }],
+    ["the text around it", { context: "Sticker $1,000 Buy now" }],
+  ])("is void when %s changed", async (_what, change) => {
+    const f = fixture();
+    f.state.target = BUY;
+    const held = f.call(click("#buy"));
+    const first = await f.pending();
+    f.state.target = { ...BUY, ...change };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("masks a credential in the text around the button, on the card and in the log", async () => {
+    const f = fixture();
+    f.state.target = { ...BUY, context: "Use token=abcd1234efgh5678 to finish Buy now" };
+    const held = f.call(click("#buy"));
+    const card = await f.pending();
+    expect(card.subtitle).toContain("Where: Use token=«redacted 16 chars» to finish Buy now");
+    expect(JSON.stringify([card, f.rows])).not.toContain("abcd1234efgh5678");
+    await f.answer("deny");
+    await held;
+  });
+
+  const many = (count: number) => Array.from({ length: count }, (_, index) => ({ name: `Field ${index + 1}`, type: "text", value: `value ${index + 1}` }));
+
+  it("covers every field, and the card says how many it does not show", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, fields: many(35) };
+    const held = f.call(click());
+    const first = await f.pending();
+    expect(first.browserCommit!.fields).toHaveLength(12);
+    expect(first.browserCommit).toMatchObject({ more: 23 });
+    expect(first.subtitle.split("\n").at(-1)).toBe("and 23 more fields, not shown here");
+    expect(first.subtitle.split("\n")).toHaveLength(14);
+    // The 33rd field is not on the card. It is in the approval all the same.
+    f.state.target = { ...SEND, fields: many(35).map((field, index) => (index === 32 ? { ...field, value: "changed" } : field)) };
+    await f.answer("allow");
+    const second = await f.pending();
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(f.state.dispatched).toEqual([]);
+    await f.answer("deny");
+    await held;
+  });
+
+  it("says one more field in the singular, and nothing when all are shown", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, fields: many(13) };
+    const held = f.call(click());
+    expect((await f.pending()).subtitle.split("\n").at(-1)).toBe("and 1 more field, not shown here");
+    await f.answer("deny");
+    await held;
+    f.state.target = { ...SEND, fields: many(12) };
+    const all = f.call(click());
+    const card = await f.pending();
+    expect(card.subtitle).not.toContain("more field");
+    expect(card.browserCommit).not.toHaveProperty("more");
+    await f.answer("deny");
+    await all;
+  });
+
+  it("covers a long value to its last character, and the card says it was shortened", async () => {
+    const f = fixture();
+    const essay = "long ".repeat(600);
+    f.state.target = { ...SEND, fields: [{ name: "Essay", type: "textarea", value: essay }] };
+    const held = f.call(click());
+    const first = await f.pending();
+    expect(first.browserCommit!.fields).toEqual([{ name: "Essay", type: "textarea", value: `${essay.trim().slice(0, 200)}…`, length: 3_000 }]);
+    expect(first.subtitle.split("\n")[1]).toBe(`Essay: ${essay.trim().slice(0, 200)}… (3,000 characters in all)`);
+    f.state.target = { ...SEND, fields: [{ name: "Essay", type: "textarea", value: `${essay.slice(0, 2_990)}WIRE $9,000` }] };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    expect(f.state.dispatched).toEqual([]);
+    await f.answer("deny");
+    await held;
+  });
+
+  it("keeps the whole subtitle inside its limit by showing fewer fields, never by cutting the count off", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, fields: Array.from({ length: 12 }, (_, index) => ({ name: `Paragraph ${index + 1}`, type: "textarea", value: "wordy ".repeat(100) })) };
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(card.subtitle.length).toBeLessThanOrEqual(1_500);
+    const shown = card.browserCommit!.fields.length;
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(12);
+    expect(card.subtitle.split("\n").at(-1)).toBe(`and ${12 - shown} more fields, not shown here`);
+    expect(card.browserCommit).toMatchObject({ more: 12 - shown });
+    await f.answer("deny");
+    await held;
+  });
+});
+
+describe("the bot's request closes after the answer", () => {
+  it.each([
+    ["its request closed", (f: ReturnType<typeof fixture>) => { f.abort.abort(); }],
+    ["its turn ended", (f: ReturnType<typeof fixture>) => { f.state.active = false; }],
+  ])("clicks nothing when %s while the approved page was read again, and closes the card", async (_what, end) => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    // The second read is the check after Allow: the request goes away during it.
+    f.state.onRead = (count) => { if (count === 2) end(f); };
+    await f.answer("allow");
+    expect(text(await held)).toMatch(/nobody answered the approval in time/);
+    expect(f.state.reads).toHaveLength(2);
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect(f.rows.at(-1)).toMatchObject({ decision: "auto-denied", rule: "browser-commit:send:gone" });
+    expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+
+  it("clicks nothing when it closed while the person still had the browser", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    await f.runtime.take("s", "person");
+    await f.answer("allow");
+    f.abort.abort();
+    f.runtime.release("s", "person");
+    expect(text(await held)).toMatch(/nobody answered the approval in time/);
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
   });
 });
 
@@ -789,6 +943,8 @@ describe("what is shown and kept", () => {
     expect(card.subtitle).toContain("Password: 14 characters, not shown");
     expect(card.subtitle.split("\n")).toHaveLength(4);
     expect(card.browserCommit!.fields[1]!.value).toHaveLength(201);
+    expect(card.browserCommit!.fields[1]!.length).toBe(900);
+    expect(card.subtitle).toContain("… (900 characters in all)");
     expect(JSON.stringify(f.rows)).not.toContain("abcd1234efgh5678");
     await f.answer("deny");
     await held;
