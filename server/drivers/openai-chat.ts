@@ -11,6 +11,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQuestions, questionChoices } from "../../shared/ask-question.ts";
 import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
+import { localAddress } from "../local-address.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
@@ -982,10 +983,13 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;
     },
-    // The helper is one request made from this process: there is no engine
-    // program, so no session or history of the text is written on this
-    // computer. (What the provider does with a request is the provider's.)
-    textRecord: async () => "none",
+    // The helper is one request made from this process: this app's call
+    // writes no session or history of the text on this computer, and what a
+    // hosted provider does with a request is the provider's. An address on
+    // this computer or its network is different: that is a model server, a
+    // program that may log what it is sent, and whether it does is not
+    // known here.
+    textRecord: async () => (localAddress(options.apiUrl) ? "unknown" : "none"),
     dispose: async () => {
       const turns = [...active.values()];
       for (const turn of turns) turn.abort.abort();

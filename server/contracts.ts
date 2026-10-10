@@ -547,8 +547,10 @@ export interface TextGenerationOptions {
 /** What an engine keeps, for itself, of the text of a text call made with
  * `isolated` (TextGenerationOptions): "none" when it keeps no record of its
  * own (no session, no history), "kept" when it is known to keep one,
- * "unknown" when it cannot be told. This is about the engine on this
- * computer; what the provider behind it does with what it is sent is that
+ * "unknown" when it cannot be told. This is about what is written on this
+ * computer and its own network: an engine program's session files, or a
+ * model server the person runs, which may log what it is sent and so is
+ * "unknown". What a hosted provider does with what it is sent is that
  * provider's own and is answered by no engine. */
 export type TextRecord = "none" | "kept" | "unknown";
 

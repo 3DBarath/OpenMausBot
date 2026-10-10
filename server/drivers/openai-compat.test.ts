@@ -1064,3 +1064,27 @@ it("openai-compat preserves an explicit tools-off connection and rejects ambiguo
   expect(OpenAICompatDriver.decodeConfig({ tools: true })).toMatchObject({ tools: true });
   expect(() => OpenAICompatDriver.decodeConfig({ tools: "false" })).toThrow("tools must be a boolean");
 });
+
+// What an import is told about the text it sends (ProviderInstance.textRecord,
+// docs/memory.md): a hosted provider gets one request from this app, which
+// writes nothing here. A model server on this computer or its network is a
+// program of the person's own that may log what it is sent, and that cannot
+// be known from here.
+it("openai-compat says a hosted provider keeps no record here, and does not say so of a model server on this computer or network", async () => {
+  const record = async (url: string) => {
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "text-record", displayName: "Engine", enabled: true,
+      config: OpenAICompatDriver.decodeConfig({ url, apiKeyEnv: "OMB_TEXT_RECORD_KEY" }), environment: {},
+    });
+    try {
+      return await inst.textRecord?.();
+    } finally {
+      await inst.dispose();
+    }
+  };
+  expect(await record("https://openrouter.ai/api/v1")).toBe("none");
+  expect(await record("https://api.openai.com/v1")).toBe("none");
+  for (const url of ["http://127.0.0.1:11434/v1", "http://localhost:1234/v1", "http://192.168.1.20:8000/v1", "http://studio.local:8080/v1", "http://[::1]:8080/v1"]) {
+    expect(await record(url), url).toBe("unknown");
+  }
+});
