@@ -324,8 +324,32 @@ only the note's name or an alias matched, its first entries.
     a guest opened or wrote in.
 - **Conversations from before this version.** Nothing recorded whose lines
   they were, so a conversation that already had messages when this version
-  first started recalls no shared note. A new conversation does. About me is
-  not affected: every bot reads it on every message, as before.
+  first started recalls no shared note by itself. A new conversation does,
+  and About me is not affected. To have your notes used in the older ones,
+  press **Use my notes in my existing conversations**, on the last page of an
+  import or beside the Imported notes list. That is you saying you wrote the
+  messages in them, so use it only if nobody else has written in them. Only
+  the owner can press it (`POST /api/shared-notes/adopt` is refused to
+  everyone else, and in the desktop app needs the app's own capability), and
+  nothing is ever adopted without that click. It adopts every one-to-one
+  conversation except one that holds: a message relayed from another service;
+  a message from a device that is not one of yours with full access; a card
+  that was answered from a signed-in device or by a local service; or a
+  message or answer written since this version that was not proven yours. It
+  also leaves rooms, and conversations a routine or a webhook ran in. It then
+  shows how many it adopted and how many it left, by reason. You can press it
+  again later: what was adopted stays adopted, and nothing is taken back.
+  After that an adopted conversation is like any other: a later message or
+  card answer from anyone else ends its standing, and pressing the button
+  again does not restore it.
+
+  What it can and cannot tell. A routine's or a webhook's conversation is
+  recognised while it still carries its run, or while that run is among the
+  2,000 the run history keeps. Older than that, and carried on by hand since,
+  its prompt looks like a message typed at the computer. So does a message a
+  paired device edited before this version, because an edit recorded no
+  sender. These are adopted as yours: that is what the button's sentence asks
+  you to be sure of.
 - **A session that holds a note is not handed on.** A recalled note stays in
   the engine's own session for that conversation. When words that are not
   proven yours arrive there afterwards (someone else's message, another bot's

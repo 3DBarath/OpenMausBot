@@ -25,6 +25,8 @@ describe("the imported notes list", () => {
     expect(html.match(/>Open</g)).toHaveLength(2);
     expect(html).toContain('aria-label="Delete Food"');
     expect(words).toContain("Delete everything imported");
+    // beside the list: the way to have these notes used in conversations from before
+    expect(words).toContain("Use my notes in my existing conversations");
   });
 
   it("shows the open note's text in an editor with Save", () => {

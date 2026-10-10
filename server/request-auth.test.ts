@@ -312,6 +312,9 @@ describe("resolveRequestAuth", () => {
 
   it("answers the shared notes and an import, reads included, only to the desktop app itself", () => {
     const options = (path: string) => ({ sessions, cookieName, streamPath: "/api/events", url: new URL(path, "http://x"), loopbackMutationToken: "owner-token-123" });
+    // adopting older conversations is a change like any other: without the app's capability it is refused
+    expect(resolveRequestAuth(request({ host: "127.0.0.1:8799" }, "POST"), options("/api/shared-notes/adopt")).status).toBe(403);
+    expect(resolveRequestAuth(request({ host: "127.0.0.1:8799", "x-openmausbot-desktop-owner": "owner-token-123" }, "POST"), options("/api/shared-notes/adopt")).auth?.kind).toBe("loopback");
     const paths = [
       "/api/shared-notes", "/api/shared-notes/food.md", "/api/shared-notes?imported=1",
       "/api/context-import", "/api/context-import/3f2b6c1e-0000-4000-8000-000000000000", "/api/context-import/3f2b6c1e-0000-4000-8000-000000000000/candidates",

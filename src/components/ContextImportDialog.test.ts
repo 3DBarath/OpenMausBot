@@ -137,6 +137,9 @@ describe("the import dialog, step by step", () => {
     expect(words).toContain("“Work” is full. Facts not saved: 6.");
     expect(words).toContain("Already known and left out: 4.");
     expect(words).toContain("The export and everything read from it have been deleted.");
+    // after a save: the way to have what was saved used in conversations from before
+    expect(words).toContain("Use my notes in my existing conversations");
+    expect(words).toContain("Use it only if nobody else has written in them.");
     // an export that could not be deleted is said, with where it is, and never called deleted
     const left = render(null, { result: { ...result, notDeleted: "/data/context-import" } });
     expect(left.words).toContain("the export could not be deleted from this computer. Delete this folder yourself: /data/context-import");

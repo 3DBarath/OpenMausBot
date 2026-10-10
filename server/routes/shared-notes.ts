@@ -3,6 +3,7 @@
 //
 //   GET    /api/shared-notes              every note: title, other words, size, entry counts
 //   DELETE /api/shared-notes?imported=1   delete everything an import wrote, here and in About me
+//   POST   /api/shared-notes/adopt        the owner vouches for their older conversations (shared-notes-adopt.ts)
 //   GET    /api/shared-notes/<name>       one note with its text
 //   PUT    /api/shared-notes/<name>       replace its text {text}
 //   DELETE /api/shared-notes/<name>       delete it
@@ -20,7 +21,7 @@ import { IMPORT_BOT_PREFIX, IMPORT_LINE_MARKS } from "../context-import/save.ts"
 import { removeLearnedWhere } from "../profile-learned.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import { deleteImportedEntries, deleteSharedNote, describeSharedNotes, readSharedNote, SharedNotesError, writeSharedNote } from "../shared-notes.ts";
-import type { SharedNoteDoc } from "../../shared/shared-notes.ts";
+import type { AdoptionResult, SharedNoteDoc } from "../../shared/shared-notes.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface SharedNotesRouteDeps {
@@ -28,6 +29,9 @@ export interface SharedNotesRouteDeps {
   owner(auth: RequestAuth): boolean;
   aboutMe(): string;
   saveAboutMe(text: string): void;
+  /** Record the older lines of every conversation that can be adopted as the
+   * owner's, and say what was done (server/shared-notes-adopt.ts). */
+  adopt(): AdoptionResult;
 }
 
 const PREFIX = "/api/shared-notes";
@@ -56,6 +60,15 @@ export function createSharedNotesRoutes(deps: SharedNotesRouteDeps): RouteHandle
         return json(res, 200, { ok: true, entries: notes.entries, files: notes.files, aboutMe: learned.removed, aboutMeText: learned.aboutMe, notes: describeSharedNotes() });
       }
       return PASS;
+    }
+    // The owner saying "the messages in my existing conversations are mine".
+    // Nobody else reaches this line: the check above is the same one that
+    // guards an import, and on the desktop app the request also needs the
+    // app's own capability (server/request-auth.ts). Nothing calls it but
+    // the person's own click.
+    if (path === `${PREFIX}/adopt`) {
+      if (method !== "POST") return PASS;
+      return json(res, 200, { ok: true, ...deps.adopt() });
     }
     const m = path.match(/^\/api\/shared-notes\/([^/]+)$/);
     if (!m) return PASS;

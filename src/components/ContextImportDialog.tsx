@@ -6,6 +6,7 @@ import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { copyText } from "@/lib/copy-text";
 import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes } from "@/lib/context-import";
+import { AdoptConversations } from "./AdoptConversations";
 import { ContextImportReview } from "./ContextImportReview";
 import {
   IMPORT_EXPIRES_DAYS, PASTE_MAX_CHARS, UPLOAD_MINUTES,
@@ -97,6 +98,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
           ? <li role="alert" className="text-danger">{t("contextImport.done.notDeleted", { path: result.notDeleted })}</li>
           : <li>{t("contextImport.done.deleted")}</li>}
       </ul>
+      <AdoptConversations />
       <div className="mt-5 flex justify-end"><button type="button" className={PRIMARY} onClick={actions.close}>{t("contextImport.done.done")}</button></div>
     </div>;
   }

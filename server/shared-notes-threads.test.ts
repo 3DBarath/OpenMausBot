@@ -2,7 +2,7 @@
 // owner's own request wrote are on record, a conversation with any other
 // line is "not proven", and nothing is ever proven by a file being absent,
 // damaged or unwritable.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -98,9 +98,10 @@ describe("the owner's conversations", () => {
     // an installation with 20,000 conversations on record
     const threads: Record<string, [number, string, number]> = {};
     for (let index = 0; index < 20_000; index += 1) threads[`thread-${index}`] = [3, "0123456789abcdef0123456789abcdef", 0];
-    writeFileSync(file, JSON.stringify({ version: 1, threads }));
+    writeFileSync(file, JSON.stringify({ version: 1, since: 1_700_000_000_000, threads }));
     const before = readFileSync(file, "utf8");
     const record = new OwnerThreads(file);
+    expect(record.since).toBe(1_700_000_000_000);
     const started = process.cpuUsage();
     for (let index = 0; index < 300; index += 1) record.prove("busy-thread", `message-${index}`);
     const spent = process.cpuUsage(started);
@@ -120,12 +121,26 @@ describe("the owner's conversations", () => {
 
   it("writes the mark that a session holds a note at once, because losing it would hand the session on", () => {
     const record = new OwnerThreads(file);
+    // a first start writes down when proof began, and nothing else
+    const fresh = readFileSync(file, "utf8");
+    expect(JSON.parse(fresh)).toEqual({ version: 1, since: record.since, threads: {} });
     record.prove("t1", "m1");
-    expect(existsSync(file)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(fresh);
     expect(record.noteRecalled("t1")).toBe(true);
     // on disk before the note is sent, with the proofs made so far
     const saved = new OwnerThreads(file);
     expect(saved.recalled("t1")).toBe(true);
     expect(saved.ownerOnly("t1", ["m1"])).toBe(true);
+  });
+
+  it("keeps the moment proof began across restarts, and a file that does not say gets this one", () => {
+    const first = new OwnerThreads(file);
+    expect(first.since).toBeGreaterThan(Date.now() - 5_000);
+    expect(new OwnerThreads(file).since).toBe(first.since);
+    // a record from before the moment was kept: proof for its lines stands, and "since" is now
+    writeFileSync(file, '{"version":1,"threads":{}}');
+    const later = new OwnerThreads(file);
+    expect(later.since).toBeGreaterThanOrEqual(first.since);
+    expect(JSON.parse(readFileSync(file, "utf8")).since).toBe(later.since);
   });
 });

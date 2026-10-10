@@ -11,6 +11,7 @@ rest to shared notes that any bot recalls in a private chat. See
 pnpm exec vitest run server/context-import.e2e.test.ts server/context-import-failures.e2e.test.ts
 pnpm exec vitest run server/context-import server/routes/context-import.test.ts server/routes/shared-notes.test.ts
 pnpm exec vitest run server/shared-notes.e2e.test.ts server/shared-notes-owner.e2e.test.ts
+pnpm exec vitest run server/shared-notes-cards.e2e.test.ts server/shared-notes-adopt.e2e.test.ts
 pnpm exec vitest run server/shared-notes.test.ts server/shared-notes-owner.test.ts server/shared-notes-threads.test.ts server/recall.test.ts server/request-auth.test.ts
 pnpm exec vitest run server/profile-learned.test.ts server/workspace-backup.test.ts
 pnpm exec vitest run src/lib/context-import.test.ts src/components/ContextImportDialog.test.ts src/components/ImportedNotes.test.ts
@@ -39,6 +40,13 @@ Evidence covers:
 - Someone else writes in a conversation that recalled a note: their turn is sent no note and starts a fresh engine session with the conversation replayed, instead of resuming the session that holds the note; the owner's next message there recalls nothing. The same for a conversation someone else wrote in first or edited a message in. A conversation only the owner wrote in still recalls.
 - While the owner's turn that recalled a note is still running (the fake engine holds it open), a chat-only device's message waits in the queue instead of being added to that turn, and then runs as its own turn in a fresh session with no note; the owner's own message is added to the running turn.
 - Run as the desktop app runs it (`OMB_TEST_DESKTOP_OWNER_TOKEN`), the shared-notes and import routes answer the app's own capability and refuse a local request without it, reads included, while `/api/health` and `/api/bots` still answer.
+
+`server/shared-notes-adopt.e2e.test.ts` covers conversations from before this version. The fixture is made older the way an upgrade does it: conversations are written, the server stops, the record of whose lines they were is removed, and the server starts again.
+
+- Before the owner adopts anything, their own question in an older conversation is sent no shared note, while a conversation started now is.
+- A device paired with chat-only access calling `POST /api/shared-notes/adopt` gets `403`, and nothing changes.
+- The owner's call adopts the conversation only they wrote in and leaves the one a chat-only device also wrote in (`skipped.sender`); the same question is then sent the note in the first and still none in the second.
+- Calling it again adopts nothing more and takes nothing back. After a chat-only device writes in the adopted conversation, it recalls nothing, and calling it again does not restore that.
 
 `server/context-import-failures.e2e.test.ts` covers what an import may never do to the server:
 

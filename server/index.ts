@@ -139,7 +139,9 @@ import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall, sharedNotesAllowed } from "./recall.ts";
-import { cardProofId, ownerContinuesTurn, ownerLine, ownerProofIds, ownerRequest, ownerStartsTurn, type OwnerFacts, type TurnStart } from "./shared-notes-owner.ts";
+import { cardProofId, hasSingleOwner, ownerContinuesTurn, ownerLine, ownerProofIds, ownerRequest, ownerStartsTurn, type OwnerFacts, type TurnStart } from "./shared-notes-owner.ts";
+import { adoptConversations, type AdoptableConversation } from "./shared-notes-adopt.ts";
+import type { AdoptionResult } from "../shared/shared-notes.ts";
 import { OwnerThreads } from "./shared-notes-threads.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled, type UpkeepEngine } from "./memory-upkeep.ts";
@@ -1621,6 +1623,47 @@ function ownerStartedTurn(threadId: string, generation: string | undefined): boo
 function notesOwnerOnlyThread(threadId: string): boolean {
   if (CLOUD_HOME) return cloudOwnerOnlyThread(threadId);
   return ownerThreads.ownerOnly(threadId, ownerProofIds(store.messagesFor(threadId)));
+}
+
+/** "Use my notes in my existing conversations": the owner vouches for the
+ * conversations from before proof began (server/shared-notes-adopt.ts says
+ * which are taken and which are left). Every one-to-one conversation of
+ * every bot is offered; rooms are counted and left. A routine's or a
+ * webhook's run is recognised by what is stored and nothing else: the
+ * conversation still carries its run (`routineRunId`), or a run still in the
+ * run history names it. Only the route calls this, for the proven owner. */
+function adoptOlderConversations(): AdoptionResult {
+  const facts = notesOwnerFacts();
+  const runThreads = new Set((routines?.listRuns() ?? []).map((run) => run.threadId).filter((threadId): threadId is string => Boolean(threadId)));
+  const conversations: AdoptableConversation[] = [];
+  const seen = new Set<string>();
+  for (const bot of store.bots) {
+    for (const threadId of [bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)]) {
+      if (seen.has(threadId)) continue;
+      seen.add(threadId);
+      const room = Boolean(store.groupByThread(threadId));
+      conversations.push({
+        threadId, room,
+        routine: Boolean(store.taskByThread(bot.id, threadId)?.routineRunId) || runThreads.has(threadId),
+        lines: room ? [] : store.messagesFor(threadId),
+      });
+    }
+  }
+  for (const group of store.groups) {
+    for (const threadId of [group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]) {
+      if (seen.has(threadId)) continue;
+      seen.add(threadId);
+      conversations.push({ threadId, room: true, routine: false, lines: [] });
+    }
+  }
+  const result = adoptConversations(conversations, {
+    since: ownerThreads.since,
+    loopbackIsOwner: facts.loopbackIsOwner,
+    singleOwner: hasSingleOwner(facts),
+    ownerDevice: (person) => sessions.list().some((session) => session.scopes.includes("admin") && personKey(session) === person),
+  }, ownerThreads);
+  console.log(`shared notes: the owner adopted ${result.adopted} older conversation(s); ${result.already} were theirs already, ${result.empty} held nothing a person wrote, ${Object.values(result.skipped).reduce((total, count) => total + count, 0)} were left`);
+  return result;
 }
 
 /** The automatic-recall block for a turn (server/recall.ts), or "". Notes
@@ -16405,7 +16448,7 @@ ROUTES.push(createBotMemoryRoutes({
 }));
 // Shared notes every bot can recall from (server/shared-notes.ts), and the
 // import that fills them from a ChatGPT or Claude export; owner only.
-ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()), aboutMe: () => cfg.profile?.aboutMe ?? "", saveAboutMe }));
+ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()), aboutMe: () => cfg.profile?.aboutMe ?? "", saveAboutMe, adopt: adoptOlderConversations }));
 ROUTES.push(createContextImportRoutes({
   owner: (auth) => ownerRequest(auth, notesOwnerFacts()),
   imports: contextImport,

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
+import { AdoptConversations } from "./AdoptConversations";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { ImportOverview } from "../../shared/context-import";
 import type { SharedNoteDoc, SharedNoteInfo } from "../../shared/shared-notes";
@@ -60,6 +61,8 @@ export function ImportedNotesPanel({ notes, open, canDeleteImported, busy, error
           </li>
         ))}
       </ul>
+      {/* notes are only recalled where the lines are known to be the owner's: this is how older conversations get there */}
+      {notes.length > 0 && <AdoptConversations />}
       {canDeleteImported && (
         <button type="button" disabled={busy} onClick={actions.askDeleteImported} className="mt-3 rounded-md px-2 py-1 text-[12.5px] text-danger hover:bg-control disabled:opacity-50">
           {t("settings.profile.imported.deleteAll")}

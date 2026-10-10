@@ -21,10 +21,13 @@ const OWNER: RequestAuth = { kind: "loopback", scopes: ["admin", "client"] };
 const onlyThisComputer = (auth: RequestAuth) => auth.kind === "loopback" && auth.trust !== "service";
 const servers: Server[] = [];
 let aboutMe = "";
+/** How many times the adopt action ran. */
+let adoptions = 0;
 
 beforeEach(() => {
   rmSync(DATA_DIR, { recursive: true, force: true });
   aboutMe = "";
+  adoptions = 0;
 });
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
@@ -33,7 +36,10 @@ afterEach(async () => {
 /** The table the way index.ts runs it: anything the module passes on falls
  * to a stand-in for the inline routes. */
 async function serve(auth: RequestAuth = OWNER, owner: (auth: RequestAuth) => boolean = () => true): Promise<string> {
-  const routes = [createSharedNotesRoutes({ owner, aboutMe: () => aboutMe, saveAboutMe: (text) => { aboutMe = text; } })];
+  const routes = [createSharedNotesRoutes({
+    owner, aboutMe: () => aboutMe, saveAboutMe: (text) => { aboutMe = text; },
+    adopt: () => { adoptions += 1; return { adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0 } }; },
+  })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
@@ -139,5 +145,25 @@ describe("shared notes over HTTP", () => {
     // and the owner at the computer itself still can, on that same installation
     const owner = await serve(OWNER, onlyThisComputer);
     expect((await fetch(`${owner}/api/shared-notes/food.md`)).status).toBe(200);
+  });
+
+  it("adopts older conversations for the owner only, by a POST, and says what it did", async () => {
+    const owner = await serve();
+    const done = await fetch(`${owner}/api/shared-notes/adopt`, { method: "POST" });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toEqual({ ok: true, adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0 } });
+    expect(adoptions).toBe(1);
+    // looking is not adopting: only a POST runs it
+    for (const method of ["GET", "PUT", "DELETE"]) expect(await (await fetch(`${owner}/api/shared-notes/adopt`, { method })).json(), method).toEqual({ from: "inline routes" });
+    expect(adoptions).toBe(1);
+    // nobody else: a chat-only session, a local service, a second admin
+    const chatOnly = await serve({ kind: "session", via: "bearer", scopes: ["client"], session: { id: "s1" } as never });
+    const service = await serve({ kind: "loopback", scopes: ["client"], trust: "service" });
+    const secondAdmin = await serve({ kind: "session", via: "bearer", scopes: ["admin", "client"], session: { id: "s2", email: "second@example.test" } as never }, onlyThisComputer);
+    for (const base of [chatOnly, service, secondAdmin]) expect((await fetch(`${base}/api/shared-notes/adopt`, { method: "POST" })).status).toBe(403);
+    expect(adoptions).toBe(1);
+    // the gate in front of the table needs admin scope for it, and a phone never gets through
+    expect(requiredScope("POST", "/api/shared-notes/adopt")).toBe("admin");
+    expect(denyReason({ path: "/api/shared-notes/adopt", method: "POST", authenticated: true })).not.toBeNull();
   });
 });

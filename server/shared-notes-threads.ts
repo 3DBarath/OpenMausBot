@@ -53,6 +53,8 @@ interface ThreadRecord {
   /** The XOR of a hash of each proven line's id. */
   sum: Buffer;
   recalled: boolean;
+  /** The owner adopted this conversation's older lines (adopt, below). Once, and for good. */
+  adopted: boolean;
 }
 
 function lineHash(threadId: string, messageId: string): Buffer {
@@ -65,6 +67,10 @@ function xor(into: Buffer, other: Buffer): void {
 
 export class OwnerThreads {
   private readonly threads = new Map<string, ThreadRecord>();
+  /** When proof began on this installation (epoch ms): the first start of a
+   * version that records it. A line older than this could not have been
+   * proven when it was written; a line since could. */
+  readonly since: number;
   private readonly file: string;
   private readonly log: (line: string) => void;
   /** Goes up with every change; what is on disk is as of `written`. */
@@ -80,23 +86,30 @@ export class OwnerThreads {
     try {
       raw = JSON.parse(readFileSync(file, "utf8"));
     } catch {
-      return; // absent or unreadable: nothing is proven
+      raw = null; // absent or unreadable: nothing is proven
     }
-    const threads = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { threads?: unknown }).threads : null;
-    if (!threads || typeof threads !== "object" || Array.isArray(threads)) return;
-    for (const [threadId, value] of Object.entries(threads)) {
-      if (!THREAD.test(threadId) || !Array.isArray(value)) continue;
-      const [lines, sum, recalled] = value as unknown[];
-      if (typeof lines !== "number" || !Number.isInteger(lines) || lines < 0 || typeof sum !== "string" || !SUM.test(sum)) continue;
-      this.threads.set(threadId, { lines, sum: Buffer.from(sum, "hex"), recalled: recalled === 1 });
+    const stored = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as { threads?: unknown; since?: unknown } : null;
+    const threads = stored?.threads;
+    if (threads && typeof threads === "object" && !Array.isArray(threads)) {
+      for (const [threadId, value] of Object.entries(threads)) {
+        if (!THREAD.test(threadId) || !Array.isArray(value)) continue;
+        const [lines, sum, recalled, adopted] = value as unknown[];
+        if (typeof lines !== "number" || !Number.isInteger(lines) || lines < 0 || typeof sum !== "string" || !SUM.test(sum)) continue;
+        this.threads.set(threadId, { lines, sum: Buffer.from(sum, "hex"), recalled: recalled === 1, adopted: adopted === 1 });
+      }
     }
+    // Proof begins now where the file does not say when it began, and that
+    // is written down at once: every later start must read the same moment.
+    const since = stored && typeof stored.since === "number" && Number.isFinite(stored.since) && stored.since > 0 ? stored.since : null;
+    this.since = since ?? Date.now();
+    if (since === null) this.saveNow();
   }
 
   private record(threadId: string): ThreadRecord | null {
     if (!THREAD.test(threadId)) return null;
     let record = this.threads.get(threadId);
     if (!record) {
-      record = { lines: 0, sum: Buffer.alloc(16), recalled: false };
+      record = { lines: 0, sum: Buffer.alloc(16), recalled: false, adopted: false };
       this.threads.set(threadId, record);
       while (this.threads.size > MAX_THREADS) this.threads.delete(this.threads.keys().next().value!);
     }
@@ -104,8 +117,8 @@ export class OwnerThreads {
   }
 
   private text(): string {
-    const threads = Object.fromEntries([...this.threads].map(([threadId, record]) => [threadId, [record.lines, record.sum.toString("hex"), record.recalled ? 1 : 0]]));
-    return `${JSON.stringify({ version: 1, threads })}\n`;
+    const threads = Object.fromEntries([...this.threads].map(([threadId, record]) => [threadId, [record.lines, record.sum.toString("hex"), record.recalled ? 1 : 0, ...(record.adopted ? [1] : [])]]));
+    return `${JSON.stringify({ version: 1, since: this.since, threads })}\n`;
   }
 
   /** Something changed: write the file soon, once for everything that changes meanwhile. */
@@ -169,6 +182,13 @@ export class OwnerThreads {
     }
   }
 
+  /** Write the record at once, after something the owner did by hand and is
+   * told the result of (an adoption). False when it could not be written:
+   * what was recorded then lasts until a restart. */
+  writeNow(): boolean {
+    return this.version > this.written ? this.saveNow() : true;
+  }
+
   /** Write whatever is pending and wait for it: the server is shutting down
    * (or a test wants the file). Never rejects. */
   async flush(): Promise<void> {
@@ -201,6 +221,35 @@ export class OwnerThreads {
     const sum = Buffer.alloc(16);
     for (const id of personLineIds) xor(sum, lineHash(threadId, id));
     return sum.equals(record.sum);
+  }
+
+  /** The owner vouches for a conversation's older lines: the one way a line
+   * written before proof began becomes the owner's (shared-notes-adopt.ts
+   * decides which conversations may be offered). `older` are the lines and
+   * answered cards from before `since`, `later` the ones since.
+   *
+   * - "already": the conversation is the owner's alone as it stands, or it
+   *   was adopted before. It is left exactly as it is: adoption happens once
+   *   and is never taken back or repeated, so a conversation that lost its
+   *   standing after it was adopted stays without it.
+   * - "later": something written since proof began is not on record. Nobody
+   *   vouched for it then, and adopting does not vouch for it now.
+   * - "empty": there is nothing older to adopt.
+   * - "adopted": the record now holds every one of these lines. */
+  adopt(threadId: string, older: readonly string[], later: readonly string[]): "adopted" | "already" | "later" | "empty" {
+    const existing = this.threads.get(threadId);
+    const all = [...older, ...later];
+    if (existing?.adopted || (all.length > 0 && this.ownerOnly(threadId, all))) return "already";
+    // every line since proof began must be exactly what is on record
+    if (later.length ? !this.ownerOnly(threadId, later) : Boolean(existing && existing.lines > 0)) return "later";
+    if (!older.length) return "empty";
+    const record = this.record(threadId);
+    if (!record || new Set(all).size !== all.length) return "later";
+    for (const id of older) xor(record.sum, lineHash(threadId, id));
+    record.lines += older.length;
+    record.adopted = true;
+    this.changed();
+    return "adopted";
   }
 
   /** A shared note is about to be put in front of a turn of this
