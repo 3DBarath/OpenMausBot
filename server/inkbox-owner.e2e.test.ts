@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 
 interface Task { threadId: string; title: string; approvalMode: string; autoApprove: boolean; alwaysAllow: string[] }
 interface Bot { id: string; threadId: string; tasks: Task[]; approvalMode: string }
@@ -83,7 +84,7 @@ it("continues signed owner messages in one unselected Ask task without leaking k
             ...(discoveredPhoneNumberId ? { OMB_INKBOX_PHONE_NUMBER_ID: discoveredPhoneNumberId } : {}) },
         });
       } finally { closeSync(log); }
-      await expect.poll(async () => { try { return (await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, { timeout: 20_000, interval: 100 }).toBe(true);
+      await expect.poll(async () => { try { return (await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, { timeout: hostTimeout(20_000), interval: 100 }).toBe(true);
     };
     await startServer();
     const state = async () => (await api<{ bots: Bot[] }>("GET", "/api/bots")).bots.find(row => row.id === bot.id)!;
@@ -100,7 +101,7 @@ it("continues signed owner messages in one unselected Ask task without leaking k
       expect(response.status).toBe(202); return body;
     };
     const firstRaw = await post("owner_event_one", "Please answer the owner fixture.");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(1);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(20_000), interval: 100 }).toBe(1);
     const afterFirst = await state();
     expect(afterFirst.tasks).toHaveLength(bot.tasks.length + 1);
     expect(afterFirst.threadId).toBe(bot.threadId);
@@ -130,7 +131,7 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     // Hold a genuine native permission request in another existing Ask task.
     await api("PATCH", `/api/bots/${older.id}/tasks/${older.threadId}`, { modelSelection: { instanceId: "olderApproval", model: "claude-sonnet-5" }, approvalMode: "ask" });
     await api("POST", `/api/bots/${older.id}/messages`, { threadId: older.threadId, text: "Hold the existing permission fixture." }, 202);
-    await expect.poll(() => existsSync(oldDump), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => existsSync(oldDump), { timeout: hostTimeout(15_000) }).toBe(true);
     const socketPath = JSON.parse(readFileSync(oldDump, "utf8")).mcpConfig.mcpServers.ogb.args.at(-1) as string;
     socket = connect(socketPath);
     await new Promise<void>((resolve, reject) => { socket!.once("connect", resolve); socket!.once("error", reject); });
@@ -139,12 +140,12 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     socket.on("data", chunk => { permissionAnswer += chunk; });
     socket.write(JSON.stringify({ t: "ask", id: requestId, tool: "Bash", input: { command: "echo owner-fixture-permission" } }) + "\n");
     const approval = async () => (await messages(older.threadId)).find(message => message.card?.requestId === requestId)?.card;
-    await expect.poll(async () => Boolean(await approval()), { timeout: 10_000 }).toBe(true);
+    await expect.poll(async () => Boolean(await approval()), { timeout: hostTimeout(10_000) }).toBe(true);
     const originalApproval = await approval();
     // A bare YES with nothing pending in this conversation fails closed: it
     // is not passed to the bot and cannot answer another task's request.
     await post("owner_event_yes", "YES");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(2);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(20_000), interval: 100 }).toBe(2);
     expect(sends()[1]?.body.text).toBe("There is no matching pending request. Send STATUS to check the task.");
     expect((await messages(firstTask.threadId)).some(message => message.role === "user" && message.text === "YES")).toBe(false);
     expect(await approval()).toEqual(originalApproval);
@@ -152,7 +153,7 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     // An ordinary follow-up continues the same Ask task.
     await api("PATCH", `/api/bots/${bot.id}/tasks/${firstTask.threadId}`, { modelSelection: { instanceId: "followup", model: "claude-sonnet-5" } });
     await post("owner_event_followup", "Please continue the owner fixture.");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(3);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(20_000), interval: 100 }).toBe(3);
     expect(sends()[2]?.body.text).toBe("followup fixture reply");
     const afterYes = await state();
     expect(afterYes.tasks).toHaveLength(afterFirst.tasks.length);
@@ -165,11 +166,11 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     // Continuation must recheck Ask mode instead of inheriting an app edit.
     await api("PATCH", `/api/bots/${bot.id}/tasks/${firstTask.threadId}`, { approvalMode: "auto" });
     await post("owner_changed_mode", "Do not run this in Auto mode.");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(4);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(20_000), interval: 100 }).toBe(4);
     expect(sends()[3]?.body.text).toMatch(/could not be confirmed|Ask task|changed/);
     expect((await messages(firstTask.threadId)).some(message => message.text === "Do not run this in Auto mode.")).toBe(false);
     await post("owner_explicit_new", "NEW Separate fixture request");
-    await expect.poll(() => sends().length, { timeout: 20_000, interval: 100 }).toBe(5);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(20_000), interval: 100 }).toBe(5);
     expect((await state()).tasks).toHaveLength(afterFirst.tasks.length + 1);
     expect(sends()[4]?.body.text).toBe("owner fixture reply");
     const latestDump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8"));
@@ -191,4 +192,4 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     writeFileSync(evidencePath, JSON.stringify({ ...evidence, fixtureRemoved: !existsSync(dataDir) }, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ logPath, evidencePath, fixtureRemoved: !existsSync(dataDir) }));
   }
-}, 90_000);
+}, hostTimeout(90_000));

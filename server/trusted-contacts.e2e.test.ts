@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import type { ContactReply, TrustedContact, TrustedContactsSnapshot } from "../shared/trusted-contacts.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 
 interface Snapshot extends TrustedContactsSnapshot {
   ingress: { available: boolean; baseUrl: string };
@@ -115,7 +116,7 @@ it("enforces scoped contact scheduling through the isolated server, durable rest
     await expect.poll(async () => {
       try { const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) }); return response.ok; }
       catch { return false; }
-    }, { timeout: 20_000, interval: 100 }).toBe(true);
+    }, { timeout: hostTimeout(20_000), interval: 100 }).toBe(true);
     expect((await api<Snapshot>("GET", root)).requests).toEqual(pending.requests);
     expect(await external("POST", "", input)).toEqual(available);
     expect(await external("POST", "", proposalInput)).toEqual(proposal);
@@ -158,7 +159,7 @@ it("enforces scoped contact scheduling through the isolated server, durable rest
     writeFileSync(evidencePath, JSON.stringify({ ...evidence, fixtureRemoved: !existsSync(dataDir) }, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ logPath, evidencePath, fixtureRemoved: !existsSync(dataDir) }));
   }
-}, 90_000);
+}, hostTimeout(90_000));
 
 it("requests another isolated Mausbot's availability and refreshes its approved proposal", async () => {
   const local = await launchVerificationServer({});
@@ -208,4 +209,4 @@ it("requests another isolated Mausbot's availability and refreshes its approved 
     writeFileSync(evidencePath, JSON.stringify({ localUrl: local.info.url, remoteUrl: remote.info.url, availability, proposal, refreshed, revoked }, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ evidencePath, localLogPath: local.info.logPath, remoteLogPath: remote.info.logPath }));
   } finally { await remote?.close(); await local.close(); }
-}, 90_000);
+}, hostTimeout(90_000));

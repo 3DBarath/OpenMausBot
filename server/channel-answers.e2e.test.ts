@@ -11,6 +11,7 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import type { OptionCardData } from "../shared/wire.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 
 interface Task { threadId: string; approvalMode: string; autoApprove: boolean; alwaysAllow: string[] }
 interface Bot { id: string; threadId: string; tasks: Task[] }
@@ -58,7 +59,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
   let nextSendCount = 0;
   const nextSent = async (): Promise<string> => {
     const count = ++nextSendCount;
-    await expect.poll(() => sends().length, { timeout: 15_000, interval: 100 }).toBeGreaterThanOrEqual(count);
+    await expect.poll(() => sends().length, { timeout: hostTimeout(15_000), interval: 100 }).toBeGreaterThanOrEqual(count);
     const text = sends()[count - 1]!.body.text;
     return text.startsWith("The bot is still working") ? nextSent() : text;
   };
@@ -102,7 +103,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
           OMB_INKBOX_API_KEY: apiKey, OMB_INKBOX_SIGNING_SECRET: signingSecret, OMB_INKBOX_IDENTITY_ID: identityId, OMB_INKBOX_OWNER_PHONE: ownerPhone, OMB_INKBOX_BOT_ID: bot.id },
       });
     } finally { closeSync(log); }
-    await expect.poll(async () => { try { return (await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, { timeout: 20_000, interval: 100 }).toBe(true);
+    await expect.poll(async () => { try { return (await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, { timeout: hostTimeout(20_000), interval: 100 }).toBe(true);
     const state = async () => (await api<{ bots: Bot[] }>("GET", "/api/bots")).bots.find(row => row.id === bot.id)!;
     const status = await api<{ ingress: { baseUrl: string }; messaging: { configured: boolean } }>("GET", "/api/trusted-contacts");
     expect(status.messaging.configured).toBe(true);
@@ -120,7 +121,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     await post("channel_start", originalText);
     await expect.poll(() => {
       try { return JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).mcpConfig?.mcpServers?.ogb?.args.at(-1); } catch { return undefined; }
-    }, { timeout: 15_000 }).toEqual(expect.any(String));
+    }, { timeout: hostTimeout(15_000) }).toEqual(expect.any(String));
     const dump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8"));
     const afterStart = await state();
     expect(afterStart.tasks).toHaveLength(bot.tasks.length + 1);
@@ -143,7 +144,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
       });
       socket.write(JSON.stringify({ t: "ask", id, tool, input, ...(kind ? { kind } : {}) }) + "\n");
       const card = async () => (await messages(threadId)).find(message => message.card?.requestId === id);
-      await expect.poll(card, { timeout: 10_000 }).toBeTruthy();
+      await expect.poll(card, { timeout: hostTimeout(10_000) }).toBeTruthy();
       return { id, answers, card };
     };
 
@@ -154,7 +155,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     expect(firstPrompt).toContain("2. Detailed — With supporting evidence");
     const firstCard = await first.card();
     await post("channel_numeric_answer", "2");
-    await expect.poll(() => first.answers, { timeout: 10_000 }).toEqual([expect.objectContaining({ t: "answer", id: first.id, behavior: "answer", message: expect.stringContaining("Q: Which format should I prepare?\nA: Detailed") })]);
+    await expect.poll(() => first.answers, { timeout: hostTimeout(10_000) }).toEqual([expect.objectContaining({ t: "answer", id: first.id, behavior: "answer", message: expect.stringContaining("Q: Which format should I prepare?\nA: Detailed") })]);
     expect((await first.card())?.card?.answered).toBe("answer");
 
     const multi = await ask("AskUserQuestion", { questions: [
@@ -168,7 +169,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     expect(secondPrompt).toContain("Any additional instructions?");
     expect(multi.answers).toEqual([]);
     await post("channel_freeform_answer", "Include the assumptions and keep it concise.");
-    await expect.poll(() => multi.answers.length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => multi.answers.length, { timeout: hostTimeout(10_000) }).toBe(1);
     expect(multi.answers[0]).toMatchObject({ id: multi.id, behavior: "answer" });
     expect(multi.answers[0]!.message).toContain("Q: Which sections?\nA: Costs, Risks");
     expect(multi.answers[0]!.message).toContain("Q: Any additional instructions?\nA: Include the assumptions and keep it concise.");
@@ -182,7 +183,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     expect(await nextSent()).toContain('Reply "yes"');
     expect(firstApproval.answers).toEqual([]);
     const approvedRaw = await post("channel_approve", "yes");
-    await expect.poll(() => firstApproval.answers, { timeout: 10_000 }).toEqual([expect.objectContaining({ id: firstApproval.id, behavior: "allow" })]);
+    await expect.poll(() => firstApproval.answers, { timeout: hostTimeout(10_000) }).toEqual([expect.objectContaining({ id: firstApproval.id, behavior: "allow" })]);
     expect(firstApproval.answers[0]).not.toHaveProperty("always");
 
     const secondApproval = await ask("Bash", { command: "echo channel-second-approval" });
@@ -195,7 +196,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     expect(secondApproval.answers).toEqual([]);
     expect((await secondApproval.card())?.card?.answered).toBeUndefined();
     await post("channel_deny", "no");
-    await expect.poll(() => secondApproval.answers, { timeout: 10_000 }).toEqual([expect.objectContaining({ id: secondApproval.id, behavior: "deny" })]);
+    await expect.poll(() => secondApproval.answers, { timeout: hostTimeout(10_000) }).toEqual([expect.objectContaining({ id: secondApproval.id, behavior: "deny" })]);
 
     // Exercise the separate harness-owned outbound hold with the real turn's
     // connector capability; no minted test token can substitute for its lease.
@@ -229,7 +230,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     await post("channel_automatic", "approve for me");
     expect(await nextSent()).toContain("Messaging approvals: Automatic");
     const automatic = await ask("Bash", { command: "echo channel-automatic-approval" });
-    await expect.poll(() => automatic.answers, { timeout: 10_000 }).toEqual([expect.objectContaining({ id: automatic.id, behavior: "allow" })]);
+    await expect.poll(() => automatic.answers, { timeout: hostTimeout(10_000) }).toEqual([expect.objectContaining({ id: automatic.id, behavior: "allow" })]);
     expect(await nextSent()).toContain("Automatically approved:");
     const autoQuestion = await ask("AskUserQuestion", { questions: [{ question: "Still ask me in automatic mode?", options: [{ label: "Yes, ask" }] }] }, "question");
     expect(await nextSent()).toContain("Still ask me in automatic mode?");
@@ -269,7 +270,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     // later carrier answer must continue that question's task exactly once.
     rmSync(releaseFile);
     await post("channel_late_start", "NEW Ask a question that I will answer after the provider finishes.");
-    await expect.poll(() => readFileSync(promptsFile, "utf8").trim().split("\n").length, { timeout: 15_000 }).toBe(2);
+    await expect.poll(() => readFileSync(promptsFile, "utf8").trim().split("\n").length, { timeout: hostTimeout(15_000) }).toBe(2);
     const beforeLateAnswer = await state();
     const lateTask = beforeLateAnswer.tasks.find(row => !finalState.tasks.some(old => old.threadId === row.threadId))!;
     expect(beforeLateAnswer.tasks).toHaveLength(finalState.tasks.length + 1);
@@ -278,7 +279,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     expect(await nextSent()).toContain("2. Full report");
     const lateCard = await late.card();
     writeFileSync(releaseFile, "finish the provider before the person replies");
-    await expect.poll(async () => (await messages(lateTask.threadId)).some(message => message.turnTerminal && message.turnSucceeded), { timeout: 10_000 }).toBe(true);
+    await expect.poll(async () => (await messages(lateTask.threadId)).some(message => message.turnTerminal && message.turnSucceeded), { timeout: hostTimeout(10_000) }).toBe(true);
     expect((await late.card())?.card?.answered).toBeUndefined();
     const lateAnswerRaw = await post("channel_late_answer", "2");
     expect(await nextSent()).toBe("released");
@@ -307,4 +308,4 @@ it("answers signed owner questions and exact one-time approvals on the original 
     writeFileSync(evidencePath, JSON.stringify({ ...evidence, fixtureRemoved: !existsSync(dataDir) }, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ logPath, evidencePath, fixtureRemoved: !existsSync(dataDir) }));
   }
-}, 90_000);
+}, hostTimeout(90_000));

@@ -6,6 +6,7 @@ import { expect, it } from "vitest";
 import { harnessMcpRequest } from "./harness-mcp-proxy.ts";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 
 it("mounts host-owned Inkbox tools only for the configured bot and gates actual provider writes", async () => {
   const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_TOOL_CALLS: "[]" });
@@ -65,9 +66,9 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
           OMB_INKBOX_OWNER_PHONE: "+14155550123", OMB_INKBOX_BOT_ID: bot.id },
       });
     } finally { closeSync(log); }
-    await expect.poll(async () => { try { return (await fetch(`${url}/api/health`)).ok; } catch { return false; } }, { timeout: 20_000 }).toBe(true);
+    await expect.poll(async () => { try { return (await fetch(`${url}/api/health`)).ok; } catch { return false; } }, { timeout: hostTimeout(20_000) }).toBe(true);
     await api("POST", `/api/bots/${bot.id}/messages`, { text: "Use my connected Inkbox tools.", threadId: bot.threadId }, 202);
-    await expect.poll(() => { try { return JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).mcpConfig?.mcpServers?.inkbox; } catch { return undefined; } }, { timeout: 15_000 }).toBeTruthy();
+    await expect.poll(() => { try { return JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).mcpConfig?.mcpServers?.inkbox; } catch { return undefined; } }, { timeout: hostTimeout(15_000) }).toBeTruthy();
     const dump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8"));
     const wrapped = dump.mcpConfig.mcpServers.inkbox;
     const mounted = wrapped.env?.OMB_GATE_UPSTREAM ? JSON.parse(wrapped.env.OMB_GATE_UPSTREAM) : wrapped;
@@ -93,7 +94,7 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
     let lastRequest = "";
     const decide = async (behavior: "allow" | "deny") => {
       const open = async () => (await messages()).findLast(message => message.card?.outboundRequest && !message.card.answered && message.card.requestId !== lastRequest);
-      await expect.poll(open, { timeout: 10_000 }).toBeTruthy();
+      await expect.poll(open, { timeout: hostTimeout(10_000) }).toBeTruthy();
       const message = await open(); lastRequest = message.card.requestId;
       expect(message).toMatchObject({ turnId: expect.any(String), requestMessageId: expect.any(String) });
       expect(message.card.subtitle).toContain("recipient@example.test");
@@ -106,7 +107,7 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
     await decide("allow"); expect((await approved).body.result.content[0].text).toBe("synthetic-provider-success");
     expect(calls().filter(call => call.method === "tools/call" && call.params.name === "inkbox_email_send")).toHaveLength(1);
     const held = relay("tools/call", { name: "inkbox_email_send", arguments: { to: "recipient@example.test", text: "Stop fixture" } });
-    await expect.poll(async () => (await messages()).some(message => message.card?.outboundRequest && !message.card.answered), { timeout: 5000 }).toBe(true);
+    await expect.poll(async () => (await messages()).some(message => message.card?.outboundRequest && !message.card.answered), { timeout: hostTimeout(5000) }).toBe(true);
     await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
     // Revoked turn authority releases the hold without a stale decision.
     expect((await held).status).not.toBe(200);
@@ -114,7 +115,7 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
     expect(calls().filter(call => call.method === "tools/call" && call.params.name === "inkbox_email_send")).toHaveLength(1);
     rmSync(fixture.fixtureDumpPath, { force: true });
     await api("POST", `/api/bots/${other.id}/messages`, { text: "No Inkbox tools here.", threadId: other.threadId }, 202);
-    await expect.poll(() => existsSync(fixture.fixtureDumpPath), { timeout: 10_000 }).toBe(true);
+    await expect.poll(() => existsSync(fixture.fixtureDumpPath), { timeout: hostTimeout(10_000) }).toBe(true);
     expect(JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).mcpConfig?.mcpServers?.inkbox).toBeUndefined();
     Object.assign(evidence, { configuredBotOnly: true, deniedNotSent: true, approvedOnce: true, revokedNotSent: true, exposedCredential: false, providerCalls: calls() });
   } finally {
@@ -123,4 +124,4 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
     writeFileSync(evidencePath, JSON.stringify({ ...evidence, fixtureRemoved: !existsSync(dataDir) }, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ logPath, evidencePath, fixtureRemoved: !existsSync(dataDir) }));
   }
-}, 90_000);
+}, hostTimeout(90_000));
