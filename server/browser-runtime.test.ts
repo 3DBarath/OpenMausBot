@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserRuntime, TransportError, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
+import { BROWSER_HANDBACK_NOTE, BrowserRuntime, TransportError, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
 
 const runtimes: BrowserRuntime[] = [];
 function runtime(options: ConstructorParameters<typeof BrowserRuntime>[0] = {}) {
@@ -192,6 +192,7 @@ lines.on('line', line => {
   else if (m.params.name === 'rpc-error') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Expected refusal'}})+'\\n'); return; }
   else if (m.params.name === 'rpc-timeout') { rpcTimeoutCalls += 1; if (rpcTimeoutCalls === 1) { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'request timed out'}})+'\\n'); return; } result = { content:[{type:'text',text:'engine answered a repeat rpc-timeout call'}] }; }
   else if (m.params.name === 'agent_browser_open' && m.params.arguments.url === 'https://refused.test') result = { isError:true, content:[{type:'text',text:'Navigation refused'}] };
+  else if (m.params.name === 'agent_browser_snapshot' && process.env.WITH_REFS === '1') result = { content:[{type:'text',text:'- button "Send" [ref=e4]'}], structuredContent:{ response:{ data:{ refs:{ e4:{ role:'button', name:'Send' }, e9:{ role:'textbox' }, e10:'broken' } } } } };
   else if (m.params.name === 'agent_browser_snapshot' && process.env.REJECT_VERIFICATION === '1') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Snapshot refused'}})+'\\n'); return; }
   else if (m.params.name === 'agent_browser_snapshot' && process.env.HANG_VERIFICATION === '1') return;
   else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
@@ -540,5 +541,141 @@ describe("browser MCP shaping at the runtime boundary", () => {
       expect(bulky.content[0].text).toContain("trimmed this tool result");
       expect(bulky.content[1]).toMatchObject({ type: "image" });
     } finally { await value.closeAll(); }
+  });
+});
+
+describe("commit hold gate owner", () => {
+  it("refuses the bot's actions, lets reads and preview frames through, and holds one approval per session", async () => {
+    const value = runtime();
+    expect(value.ownerKind("s")).toBeNull();
+    expect(value.hold("s", "hold-1")).toBe(true);
+    expect(value.hold("s", "hold-1")).toBe(true);
+    expect(value.hold("s", "hold-2")).toBe(false);
+    expect(value.ownerKind("s")).toBe("hold");
+    expect(value.heldBy("s")).toBeNull();
+    await expect(value.withAgentAction("s", async () => "click")).rejects.toThrow(/approval for this browser/);
+    await expect(value.withAgentAction("s", async () => "frame", "read")).resolves.toBe("frame");
+    await expect(value.withAgentAction("other", async () => "click")).resolves.toBe("click");
+    value.releaseHold("s", "hold-2");
+    expect(value.ownerKind("s")).toBe("hold");
+    value.releaseHold("s", "hold-1");
+    expect(value.ownerKind("s")).toBeNull();
+    await expect(value.withAgentAction("s", async () => "click")).resolves.toBe("click");
+  });
+
+  it("lets a person take the browser from a hold, which stays underneath until it is released", async () => {
+    const value = runtime();
+    value.hold("s", "hold-1");
+    await expect(value.take("s", "person")).resolves.toBe(false);
+    expect(value.ownerKind("s")).toBe("person");
+    expect(value.canControl("s", "person")).toBe(true);
+    await expect(value.withAgentAction("s", async () => "snapshot", "read")).rejects.toThrow(/person controls/);
+    const released = value.personReleased("s", 1_000);
+    value.release("s", "person");
+    await expect(released).resolves.toBe(true);
+    expect(value.ownerKind("s")).toBe("hold");
+    await expect(value.withAgentAction("s", async () => "click")).rejects.toThrow(/approval for this browser/);
+    value.releaseHold("s", "hold-1");
+    await value.close("s");
+    expect(value.ownerKind("s")).toBeNull();
+  });
+
+  it("says when a person still has the browser after the wait", async () => {
+    const value = runtime();
+    await expect(value.personReleased("s", 10)).resolves.toBe(true);
+    await value.take("s", "person");
+    await expect(value.personReleased("s", 20)).resolves.toBe(false);
+  });
+
+  it("sorts engine tools into reads and actions, and keeps the bot from restarting under a hold", async () => {
+    const value = runtime();
+    await value.agentRpc("s", spec(), "tools/list", {});
+    value.hold("s", "hold-1");
+    for (const name of ["agent_browser_snapshot", "agent_browser_get_text", "agent_browser_get_url", "agent_browser_screenshot", "agent_browser_wait_ms"]) {
+      await expect(value.agentRpc("s", spec(), "tools/call", { name }), name).resolves.toMatchObject({ content: [{ type: "text" }] });
+    }
+    for (const name of ["agent_browser_click", "agent_browser_press", "agent_browser_fill", "agent_browser_type", "agent_browser_eval", "agent_browser_open", "agent_browser_scroll", "agent_browser_tab_new", "made_up_tool", "restart_browser"]) {
+      await expect(value.agentRpc("s", spec(), "tools/call", { name }), name).rejects.toThrow(/approval for this browser/);
+    }
+    await expect(value.agentRpc("s", spec(), "tools/list", {})).resolves.toMatchObject({ initialized: true });
+    value.releaseHold("s", "hold-1");
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).resolves.toMatchObject({ content: [{ type: "text" }] });
+  });
+});
+
+describe("hand-back note", () => {
+  const first = (result: unknown) => (result as { content: Array<{ text: string }> }).content[0].text;
+
+  it("starts the bot's next tool result once after a person used the browser", async () => {
+    const value = runtime();
+    await value.agentRpc("s", spec(), "tools/list", {});
+    await value.take("s", "person");
+    await value.withHumanAction("s", "person", async () => "typed");
+    value.release("s", "person");
+    // tools/list is not a tool result: the note waits for the next call.
+    await expect(value.agentRpc("s", spec(), "tools/list", {})).resolves.toMatchObject({ initialized: true });
+    const next = await value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_snapshot" }) as { content: Array<{ text: string }> };
+    expect(next.content[0].text).toBe(BROWSER_HANDBACK_NOTE);
+    expect(JSON.parse(next.content[1].text)).toEqual({ name: "agent_browser_snapshot" });
+    expect(first(await value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_snapshot" }))).not.toBe(BROWSER_HANDBACK_NOTE);
+  });
+
+  it("says nothing when the person only watched, or restarted the browser they had used", async () => {
+    const value = runtime();
+    await value.take("s", "person");
+    value.release("s", "person");
+    expect(first(await value.agentRpc("s", spec(), "tools/call", { name: "echo" }))).not.toBe(BROWSER_HANDBACK_NOTE);
+    await value.take("s", "person");
+    await value.withHumanAction("s", "person", async () => "typed");
+    await value.restart("s", "person", async () => {});
+    expect(first(await value.agentRpc("s", spec(), "tools/call", { name: "echo" }))).not.toBe(BROWSER_HANDBACK_NOTE);
+    // A later take with no input does not inherit the earlier one's.
+    await value.take("s", "person");
+    value.release("s", "person");
+    expect(first(await value.agentRpc("s", spec(), "tools/call", { name: "echo" }))).not.toBe(BROWSER_HANDBACK_NOTE);
+  });
+
+  it("keeps the note for the bot when a call fails before it could be delivered", async () => {
+    const value = runtime();
+    await value.take("s", "person");
+    await value.withHumanAction("s", "person", async () => "typed");
+    value.release("s", "person");
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "rpc-error" })).rejects.toThrow(/Expected refusal/);
+    expect(first(await value.agentRpc("s", spec(), "tools/call", { name: "echo" }))).toBe(BROWSER_HANDBACK_NOTE);
+  });
+
+  it("is told to one session only", async () => {
+    const value = runtime();
+    await value.take("a", "person");
+    await value.withHumanAction("a", "person", async () => "typed");
+    value.release("a", "person");
+    expect(first(await value.agentRpc("b", spec(), "tools/call", { name: "echo" }))).not.toBe(BROWSER_HANDBACK_NOTE);
+    expect(first(await value.agentRpc("a", spec(), "tools/call", { name: "echo" }))).toBe(BROWSER_HANDBACK_NOTE);
+  });
+});
+
+describe("the snapshot's ref table", () => {
+  it("remembers the role and name of each ref the bot last saw, and forgets them with the browser", async () => {
+    const value = runtime(), withRefs = spec();
+    withRefs.env.WITH_REFS = "1";
+    expect(value.ref("s", "e4")).toBeUndefined();
+    const shown = await value.agentRpc("s", withRefs, "tools/call", { name: "agent_browser_snapshot" }) as Record<string, unknown>;
+    expect(shown).not.toHaveProperty("structuredContent");
+    expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+    expect(value.ref("s", "e9")).toEqual({ role: "textbox", name: "" });
+    expect(value.ref("s", "e10")).toBeUndefined();
+    expect(value.ref("other", "e4")).toBeUndefined();
+    // A result without a table (a click) leaves the last one in place.
+    await value.agentRpc("s", withRefs, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } });
+    expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+    await value.close("s");
+    expect(value.ref("s", "e4")).toBeUndefined();
+  });
+
+  it("takes the table from the page observed after a navigation", async () => {
+    const value = runtime(), withRefs = spec();
+    withRefs.env.WITH_REFS = "1";
+    await value.agentRpc("s", withRefs, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } });
+    expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
   });
 });

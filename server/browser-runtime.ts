@@ -8,6 +8,25 @@ export interface BrowserSpawnSpec {
 }
 
 export const BROWSER_CONTROL_REFUSAL = "Browser tools are paused while a person controls this browser. Wait for them to hand control back; do not try another browser or execution tool.";
+export const BROWSER_HOLD_REFUSAL = "Browser actions are paused while an approval for this browser waits on the person. Reading the page still works; do not try another browser or execution tool.";
+/** The first line of the next tool result after a person used the browser. */
+export const BROWSER_HANDBACK_NOTE = "The person used this browser and handed it back. Re-read the page before continuing.";
+/** Who holds a session's browser. A person pauses everything a bot does in
+ * it. A commit hold (browser-commit-gate.ts) pauses only the bot's actions,
+ * so what its card shows stays true while reads and preview frames go on; a
+ * person can still take the browser, and the hold stays underneath. The
+ * login vault adds its own kind here. */
+export type BrowserGateOwnerKind = "person" | "hold";
+/** What a bot call needs from the gate. Only "read" passes a commit hold. */
+export type BrowserAccess = "act" | "read";
+/** One element of the snapshot a bot last saw: what a click on its ref is a click on. */
+export interface BrowserRef { role: string; name: string }
+/** Engine tools that only observe. Any other tool is an action. */
+const BROWSER_READ_TOOLS: ReadonlySet<string> = new Set([
+  "agent_browser_snapshot", "agent_browser_read", "agent_browser_get_text", "agent_browser_get_url", "agent_browser_get_title",
+  "agent_browser_screenshot", "agent_browser_tab_list", "agent_browser_wait_ms", "agent_browser_wait_for_selector",
+  "agent_browser_wait_for_text", "agent_browser_wait_for_load", "agent_browser_tools_profiles",
+]);
 /** Harness-owned recovery tool, advertised beside the engine's own tools. A
  * phone or chat-only user has no Browser panel Restart button; without this
  * an interrupted action refuses the bot's browser until the app restarts. */
@@ -235,6 +254,12 @@ export type ApplyViewport = (spec: BrowserSpawnSpec) => Promise<unknown>;
 
 interface Gate {
   owner: string | null;
+  /** The pending commit hold, if one has this session. */
+  hold: string | null;
+  /** The person's input reached the page since they took the browser. */
+  touched: boolean;
+  /** A person who used the browser handed it back; the bot has not been told yet. */
+  handedBack: boolean;
   ready: boolean;
   releasing: boolean;
   agents: number;
@@ -253,6 +278,8 @@ export class BrowserRuntime {
   /** Last advertised tools per session, so a turn that starts while the
    * browser is uncertain still sees the tools it can use after recovering. */
   private toolLists = new Map<string, unknown>();
+  /** The engine's ref table from the last snapshot it returned, per session. */
+  private refs = new Map<string, Map<string, BrowserRef>>();
   private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number };
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
@@ -266,7 +293,7 @@ export class BrowserRuntime {
   private gate(session: string): Gate {
     let gate = this.gates.get(session);
     if (!gate) {
-      gate = { owner: null, ready: false, releasing: false, agents: 0, humans: 0, uncertain: false, closing: false, changed: new Set() };
+      gate = { owner: null, hold: null, touched: false, handedBack: false, ready: false, releasing: false, agents: 0, humans: 0, uncertain: false, closing: false, changed: new Set() };
       this.gates.set(session, gate);
     }
     return gate;
@@ -277,13 +304,18 @@ export class BrowserRuntime {
       gate.owner = null;
       gate.releasing = false;
       gate.ready = false;
+      if (gate.touched) {
+        gate.touched = false;
+        gate.handedBack = true;
+      }
     }
     for (const notify of gate.changed) notify();
   }
 
-  async withAgentAction<T>(session: string, fn: () => Promise<T>): Promise<T> {
+  async withAgentAction<T>(session: string, fn: () => Promise<T>, access: BrowserAccess = "act"): Promise<T> {
     const gate = this.gate(session);
     if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
+    if (gate.hold !== null && access === "act") throw new Error(BROWSER_HOLD_REFUSAL);
     if (gate.uncertain) throw new Error(BROWSER_INTERRUPTED);
     if (gate.closing) throw new Error("The browser is closing. Try again shortly.");
     gate.agents++;
@@ -353,6 +385,7 @@ export class BrowserRuntime {
         const request = method === "tools/call" ? stripHarnessOwnedArguments(params) : params;
         let result = await entry.client.rpc(method, request);
         beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
+        if (method === "tools/call") this.rememberRefs(session, result);
         if (method === "tools/list") {
           const tools = withRestartTool(slimBrowserToolList(result));
           this.toolLists.set(session, tools);
@@ -377,6 +410,7 @@ export class BrowserRuntime {
             observation = { isError: true, content: [] };
           }
           beforeDispatch?.();
+          this.rememberRefs(session, observation);
           const navigation = result as { content?: unknown[] };
           const page = observation as { content?: unknown[]; isError?: boolean } | null;
           const observed = page?.isError !== true && Array.isArray(page?.content) && page.content.some((item) =>
@@ -407,8 +441,10 @@ export class BrowserRuntime {
       }
     };
     if (method !== "tools/call") return invoke();
+    const called = params && typeof params === "object" ? (params as { name?: unknown }).name : undefined;
     try {
-      return await this.withAgentAction(session, invoke);
+      const result = await this.withAgentAction(session, invoke, typeof called === "string" && BROWSER_READ_TOOLS.has(called) ? "read" : "act");
+      return this.withHandBackNote(session, result);
     } catch (error) {
       if (error instanceof Error && error.message === BROWSER_INTERRUPTED) return stuckBrowserToolError();
       throw error;
@@ -452,6 +488,76 @@ export class BrowserRuntime {
 
   heldBy(session: string): string | null { return this.gates.get(session)?.owner ?? null; }
 
+  /** The strongest holder of a session's browser, or null when the bot has it. */
+  ownerKind(session: string): BrowserGateOwnerKind | null {
+    const gate = this.gates.get(session);
+    if (!gate) return null;
+    return gate.owner !== null ? "person" : gate.hold !== null ? "hold" : null;
+  }
+
+  /** Start a commit hold: the bot's actions in this session are refused
+   * until releaseHold. False when another hold already has the session. */
+  hold(session: string, id: string): boolean {
+    const gate = this.gate(session);
+    if (gate.hold !== null && gate.hold !== id) return false;
+    gate.hold = id;
+    return true;
+  }
+
+  releaseHold(session: string, id: string): void {
+    const gate = this.gates.get(session);
+    if (!gate || gate.hold !== id) return;
+    gate.hold = null;
+    this.changed(gate);
+  }
+
+  /** True once no person holds the session; false when one still does after `timeoutMs`. */
+  personReleased(session: string, timeoutMs: number): Promise<boolean> {
+    const gate = this.gate(session);
+    if (gate.owner === null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (released: boolean) => {
+        clearTimeout(timer);
+        gate.changed.delete(check);
+        resolve(released);
+      };
+      const check = () => { if (gate.owner === null) finish(true); };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref();
+      gate.changed.add(check);
+    });
+  }
+
+  /** The role and name the browser gave a ref in the snapshot this session's bot last saw. */
+  ref(session: string, ref: string): BrowserRef | undefined { return this.refs.get(session)?.get(ref); }
+
+  private rememberRefs(session: string, result: unknown): void {
+    const refs = (result as { structuredContent?: { response?: { data?: { refs?: unknown } } } } | null)?.structuredContent?.response?.data?.refs;
+    if (!refs || typeof refs !== "object" || Array.isArray(refs)) return;
+    const seen = new Map<string, BrowserRef>();
+    for (const [ref, value] of Object.entries(refs)) {
+      const { role, name } = (value ?? {}) as { role?: unknown; name?: unknown };
+      if (typeof role === "string") seen.set(ref, { role, name: typeof name === "string" ? name : "" });
+    }
+    this.refs.set(session, seen);
+  }
+
+  /** The browser was closed: its refs are gone, and so is the page a person may have touched. */
+  private forgetPage(session: string, gate: Gate): void {
+    this.refs.delete(session);
+    gate.touched = false;
+    gate.handedBack = false;
+  }
+
+  /** Put the hand-back line first in the bot's next tool result, once. */
+  private withHandBackNote(session: string, result: unknown): unknown {
+    const gate = this.gates.get(session);
+    const content = (result as { content?: unknown } | null)?.content;
+    if (!gate?.handedBack || !Array.isArray(content)) return result;
+    gate.handedBack = false;
+    return { ...(result as object), content: [{ type: "text", text: BROWSER_HANDBACK_NOTE }, ...content] };
+  }
+
   /** An interrupted action left the browser's state unknown; only a restart clears it. */
   interrupted(session: string): boolean { return this.gates.get(session)?.uncertain === true; }
 
@@ -476,6 +582,7 @@ export class BrowserRuntime {
   async withHumanAction<T>(session: string, owner: string, fn: () => Promise<T>): Promise<T> {
     if (!this.canControl(session, owner)) throw new Error("Take control of this browser before interacting.");
     const gate = this.gate(session);
+    gate.touched = true;
     gate.humans++;
     try { return await fn(); }
     catch (error) {
@@ -509,6 +616,7 @@ export class BrowserRuntime {
       // while that stop awaits; registration is synchronous, so one re-check
       // is deterministic and no stray transport survives to idle expiry.
       await this.clients.get(session)?.client.stop();
+      this.forgetPage(session, gate);
       gate.uncertain = false;
       gate.owner = null;
       gate.releasing = false;
@@ -529,6 +637,7 @@ export class BrowserRuntime {
   async agentRestart(session: string, closeBrowser: () => Promise<boolean>): Promise<void> {
     const gate = this.gate(session);
     if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
+    if (gate.hold !== null) throw new Error(BROWSER_HOLD_REFUSAL);
     if (gate.closing || gate.releasing || gate.agents || gate.humans) throw new Error("The browser is busy. Wait for current work to finish before restarting.");
     gate.ready = false;
     gate.closing = true;
@@ -537,6 +646,7 @@ export class BrowserRuntime {
       if (!await closeBrowser()) throw new Error("The browser could not be closed. Ask the person to press Restart in the Browser panel of OpenMausBot on their computer, or to restart OpenMausBot.");
       await this.clients.get(session)?.client.stop();
       await this.clients.get(session)?.client.stop(); // see restart()
+      this.forgetPage(session, gate);
       gate.uncertain = false;
     } catch (error) {
       gate.uncertain = true;
@@ -557,9 +667,10 @@ export class BrowserRuntime {
     gate.uncertain = false;
     this.changed(gate);
     await this.clients.get(session)?.client.stop();
+    this.forgetPage(session, gate);
     gate.closing = false;
     this.changed(gate);
-    if (!gate.owner && !gate.agents && !gate.humans) { this.gates.delete(session); this.toolLists.delete(session); }
+    if (!gate.owner && !gate.hold && !gate.agents && !gate.humans) { this.gates.delete(session); this.toolLists.delete(session); }
   }
 
   async closeAll(): Promise<void> {
