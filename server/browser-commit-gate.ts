@@ -20,11 +20,11 @@
 //
 // | Tool | What it does to a page | Here |
 // |---|---|---|
-// | click | A real click at the centre of the element's box. | Judged. |
+// | click | A real click at the centre of the element's box. On a frame element it lands on whatever is inside the frame there. | Judged. Refused when the target is a frame itself. |
 // | check, uncheck | The same real click, on any element: a Send button too. | Judged as a click. |
 // | select | Sets the value and fires `change`. No click. Commits when the page submits on change. | Judged as a click on the element, and as its form's submit when an inline handler submits. |
-// | press | A real key press at the focus. Enter in any part of a chord submits or sends. | Enter is judged, in any position. Limit: Space on a focused button clicks it and is not judged. F5 and Ctrl+R do nothing in the pinned headless browser. |
-// | type | Real key presses: "\n" is Enter and "\t" is Tab. It focuses the element, it does not click it. | Text ending in one line break is judged as Enter there. Any other text with a line break is refused: the focus may have moved. |
+// | press | A real key press at the focus, which may be inside a frame. Enter in any part of a chord submits or sends. | Enter is judged, in any position; with the focus inside a frame the read cannot look into (another site's), it is refused. Limit: Space on a focused button clicks it and is not judged. F5 and Ctrl+R do nothing in the pinned headless browser. |
+// | type | Real key presses: "\n" is Enter and "\t" is Tab. It focuses the element, it does not click it. | Text ending in one line break is judged as Enter there, and refused when "there" is a frame, an element inside one, or (on a page with a frame) a ref the snapshot names differently from the element read. Any other text with a line break is refused: the focus may have moved. |
 // | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
 // | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
 // | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, until the bot opens another address. |
@@ -40,6 +40,15 @@
 //
 // Opening an address is a GET, and a GET can commit on a site built that way
 // (a one-click unsubscribe link). That is outside what this gate reads.
+//
+// Frames. The page read runs in the page itself. It reads a frame of the
+// page's own origin like the page; it cannot look into another site's. The
+// engine can act in both: the snapshot lists a frame's elements with refs,
+// and the engine measures such an element from the frame's own corner, so
+// its box can be the box of another element outside the frame. A click on
+// a ref is therefore judged both as the element read in that box and as
+// the element the snapshot named; an Enter into a frame that cannot be read
+// is refused.
 import { createHash } from "node:crypto";
 
 import { COMMIT_TITLE, classifyCommit, commitRule, enterPress, scriptAction } from "../shared/browser-commit.ts";
@@ -86,6 +95,9 @@ const TYPED_ENTER = "OpenMausBot did not type this: a line break typed with agen
 const TYPED_BLIND = "OpenMausBot did not type this: with agent_browser_type a line break presses Enter and a tab moves the focus, so it could not check where Enter would land. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const UNDESCRIBED = "OpenMausBot did not do this: it could not check what this would act on. The element is inside a frame or has no visible area, and the last snapshot gave it no name. Take a new snapshot and use the element's @ref from a new snapshot.";
 const BAD_SELECTOR = "OpenMausBot did not do this: it could not check that selector. Use an @ref from a snapshot, or a shorter selector that does not start with a dash.";
+const ENTER_IN_FRAME = "OpenMausBot did not press Enter: the focus is inside a frame it cannot read, so it could not check what Enter would send or pay for there. Click the button for this step instead, by its @ref from a snapshot.";
+const TYPED_IN_FRAME = "OpenMausBot did not type this: a line break typed with agent_browser_type presses Enter, and here that would be inside a frame it cannot read. Enter the text with agent_browser_fill, then click the button for this step by its @ref from a snapshot.";
+const FRAME_CLICK = "OpenMausBot did not do this: it would land inside a frame it cannot read, on whatever is at that point. Take a snapshot and use the @ref of the element inside the frame.";
 
 export interface CommitGateDeps {
   runtime: Pick<BrowserRuntime, "hold" | "releaseHold" | "personReleased" | "ref" | "withAgentAction">;
@@ -164,10 +176,21 @@ interface Sighting {
 /** Why a call cannot be judged: each is refused, none is sent.
  * - "unreadable": the engine or the page did not answer.
  * - "undescribed": the engine found an element this read cannot describe,
- *   and the snapshot never named it.
+ *   and the snapshot never named it; or it named another element than the
+ *   one the read found.
+ * - "framed": the call would act inside a frame the read cannot look into.
  * - "unusable": the selector is one the read will not hand to the engine. */
-type Blind = "unreadable" | "undescribed" | "unusable";
-const BLIND: Record<Blind, string> = { unreadable: UNREADABLE, undescribed: UNDESCRIBED, unusable: BAD_SELECTOR };
+type Blind = "unreadable" | "undescribed" | "framed" | "unusable";
+
+/** What the bot is told when its call could not be judged. */
+function blindReason(intent: Intent, blind: Blind): string {
+  if (blind === "framed") return intent.typed ? TYPED_IN_FRAME : intent.via === "enter" ? ENTER_IN_FRAME : FRAME_CLICK;
+  if (blind === "undescribed") return intent.typed ? TYPED_BLIND : UNDESCRIBED;
+  return blind === "unusable" ? BAD_SELECTOR : UNREADABLE;
+}
+
+/** Two names for one element, as the snapshot and the page read give them. */
+const sameName = (a: string, b: string): boolean => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
 /** The last commitment this gate let through in a browser session: a
  * reload there can send it again. */
@@ -355,7 +378,7 @@ export class BrowserCommitGate {
     const deadline = Date.now() + this.deps.holdMs;
     let seen = await this.look(call, intent);
     // Not knowing is not the same as nothing to hold.
-    if (typeof seen === "string") return refusal(intent.typed && seen === "undescribed" ? TYPED_BLIND : BLIND[seen]);
+    if (typeof seen === "string") return refusal(blindReason(intent, seen));
     if (!seen) return call.dispatch(intent.params);
     if (intent.typed) return refusal(TYPED_ENTER);
 
@@ -461,7 +484,7 @@ export class BrowserCommitGate {
       if (typeof now === "string") {
         settle(unavailable);
         close("unreadable");
-        return { next: "refuse", why: BLIND[now] };
+        return { next: "refuse", why: blindReason(intent, now) };
       }
       settle(unavailable, true);
       close("page-changed");
@@ -534,9 +557,15 @@ export class BrowserCommitGate {
     );
     // Only "missing" says there is nothing to act on.
     if (found === "missing") return null;
-    if (found === "unreadable" || found === "unusable") return found;
+    if (found === "unreadable" || found === "unusable" || found === "framed") return found;
     const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
     const known = ref ? this.deps.runtime.ref(call.session, ref) : undefined;
+    // The snapshot's own name for a ref, as a target of its own: a click on
+    // it, with nothing known about a form.
+    const bySnapshot = (): CommitTarget & Pick<PageTarget, "fields" | "identity" | "context"> => {
+      const box = known?.role === "searchbox" ? "search" : known?.role === "textbox" ? "single" : null;
+      return { via: "click", label: known?.name ?? "", role: known?.role ?? "", box, submits: false, search: box === "search", card: false, multiline: false, fields: [], identity: "", context: "" };
+    };
     let targets: Array<CommitTarget & Pick<PageTarget, "fields" | "identity" | "context">>;
     if (found === "hidden") {
       // The engine found an element the page read cannot describe: it is
@@ -544,15 +573,25 @@ export class BrowserCommitGate {
       // ref is all there is to judge a click by; with no name, or for an
       // Enter, nothing is.
       if (!known || intent.via !== "click") return "undescribed";
-      const box = known.role === "searchbox" ? "search" : known.role === "textbox" ? "single" : null;
-      targets = [{ via: "click", label: known.name, role: known.role, box, submits: false, search: box === "search", card: false, multiline: false, fields: [], identity: "", context: "" }];
+      targets = [bySnapshot()];
     } else {
       // More than one element can share the box. Each is judged.
-      targets = [found, ...(found.also ?? [])].map((target: PageTarget) => ({
+      const read = [found, ...(found.also ?? [])];
+      // The engine measures an element inside a frame from the frame's own
+      // corner, so on a page with a frame the element found in a ref's box
+      // may be another one, outside the frame. Text typed with a line break
+      // is judged by the element alone: when the snapshot does not call it
+      // by the same name, nothing says where that Enter would land.
+      if (intent.typed && ref && found.frames && !(known && read.some((target) => sameName(target.label, known.name)))) return "undescribed";
+      targets = read.map((target: PageTarget) => ({
         via: intent.via as "click" | "enter", shift: intent.shift, label: target.label, role: target.role, box: target.box,
         submits: target.submits, search: target.search, card: target.card, multiline: target.multiline,
         fields: target.fields, identity: target.identity, context: target.context,
       }));
+      // For a click, the element as the snapshot named it is judged beside
+      // the element as it was read: whichever the box really belongs to, a
+      // commitment by either is held.
+      if (intent.via === "click" && known) targets.push(bySnapshot());
     }
     // The snapshot's name is the browser's own; the page read's is ours. A
     // click is held when either one names a commitment, on any element the

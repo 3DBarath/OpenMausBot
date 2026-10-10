@@ -177,6 +177,13 @@ What counts as submitting a form:
   other key held (`Control+Enter`, `Enter+Alt`, in either order) is still
   Enter. Shift+Enter is a new line only in a multi-line box, and only as
   Shift and Enter alone.
+- **Enter inside a frame.** A frame of the page's own site is read like the
+  page, and Enter in it is judged the same way. A frame from another site,
+  which is how most shops take a card, cannot be read. Enter with the focus
+  inside one is refused, in any chord, and so is text typed there with a
+  line break: the bot is told to click the frame's button by its ref from a
+  snapshot, which is judged. A click or typed text aimed at the frame
+  element itself is refused too, because it lands on whatever is inside.
 - Ticking a box or choosing from a list (`agent_browser_check`,
   `agent_browser_uncheck`, `agent_browser_select`) when that control, or its
   form, carries a handler written on the element (`onchange="…submit()"`)
@@ -300,10 +307,12 @@ past it.
   only adds a line in a notes box, or a "Reply" button that only opens a box
   to type in. The daily number is used up sooner than the sends alone would.
 - Space on a focused button clicks it, and is not checked.
-- Inside an embedded frame, such as a payment or comment widget, a click is
-  judged by the name the last snapshot gave the element. The card shows no
-  fields and no picture, and the approval is bound to that name and the
-  address, not to the element itself. Enter there is not checked.
+- Inside an embedded frame from another site, such as a payment or comment
+  widget, a click is judged by the name the last snapshot gave the element.
+  The card shows no fields and no picture, and the approval is bound to that
+  name and the address, not to the element itself. Enter there is refused,
+  not judged: the bot has to click the frame's button instead. Space on a
+  focused button inside a frame is not checked, as anywhere else.
 - A card form with no autofill hints and only one sign (a field called "Card
   number" and nothing called a security code or an expiry, with no card
   number typed in yet) is not read as a card form. A library or membership

@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 const element = (extra: Partial<PageTarget> = {}): PageTarget => ({
-  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", secrets: false, ...extra,
+  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", secrets: false, frames: false, ...extra,
 });
 const SEND = element({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = element({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -777,6 +777,116 @@ describe("what the page read cannot see", () => {
     expect((await f.pending()).subtitle).toBe("this page · unlabelled button");
     await f.answer("deny");
     await held;
+  });
+});
+
+describe("a frame the read cannot look into", () => {
+  const press = (key: string) => ({ name: "agent_browser_press", arguments: { key } });
+
+  // Enter in a payment frame's card field pays. The read cannot say what
+  // Enter would do in there, so the press is refused; the page's button,
+  // clicked by its ref, is judged.
+  it.each(["Enter", "Return", "Control+Enter", "Enter+Shift", "Shift+Enter", "Enter+Meta"])("refuses %s while the focus is inside one, and says to click the button instead", async (key) => {
+    const f = fixture();
+    f.state.target = "framed";
+    const result = await f.call(press(key)) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/did not press Enter: the focus is inside a frame it cannot read/);
+    expect(text(result)).toMatch(/Click the button for this step instead, by its @ref/);
+    expect(f.state.reads).toEqual([{ selector: null, enter: true }]);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("refuses text typed with a line break when its selector is the frame itself", async () => {
+    const f = fixture();
+    f.state.target = "framed";
+    const result = await f.call({ name: "agent_browser_type", arguments: { selector: "#pay-frame", text: "4242\n" } }) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(text(result)).toMatch(/click the button/i);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it.each(["agent_browser_click", "agent_browser_check", "agent_browser_select"])("refuses %s aimed at the frame itself: it would land on something inside", async (name) => {
+    const f = fixture();
+    f.state.target = "framed";
+    f.refs.set("e2", { role: "Iframe", name: "Secure payment" });
+    for (const selector of ["#pay-frame", "@e2"]) {
+      const result = await f.call({ name, arguments: { selector } }) as { isError: boolean };
+      expect(result.isError).toBe(true);
+      expect(text(result)).toMatch(/would land inside a frame it cannot read/);
+      expect(text(result)).toMatch(/@ref of the element inside the frame/);
+    }
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("voids an approval when the focus has moved into one by the time of the answer", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Write a message", role: "textbox", box: "multiline", multiline: true });
+    const held = f.call(press("Enter"));
+    await f.pending();
+    f.state.target = "framed";
+    await f.answer("allow");
+    expect(text(await held)).toMatch(/the focus is inside a frame it cannot read/);
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+  });
+});
+
+describe("a ref the read may have matched to the wrong element", () => {
+  // The engine measures an element inside a frame from the frame's own
+  // corner, so its box can be the box of something else on the page outside
+  // (measured: a card field in a frame and an Email field, both at 8,8).
+  const EMAIL = element({ label: "Email", role: "textbox", box: "single", frames: true });
+
+  it("holds a click the snapshot names a commitment, whatever the element read in that box is", async () => {
+    const f = fixture();
+    f.state.target = EMAIL;
+    f.refs.set("e6", { role: "button", name: "Pay" });
+    const held = f.call(click("@e6"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { class: "money", label: "Pay" } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("still lets a click through when neither the element read nor the snapshot's name is a commitment", async () => {
+    const f = fixture();
+    f.state.target = EMAIL;
+    f.refs.set("e4", { role: "textbox", name: "Card number" });
+    f.refs.set("e7", { role: "tab", name: "Send money" });
+    await expect(f.call(click("@e4"))).resolves.toBe(CLICKED);
+    await expect(f.call(click("@e7"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+  });
+
+  const typed = (selector: string) => ({ name: "agent_browser_type", arguments: { selector, text: "4242\n" } });
+
+  it("refuses text typed with a line break when the page has a frame and the snapshot's name is not the element's", async () => {
+    const f = fixture();
+    f.state.target = EMAIL;
+    f.refs.set("e4", { role: "textbox", name: "Card number" });
+    const result = await f.call(typed("@e4")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+    // A ref the last snapshot never listed cannot be checked at all.
+    expect((await f.call(typed("@e99")) as { isError: boolean }).isError).toBe(true);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("types it when the name is the element's own, or the page has no frame, or the selector is no ref", async () => {
+    const f = fixture();
+    f.state.target = EMAIL;
+    f.refs.set("e1", { role: "textbox", name: " email " });
+    await expect(f.call(typed("@e1"))).resolves.toBe(CLICKED);
+    await expect(f.call(typed("#before"))).resolves.toBe(CLICKED);
+    f.state.target = { ...EMAIL, frames: false };
+    f.refs.set("e4", { role: "textbox", name: "Card number" });
+    await expect(f.call(typed("@e4"))).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toHaveLength(3);
   });
 });
 

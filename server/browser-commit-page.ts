@@ -31,6 +31,10 @@ export interface PageTarget {
   /** The page shows a field whose value the card masks (a password, a card
    * field, a code), anywhere on it. A picture of the page would show it. */
   secrets: boolean;
+  /** The page has a frame. The engine measures an element inside a frame
+   * from the frame's own corner, so on such a page the element found by a
+   * ref's box may be another one outside the frame. */
+  frames: boolean;
   /** Other elements in the same box, when nothing says which of them the
    * engine would act on. Any of them may be the one. */
   also?: PageTarget[];
@@ -41,11 +45,15 @@ export interface PageTarget {
  * - "hidden": the engine found the element but this read cannot describe
  *   it: it is inside a frame, or it has no area (the engine then clicks its
  *   corner, and whatever overflows it takes the click).
+ * - "framed": the call would act inside a frame this read cannot look
+ *   into. The focus is in a frame from another site, or the selector is a
+ *   frame itself (a click on it lands on something inside; typed keys go to
+ *   whatever is focused inside).
  * - "unusable": the selector is one this read will not hand to the engine
  *   (empty, shaped like a command-line flag, or over 2,000 characters).
  * - "unreadable": the engine or the page did not answer. Nothing is known.
  * Only "missing" says there is nothing to act on. */
-export type PageBlind = "missing" | "hidden" | "unusable" | "unreadable";
+export type PageBlind = "missing" | "hidden" | "framed" | "unusable" | "unreadable";
 
 export interface BrowserPageReader {
   /** The page's address as the engine reports it, or null when it will not say. */
@@ -74,7 +82,8 @@ const PAGE_READ = String.raw`(input) => {
     const textOf = prop("textContent"), editableOf = prop("isContentEditable"), ownerOf = prop("form"), focusOf = prop("activeElement"), rootOf = method("getRootNode");
     const getAttr = method("getAttribute"), hasAttr = method("hasAttribute"), matches = method("matches"), byId = method("getElementById"), pointIn = method("elementFromPoint");
     const queryIn = method("querySelector"), queryAllIn = method("querySelectorAll"), rectOf = method("getBoundingClientRect"), visible = method("checkVisibility");
-    const outerOf = prop("outerHTML"), innerTextOf = prop("innerText"), beforeOf = prop("previousElementSibling"), frameDoc = prop("contentDocument");
+    const outerOf = prop("outerHTML"), innerTextOf = prop("innerText"), beforeOf = prop("previousElementSibling"), frameDoc = prop("contentDocument"), pageOf = prop("ownerDocument");
+    const isFrame = (el) => tag(el) === "IFRAME" || tag(el) === "FRAME";
     const FORM_OWNED = ["INPUT", "BUTTON", "SELECT", "TEXTAREA"];
     const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const clip = (value, max) => (value.length > max ? value.slice(0, max) : value);
@@ -245,7 +254,7 @@ const PAGE_READ = String.raw`(input) => {
     // payment or a sign-in is taken to hold one.
     const FRAME_HINT = /\b(?:card|cvc|cvv|payment|pay|checkout|secure|password|login|signin|sign in|otp|verification|3ds|stripe|adyen|braintree|paypal|razorpay)\b/;
     const masksSomething = (root, depth) => all(root, []).some((el) => {
-      if (tag(el) === "IFRAME" || tag(el) === "FRAME") {
+      if (isFrame(el)) {
         if (!shown(el)) return false;
         const inner = frameDoc(el);
         if (inner) return depth < 3 && masksSomething(inner, depth + 1);
@@ -258,7 +267,8 @@ const PAGE_READ = String.raw`(input) => {
     const REGION = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="region"], [role="form"], section, article, [role="article"], main, [role="main"]';
     const TYPED = 'input, textarea, select, [contenteditable], [role="textbox"], [role="searchbox"]';
 
-    const describe = (el) => {
+    // "within" is the chain of frames the element is in, outermost first.
+    const describe = (el, within) => {
       const control = controlOf(el);
       const box = boxKind(control);
       const form = formOf(control);
@@ -311,9 +321,9 @@ const PAGE_READ = String.raw`(input) => {
       if (!form) {
         // No form says what goes with this control. What would go is what is
         // typed around it: the filled, visible fields of the nearest dialog
-        // or region, or of the page. They are shown and bound; they never
-        // decide what the control is.
-        const region = climb(up(control), (n) => matches(n, REGION)) || document;
+        // or region, or of the page it is in. They are shown and bound; they
+        // never decide what the control is.
+        const region = climb(up(control), (n) => matches(n, REGION)) || pageOf(control) || document;
         for (const field of all(region, [])) {
           if (field === control || !matches(field, TYPED)) continue;
           const read = fieldOf(field);
@@ -322,15 +332,22 @@ const PAGE_READ = String.raw`(input) => {
         }
       }
       const search = box === "search" || Boolean(climb(control, (n) => matches(n, '[role="search"], search'))) || (boxes === 1 && searches === 1);
-      const identity = acting === control ? identify(control) : identify(control) + " " + identify(acting);
+      const identity = within.map((frame) => identify(frame) + ">").join("") + (acting === control ? identify(control) : identify(control) + " " + identify(acting));
       return { control, target: { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, fields, identity, context: contextOf(acting, form, fields.length > 0) } };
     };
 
+    // Every element of the page, once.
+    let listed = null;
+    const everything = () => listed || (listed = all(document, []));
+    // What this script cannot say anything about: a call that would act
+    // inside a frame it cannot look into. The caller refuses it.
+    const FRAMED = { found: false, framed: true };
     let picks = [];
+    let within = [];
     if (input.box) {
       // Every element with the box the engine measured. Two can share one:
       // a control and its wrapper or only child, or two stacked in a cell.
-      const same = all(document, []).filter((candidate) => {
+      const same = everything().filter((candidate) => {
         const rect = rectOf(candidate);
         return Boolean(rect) && Math.abs(rect.x - input.box.x) + Math.abs(rect.y - input.box.y) + Math.abs(rect.width - input.box.width) + Math.abs(rect.height - input.box.height) <= 2;
       });
@@ -349,22 +366,37 @@ const PAGE_READ = String.raw`(input) => {
         }
         if (hit && climb(hit, (n) => same.includes(n))) picks = [hit];
       }
+      // The target is a frame itself: a click lands on something inside it,
+      // and typed keys go to whatever has the focus inside it.
+      if (picks.some(isFrame)) return FRAMED;
     } else {
       let el = focusOf(document);
-      for (let inner = el && shadowOf(el); inner && focusOf(inner); inner = shadowOf(el)) el = focusOf(inner);
+      for (let depth = 0; ; depth += 1) {
+        for (let inner = el && shadowOf(el); inner && focusOf(inner); inner = shadowOf(el)) el = focusOf(inner);
+        if (!el || !isFrame(el)) break;
+        // The focus is inside this frame. One of the page's own origin is
+        // read like the page; another site's cannot be read at all.
+        const inside = frameDoc(el);
+        if (!inside || depth >= 8) return FRAMED;
+        within.push(el);
+        el = focusOf(inside);
+      }
       if (!el || tag(el) === "BODY" || tag(el) === "HTML") return { found: true, label: "", role: "document", box: null, submits: false, search: false, card: false, multiline: false, fields: [] };
       picks = [el];
     }
     // Whatever is left is judged, each control once: the caller holds when any of them is a commitment.
     const described = [];
     for (const pick of picks) {
-      const one = describe(pick);
+      const one = describe(pick, within);
       if (!described.some((other) => other.control === one.control)) described.push(one);
     }
     if (described.length > 9) return { found: false, error: "too many elements share this box" };
     const [first, ...rest] = described.map((one) => one.target);
-    const secrets = masksSomething(document, 0);
-    return rest.length ? { found: true, ...first, secrets, also: rest } : { found: true, ...first, secrets };
+    // Shared by every element in the box: what the page shows, and whether
+    // it has a frame (the engine measures an element inside one from the
+    // frame's own corner, so its box can be another element's out here).
+    const about = { secrets: masksSomething(document, 0), frames: everything().some(isFrame) };
+    return rest.length ? { found: true, ...first, ...about, also: rest } : { found: true, ...first, ...about };
   } catch (error) {
     return { found: false, error: String(error) };
   }
@@ -396,8 +428,8 @@ export function parsePageTarget(value: unknown): PageTarget | null {
   const others = (Array.isArray(also) ? also : []).filter((entry) => entry && typeof entry === "object").slice(0, MAX_ALSO).map((entry) => parseTarget(entry as Record<string, unknown>));
   if (!target || others.some((other) => other === null)) return null;
   // The page is one page: what is on its screen is so for every element in the box.
-  const secrets = target.secrets;
-  return { ...target, ...(others.length ? { also: (others as PageTarget[]).map((other) => ({ ...other, secrets })) } : {}) };
+  const { secrets, frames } = target;
+  return { ...target, ...(others.length ? { also: (others as PageTarget[]).map((other) => ({ ...other, secrets, frames })) } : {}) };
 }
 
 function parseTarget(raw: Record<string, unknown>): PageTarget | null {
@@ -426,6 +458,7 @@ function parseTarget(raw: Record<string, unknown>): PageTarget | null {
     identity: text(raw.identity, 4_000),
     context: text(raw.context, 300),
     secrets: raw.secrets === true,
+    frames: raw.frames === true,
   };
 }
 
@@ -447,11 +480,11 @@ export const MAX_SELECTOR = 2_000;
 const NOT_FOUND = /^(?:Unknown ref|Element not found|Could not get bounding box)/;
 
 export function browserPageReader(query: EngineQuery): BrowserPageReader {
-  const read = async (input: { box: Box | null; enter: boolean }): Promise<PageTarget | "unseen" | "unreadable"> => {
+  const read = async (input: { box: Box | null; enter: boolean }): Promise<PageTarget | "unseen" | "framed" | "unreadable"> => {
     const answer = await query(["eval", "-b", Buffer.from(pageReadScript(input)).toString("base64")]);
     if (!answer.ok) return "unreadable";
-    const result = answer.data.result as { found?: unknown; error?: unknown } | null;
-    if (result && typeof result === "object" && result.found === false && result.error === undefined) return "unseen";
+    const result = answer.data.result as { found?: unknown; error?: unknown; framed?: unknown } | null;
+    if (result && typeof result === "object" && result.found === false && result.error === undefined) return result.framed === true ? "framed" : "unseen";
     return parsePageTarget(result) ?? "unreadable";
   };
   return {

@@ -144,6 +144,12 @@ recording controls are intentionally not added to the live browser chrome.
   is returned. A page that shows one is not screenshotted. Hold screenshots
   are listed in `browser-hold-shots.json` under the data directory and any
   left listed are deleted at server start (`server/browser-commit-shots.ts`).
+- Frames: a frame of the page's own origin is read like the page. A call
+  that would act inside a frame the script cannot read (Enter with the
+  focus in it, a click or typed text aimed at the frame element) is
+  refused. The engine measures an in-frame element from the frame's own
+  corner, so a ref click is judged both as the element read in that box
+  and as the element the snapshot named.
 - A card form is one with a `cc-*` autofill hint, or a card-number field
   beside a security-code or expiry field by name, or any value that passes
   the Luhn check.

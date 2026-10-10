@@ -57,7 +57,7 @@ describe("the fixed page read", () => {
   it("describes a submit button with its form's visible fields, and never a hidden one", () => {
     expect(click("send")).toEqual({
       // The page has a password field and a card field elsewhere on it.
-      found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true,
+      found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true, frames: false,
       fields: [{ name: "Message", type: "textarea", value: "Hello there" }],
       // The form's own fields say what it is; there is nothing around it to add.
       identity: expect.stringMatching(/^html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/), context: "",
@@ -439,6 +439,76 @@ describe("a page that must not be pictured", () => {
   });
 });
 
+describe("a frame", () => {
+  /** A <span> stands in for the frame, as above: the read knows a frame by
+   * its tag name and its contentDocument. `inner` is the frame's own page,
+   * or null for a frame from another site, which nothing here can read. */
+  const withFrame = <T,>(html: string, inner: { html: string; focus?: string } | null, body: (frame: PageElement) => T): T => {
+    page.body.innerHTML = html;
+    const frame = page.getElementById("frame")!;
+    const proto = Object.getPrototypeOf(frame) as object;
+    const tagName = Object.getOwnPropertyDescriptor(dom.Element!.prototype, "tagName")!.get!;
+    type Doc = { getElementById(id: string): unknown };
+    const doc = inner === null ? null : new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): Doc } }).DOMParser().parseFromString(inner.html, "text/html");
+    const focused = doc && inner?.focus ? doc.getElementById(inner.focus) : null;
+    const docProto = Object.getPrototypeOf(page) as object;
+    const active = (() => { for (let at: object | null = docProto; at; at = Object.getPrototypeOf(at)) { const found = Object.getOwnPropertyDescriptor(at, "activeElement"); if (found) return found.get!; } throw new Error("no activeElement"); })();
+    return patched(proto, "tagName", { get(this: object) { return this === frame ? "IFRAME" : tagName.call(this); } }, () =>
+      patched(proto, "contentDocument", { get(this: object) { return this === frame ? doc : null; } }, () =>
+        patched(docProto, "activeElement", { get(this: object) { return this === doc ? focused : active.call(this); } }, () => body(frame))));
+  };
+  const SHOP = `<input id="before" aria-label="Email" value="a@b.c"><span id="frame" tabindex="0" title="Secure payment"></span><button id="help" type="button">Help</button>`;
+  const PAY = `<body><form id="pay"><input id="card" aria-label="Card number" autocomplete="cc-number" value="4242424242424242"><button id="go">Pay</button></form><input id="lone" aria-label="Coupon"></body>`;
+
+  // Enter in a payment frame's card field pays (agent-browser 0.37.0, a frame
+  // from another origin). The page's own script cannot look into that frame,
+  // so it must not answer as if the frame element were the target.
+  it("says framed, not a description of the frame element, when the focus is inside a frame it cannot read", () => {
+    expect(withFrame(SHOP, null, (frame) => { frame.focus(); return run({ box: null, enter: true }); })).toEqual({ found: false, framed: true });
+  });
+
+  it("reads Enter inside a frame it can read as it would anywhere: the form's submit, the card field, the frame it is in", () => {
+    const read = withFrame(SHOP, { html: PAY, focus: "card" }, (frame) => { frame.focus(); return run({ box: null, enter: true }); });
+    expect(read).toMatchObject({ found: true, label: "Pay", role: "button", box: "single", submits: true, card: true });
+    expect(read.fields).toEqual([{ name: "Card number", type: "card", length: 16 }]);
+    // The identity says which frame, then where in it.
+    expect(read.identity).toMatch(/\/iframe:\d+#[0-9a-f]{16}>html:0\/body:\d+\/form:0\/input:0#[0-9a-f]{16} /);
+  });
+
+  it("keeps a formless field inside a readable frame to that frame's own page", () => {
+    const read = withFrame(SHOP, { html: PAY, focus: "lone" }, (frame) => { frame.focus(); return run({ box: null, enter: true }); });
+    expect(read).toMatchObject({ found: true, label: "Coupon", box: "single", submits: false });
+    // The fields around it are the frame's, never the page's outside it.
+    expect(JSON.stringify(read.fields)).not.toContain("a@b.c");
+  });
+
+  it("reads a readable frame with nothing focused in it as acting on nothing", () => {
+    expect(withFrame(SHOP, { html: PAY }, (frame) => { frame.focus(); return run({ box: null, enter: true }); })).toMatchObject({ found: true, role: "document", submits: false });
+  });
+
+  // A click on the frame element lands on whatever is inside it at that
+  // point, and text typed "into" it goes to whatever has the focus inside.
+  it.each([["a click", false], ["typed text", true]])("says framed when the selector of %s is the frame itself, readable or not", (_what, enter) => {
+    for (const inner of [null, { html: PAY }]) {
+      expect(withFrame(SHOP, inner, () => run({ box: boxOf("frame"), enter }))).toEqual({ found: false, framed: true });
+    }
+  });
+
+  it("says framed when a click on a wrapper would land on the frame inside it", () => {
+    const html = `<div id="wrap"><span id="frame" tabindex="0" title="Secure payment"></span></div>`;
+    const read = withFrame(html, null, (frame) => {
+      const box = boxOf("wrap", { x: 10, y: 10, width: 300, height: 200 });
+      return patched(Object.getPrototypeOf(page) as object, "elementFromPoint", { value: () => frame }, () => run({ box, enter: false }));
+    });
+    expect(read).toEqual({ found: false, framed: true });
+  });
+
+  it("says whether the page has a frame at all, so a caller knows a box can be a frame's own", () => {
+    expect(withFrame(SHOP, null, () => run({ box: boxOf("help"), enter: false }))).toMatchObject({ found: true, label: "Help", frames: true });
+    expect(clickIn(`<button id="help" type="button">Help</button>`, "help")).toMatchObject({ found: true, frames: false });
+  });
+});
+
 describe("a card form with no autofill hints", () => {
   const input = (label: string, value = "", attrs = "") => `<input aria-label="${label}" value="${value}" ${attrs}>`;
   const form = (fields: string, button = "Continue") => `<form id="f">${fields}<button id="go">${button}</button></form>`;
@@ -514,8 +584,9 @@ describe("parsePageTarget", () => {
     expect(parsePageTarget("found")).toBeNull();
     expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", fields: [{ name: "n", type: "text", value: "v", length: "3" }, null, "x"] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "", secrets: false,
+      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "", secrets: false, frames: false,
     });
+    expect(parsePageTarget({ found: true, frames: true })).toMatchObject({ frames: true });
     expect(parsePageTarget({ found: true, secrets: true })).toMatchObject({ secrets: true });
     expect(parsePageTarget({ found: true, secrets: "no" })).toMatchObject({ secrets: false });
   });
@@ -610,6 +681,17 @@ describe("browserPageReader", () => {
     await expect(reader.target("x".repeat(2_001), true)).resolves.toBe("unusable");
     expect(calls).toEqual([]);
     await expect(reader.target("x".repeat(2_000), false)).resolves.toMatchObject({ label: "Send" });
+  });
+
+  // The page script's own word for "this would act inside a frame I cannot
+  // read". It is neither hidden (judged by a name) nor unreadable.
+  it("says framed for the focus and for a selector alike, without looking twice", async () => {
+    const framed: Answer = { ok: true, data: { result: { found: false, framed: true } } };
+    const focus = engine({ eval: framed });
+    await expect(focus.reader.target(null, true)).resolves.toBe("framed");
+    const selector = engine({ "get box": box, eval: framed });
+    await expect(selector.reader.target("#frame", false)).resolves.toBe("framed");
+    expect(selector.calls.map((call) => call[0])).toEqual(["get", "eval"]);
   });
 
   it("looks twice before calling an element hidden, and reports no address when the engine will not say", async () => {

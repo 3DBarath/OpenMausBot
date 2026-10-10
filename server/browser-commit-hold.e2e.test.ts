@@ -273,6 +273,22 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_open", "agent_browser_snapshot", "agent_browser_reload"]);
   }, 60_000);
 
+  it("refuses Enter while the focus is inside a frame the page read cannot look into", async () => {
+    const before = engineCalls().length;
+    const open = (await cards()).length;
+    page({ target: { found: false, framed: true } });
+    for (const key of ["Enter", "Control+Enter", "Enter+Shift"]) {
+      const pressed = await tool("agent_browser_press", { key });
+      expect(pressed.status).toBe(200);
+      expect(pressed.body.result.isError).toBe(true);
+      expect(pressed.body.result.content[0].text).toMatch(/did not press Enter: the focus is inside a frame it cannot read/);
+    }
+    expect((await tool("agent_browser_click", { selector: "#pay-frame" })).body.result.content[0].text).toMatch(/would land inside a frame it cannot read/);
+    expect(engineCalls().slice(before)).toEqual([]);
+    expect(await cards()).toHaveLength(open);
+    page({ target: target() });
+  }, 60_000);
+
   // The engine reaches the route through the stdio proxy, and abandons a
   // call by sending notifications/cancelled. The real proxy, the real route.
   it("ends the hold when the engine cancels the call through its MCP proxy, and a late Allow sends nothing", async () => {

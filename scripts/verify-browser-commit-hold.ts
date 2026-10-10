@@ -37,8 +37,32 @@ const LOG = `<output id="log"></output><output id="state"></output><script>
 </script>`;
 const doc = (title: string, body: string) => `<!doctype html><html lang="en"><meta charset="utf-8"><title>${title}</title>${body}${LOG}</html>`;
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+/** A second origin, for a frame the page around it cannot read: a payment
+ * frame as a shop embeds one. Its form really posts, to this origin. */
+let framedPaid = 0;
+const frameSite = createServer((req, res) => {
+  req.resume();
+  if (new URL(req.url ?? "/", "http://localhost").pathname === "/framed-paid") { framedPaid += 1; res.end("ok"); return; }
+  res.setHeader("content-type", "text/html; charset=utf-8");
+  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Payment frame</title><form id="pay" onsubmit="event.preventDefault(); fetch('/framed-paid', { method: 'POST' });">
+    <input id="card" aria-label="Card number" value="4242424242424242"><input id="cvc" aria-label="CVC" value="123"><button>Pay</button></form></html>`);
+});
+await new Promise<void>((resolve) => frameSite.listen(0, "127.0.0.1", resolve));
+/** Reached as localhost, so it is another site than the page at 127.0.0.1, not only another port. */
+const frameOrigin = `http://localhost:${(frameSite.address() as { port: number }).port}`;
+
 /** One local page per reviewer scenario (docs/verification/browser-commit-hold.md, "Cases"). */
 const CASE_PAGES: Record<string, string> = {
+  // The Email field is the first thing on the page, as the card field is the
+  // first thing in the frame: the engine measures an element in a frame from
+  // the frame's own corner, so it gives both fields the same box.
+  "/frame-checkout": doc("Checkout", `<div><input id="before" aria-label="Email" value="ada@example.com"></div><iframe id="payframe" title="Secure payment" src="${frameOrigin}/pay-frame" width="420" height="120"></iframe>`),
+  "/inner-checkout": doc("Checkout", `<div><input id="before" aria-label="Email" value="ada@example.com"></div><iframe id="inner" title="Order" src="/inner-pay" width="420" height="120"></iframe>`),
+  "/inner-pay": `<!doctype html><html lang="en"><meta charset="utf-8"><title>Order frame</title><form id="pay" onsubmit="event.preventDefault(); parent.note('submitted:inner');">
+    <input id="card" aria-label="Card number" autocomplete="cc-number" value="4242424242424242"><button>Pay</button></form></html>`,
+  "/plain-card-form": doc("Card form", `<form id="order"><input aria-label="Name on card" value="Ada Lovelace"><input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="Expiry (MM/YY)" value="12/30"><input aria-label="CVC" value="123"><button>Continue</button></form>
+    <form id="lookup"><input name="ref" aria-label="Reference" value="4242 4242 4242 4242"><button>Look up</button></form>
+    <form id="library"><input aria-label="Library card number" value="20451900"><input aria-label="PIN" value="4821"><button>Log in</button></form>`),
   // The walkthrough's second page: a sign-in and a card form. Nothing on it is ever pictured.
   "/account": doc("Account", `<form id="login"><label for="user">Username</label><input id="user" value="ada"><label for="pw">Password</label><input id="pw" type="password" value="not-a-real-secret"><button>Log in</button></form>
     <form id="pay"><label for="cc">Card number</label><input id="cc" autocomplete="cc-number" value="4111111111111111"><button>Continue</button></form>`),
@@ -78,9 +102,6 @@ const CASE_PAGES: Record<string, string> = {
     <input aria-label="Code from your phone" autocomplete="one-time-code" value="246810"><input type="text" id="password" aria-label="Sign-in secret" value="correct-horse-battery">
     <input aria-label="Reference" value="5555 5555 5555 4444"><input aria-label="PIN" value="4821"><input aria-label="Name on card" autocomplete="cc-name" value="ADA LOVELACE">
     <input aria-label="City" value="Baramati"><button>Pay</button></form>`),
-  "/plain-card-form": doc("Card form", `<form id="order"><input aria-label="Name on card" value="Ada Lovelace"><input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="Expiry (MM/YY)" value="12/30"><input aria-label="CVC" value="123"><button>Continue</button></form>
-    <form id="lookup"><input name="ref" aria-label="Reference" value="4242 4242 4242 4242"><button>Look up</button></form>
-    <form id="library"><input aria-label="Library card number" value="20451900"><input aria-label="PIN" value="4821"><button>Log in</button></form>`),
 };
 let paid = 0;
 const site = createServer((req, res) => {
@@ -388,6 +409,28 @@ try {
       const card = await heldThenDenied("agent_browser_click", { selector: "#go" }, { title: "Send on your behalf?", label: /^Go$/ });
       assert.match(card.subtitle, /Feedback: Great/);
     } },
+    { id: "A9", title: "Enter with the focus inside a frame that cannot be read is refused; the frame's button, by its ref, is judged", run: async () => {
+      const page = await visit("/frame-checkout");
+      const before = framedPaid;
+      // Tab from the field before the frame moves the focus into the frame's card field.
+      await passes("agent_browser_click", { selector: "#before" });
+      await passes("agent_browser_press", { key: "Tab" });
+      for (const key of ["Enter", "Control+Enter", "Enter+Shift"]) await refused("agent_browser_press", { key }, /Click the button for this step instead/);
+      await refused("agent_browser_type", { selector: refIn(page, 'textbox "Card number"'), text: "1\n" }, /agent_browser_fill/);
+      await refused("agent_browser_type", { selector: "#payframe", text: "\n" }, /agent_browser_fill/);
+      await refused("agent_browser_click", { selector: "#payframe" }, /inside a frame/);
+      await sleep(700);
+      assert.equal(framedPaid, before, "a payment inside the frame went through");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Pay"') }, { title: "Spend money?", label: /^Pay$/ });
+      await sleep(300);
+      assert.equal(framedPaid, before, "the denied click paid");
+      // A frame of the page's own origin can be read, so Enter in it is judged like any other.
+      await visit("/inner-checkout");
+      await passes("agent_browser_click", { selector: "#before" });
+      await passes("agent_browser_press", { key: "Tab" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Spend money?", label: /^Pay$/ });
+      return { paidInFrame: framedPaid - before };
+    } },
     { id: "A10", title: "a card form with no autofill hints is money: two signs by name, or one value that is a card number", run: async () => {
       const page = await visit("/plain-card-form");
       const card = await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
@@ -486,6 +529,7 @@ try {
   await promisify(execFile)(binaryPath, ["close", "--all"], { env: { HOME: fixture.info.dataDir, USERPROFILE: fixture.info.dataDir, PATH: process.env.PATH }, timeout: 15_000 }).catch(() => {});
   await fixture.close();
   await new Promise<void>((resolve) => site.close(() => resolve()));
+  await new Promise<void>((resolve) => frameSite.close(() => resolve()));
 }
 console.log(JSON.stringify({ ok: !failure, logPath: fixture.info.logPath, ...(failure ? { error: failure instanceof Error ? failure.message : String(failure) } : {}), evidence }, null, 2));
 if (failure) process.exitCode = 1;
