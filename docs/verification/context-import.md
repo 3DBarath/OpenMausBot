@@ -41,6 +41,12 @@ Evidence covers:
 - While the owner's turn that recalled a note is still running (the fake engine holds it open), a chat-only device's message waits in the queue instead of being added to that turn, and then runs as its own turn in a fresh session with no note; the owner's own message is added to the running turn.
 - Run as the desktop app runs it (`OMB_TEST_DESKTOP_OWNER_TOKEN`), the shared-notes and import routes answer the app's own capability and refuse a local request without it, reads included, while `/api/health` and `/api/bots` still answer.
 
+`server/shared-notes-cards.e2e.test.ts` covers cards, on a server whose fake ACP engine asks a question or a permission in every turn:
+
+- A device paired with chat-only access answers the question card, and refuses the permission card with words of its own, of the owner's running turn that recalled a note, on both respond routes: each is `403`, the card stays open, and the owner then answers it.
+- The same device answers a card in a conversation that recalled nothing: allowed as before, and the owner's next message there is sent no note. Where the owner answered their own card, it is.
+- Another bot asks a bot in its main conversation after the owner's message there recalled a note: that ask starts a fresh session with the conversation replayed and no note; the next ask, with no owner message in between, resumes as usual; after the owner's next message recalls again, the ask after it replays again.
+
 `server/shared-notes-adopt.e2e.test.ts` covers conversations from before this version. The fixture is made older the way an upgrade does it: conversations are written, the server stops, the record of whose lines they were is removed, and the server starts again.
 
 - Before the owner adopts anything, their own question in an older conversation is sent no shared note, while a conversation started now is.
@@ -63,7 +69,8 @@ size limit, an unknown compression method, a large entry that is not read
 within a fixed amount of memory, a cut-off zip, too many entries), cuts and
 batch packing, the import's screen (passwords, card and identity and bank
 numbers, instructions, commands and links, common-word aliases, sensitive
-labels), retry then skip, a part that never parses being skipped, the job
+labels, and a written sample of ordinary facts and messages of which at most
+2 in 100 may be touched), retry then skip, a part that never parses being skipped, the job
 pausing itself after three engine failures and skipping them on request,
 stopping at 2,000 facts, pause and resume, coming back paused after a restart,
 cancel waiting for the upload's file, expiry after 14 days, the 30-fact Core

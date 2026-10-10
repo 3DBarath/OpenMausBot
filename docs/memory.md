@@ -294,9 +294,12 @@ subject, in a folder every bot can recall from:
 
 A shared note has the shape of a topic file: frontmatter with `title` and
 `aliases`, then dated entries. It is found the same way, by a word your message
-shares with the note's name, title or aliases. What is recalled from a note is
-the entries that share a word with your message, up to 600 characters; when
-only the note's name or an alias matched, its first entries.
+shares with the note's name, title or aliases; a common word such as "today"
+or "help" never finds a shared note, whatever its title says. What is recalled
+from a note is the entries that share a word with your message, the best match
+first, up to 600 characters; a number of two or more digits counts as a word
+there ("project 57"). When only the note's name or an alias matched, its first
+entries are given.
 
 - **Only in a private chat you started.** A shared note is recalled in a 1:1
   chat with you. It is never recalled in a room, a routine run, or a turn
@@ -311,13 +314,14 @@ only the note's name or an alias matched, its first entries.
   - **The request that started the turn was yours.** This is taken from how
     that request signed in, whether it sent a message, edited or resent one,
     or answered a question late. A message that waited in the queue keeps the
-    proof it was sent with (until a restart). Someone else's edit of your
+    proof it was sent with, across a restart too. Someone else's edit of your
     message is their turn, not yours. A turn nobody can be named for (a
     routine, a webhook, another bot's words, a turn resumed after a card)
     is never yours.
-  - **Every line a person wrote in the conversation is yours.** Each line you
-    send is recorded as yours when it is written. A conversation that holds
-    any other line recalls no shared note from then on: a line from a device
+  - **Every line a person wrote in the conversation is yours, and every card
+    a person answered was answered by you.** Each line you send, and each card
+    you answer, is recorded as yours at that moment. A conversation that holds
+    any other line or answer recalls no shared note from then on: a line from a device
     paired with chat-only access, a member, a second admin, a Slack relay, a
     routine's prompt, or a line someone else edited. Start a new conversation
     to have them recalled again. On My Cloud the same holds for a conversation
@@ -355,9 +359,17 @@ only the note's name or an alias matched, its first entries.
   proven yours arrive there afterwards (someone else's message, another bot's
   ask, a routine), that turn starts a fresh session from the conversation's
   messages, which never held the note, and such words are never added to a
-  turn that is still running. Two things are not covered: the bot's replies in
-  that conversation stay readable by everyone who can read it, and a card
-  answered by someone else continues the turn it belongs to.
+  turn that is still running. A card of such a conversation (an approval, a
+  question) can be answered by you only: anyone else is refused, and nothing
+  they sent reaches the turn. One thing is not covered: the bot's replies in
+  that conversation stay readable by everyone who can read it.
+
+  A known cost. Another bot's ask in a conversation counts as someone else's
+  words, so the first ask that follows a message of yours that recalled a note
+  starts a fresh session with the conversation replayed, which uses more of
+  the engine's input than resuming would. It happens once after each such
+  message, not on every ask, and only in a conversation where both you and
+  other bots write: a bot's main conversation, when a teammate asks it there.
 - **Its own rule in the prompt.** Recalled shared notes come after the bot's
   own notes, inside the same limit of four notes and 6,000 characters,
   labelled `shared/<file>`, under their own heading. It tells the bot these
@@ -402,8 +414,9 @@ it saves goes to the owner's About me and shared notes.
    can change the dates and the number (up to 2,000). A zip is read from its
    list of contents, so the photos and other files in it are never unpacked.
    One scan keeps at most 100,000 conversations, and a zip may hold at most
-   100,000 files, of which the first 1,000 conversation lists are read; past
-   any of these, the dialog says so.
+   100,000 files, of which the first 1,000 conversation lists are read, as
+   long as together they unpack to no more than 8 GB; past any of these, the
+   dialog says so.
 3. **Read.** You pick which bot's engine reads it. Only your own messages are
    sent, with each conversation's title and date: each message cut at 1,500
    characters, code blocks dropped, 6,000 characters a conversation, about
@@ -414,13 +427,21 @@ it saves goes to the owner's About me and shared notes.
 4. **Review.** Facts are listed in two groups. **Core** (at most 30) goes to
    About me, which every bot reads on every message. The rest is filed by
    subject in shared notes, under at most 40 subjects: the rarest are folded
-   into "General", and each folded fact keeps its subject as an alias. Facts
+   into "General", and each folded fact keeps the subject it had in front of
+   its text ("Asha: lives in Delhi"), which is how asking about that subject
+   still finds it. Facts
    about health, money, relationships, politics or religion start unticked,
-   and so does any fact the model marked sensitive in other words. When two
-   facts disagree, the newer one is kept and the older one is shown unticked.
-   If the facts you ticked would not fit (more new notes than there is room
-   for, or a note past 64 KB), the dialog says which, and Save stays off until
-   they do.
+   and so does any fact the model marked sensitive in other words. The model
+   is asked for a label on every fact, and the fact's own words are checked
+   whatever it answers: reproductive and mental health, medication, trouble
+   with the law, immigration status, sexuality, parties and voting, debt,
+   bankruptcy and pay. When two facts disagree, the newer one is kept and the
+   older one is shown unticked. You can tick or untick a whole group, and give
+   any fact another subject, an existing one or a new one. If the facts you
+   ticked would not fit (more new notes than there is room for, or a note past
+   64 KB), the dialog says which, Save stays off until they do, and **Keep
+   what fits and untick the rest** gets you there in one click: the newest
+   facts stay ticked, and nothing leaves the list.
 5. **Save.** Core facts are added to About me as learned facts, so each has a
    **Remove** button; subject facts are written to shared notes, each entry
    ending in `(imported · ChatGPT)`. A core fact About me has no room for is
@@ -429,15 +450,33 @@ it saves goes to the owner's About me and shared notes.
    conversation is recorded as read.
 
 **What is never kept or sent.** Before anything reaches a model or is written
-to the import's working files, a message that holds a password, a passcode or
-a PIN said in words, a payment card number, a card's security code, or a
-common identity or bank account number is left out, and the dialog counts
-them. A proposed fact that holds any of those is dropped, not masked. So is a
-fact that reads like an instruction to an assistant or holds a command, code
-or a link, because an imported note is later put in front of a bot. A subject,
-an alias and a conversation title go through the same screen; an alias may not
-be a common word, and a fact brings at most five. The screen works on shapes
-and wording. It is a net, not a guarantee: read what you keep.
+to the import's working files, the value of a secret is cut out of the message
+that holds it and replaced by `[removed]`; the rest of the message is read,
+and the dialog counts such messages. A secret here is a password, passcode or
+PIN (said before or after its name), a door, gate, alarm or safe code, the
+answer to a security question, a payment card number (one that passes the card
+check anywhere, or any number of that length near the word "card"), a card's
+security code, or a common identity or bank account number. A message that
+only talks about passwords, keys, codes or a document's expiry date is read as
+it is. A proposed fact that holds a secret is dropped whole, not masked.
+
+A proposed fact is also dropped when it is an instruction to an assistant, a
+grant of permission to one in any person ("has authorised assistants to…"),
+or holds a command, code, a full link (one with a scheme or a path, in any
+case) or a bare network address, because an imported note is later put in
+front of a bot. A site's bare name ("amazon.com") is a name and stays. A
+preference said as a statement about you ("prefers replies without emoji") is
+a fact, and the model is asked to write preferences that way. A subject goes
+through the same rules: one that holds a secret takes its fact with it, and
+one that reads like an order is replaced by "General". A title that holds a
+secret or a link is shown as "Untitled". An alias may not be a common word,
+and a fact brings at most five.
+
+The screen works on shapes and wording, held to a written sample from both
+sides (`server/testing/context-import-ordinary.ts`): at most 2 in 100 ordinary
+facts or messages touched, and every secret and instruction in the sample
+caught. It is a net, not a guarantee, and the review asks you to look for
+passwords and codes before you save.
 
 On save or cancel the uploaded file, the text cut from it and the proposed
 facts are deleted; if they cannot be deleted, the dialog says so and names the
