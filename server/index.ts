@@ -6469,6 +6469,13 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+/** Save About me the way Settings does, and tell every open window. */
+function saveAboutMe(aboutMe: string): void {
+  saveConfig({ profile: { ...cfg.profile, aboutMe } });
+  Object.assign(cfg, loadConfig());
+  broadcast({ kind: "config", ...configStatus() });
+}
+
 // Memory upkeep (server/memory-upkeep.ts): background capture, About me
 // suggestions and the nightly tidy-up, for bots with the switch on.
 const memoryUpkeep = createMemoryUpkeep({
@@ -16288,7 +16295,7 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 // Shared notes every bot can recall from (server/shared-notes.ts); owner only.
-ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()) }));
+ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()), aboutMe: () => cfg.profile?.aboutMe ?? "", saveAboutMe }));
 ROUTES.push(createDeciderRoutes({ decider }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({

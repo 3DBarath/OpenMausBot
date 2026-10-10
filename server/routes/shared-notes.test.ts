@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { denyReason } from "../../companion/src/routes.ts";
 import { DATA_DIR } from "../config.ts";
 import { json, readBody } from "../harness/http.ts";
+import { appendImportRecord, listImportRecords } from "../context-import/records.ts";
+import { appendAboutMe, commitLearned, listLearnedFacts, planLearned } from "../profile-learned.ts";
 import { requiredScope, type RequestAuth } from "../request-auth.ts";
 import { readSharedNote, writeSharedNote } from "../shared-notes.ts";
 import { createSharedNotesRoutes } from "./shared-notes.ts";
@@ -18,8 +20,12 @@ const OWNER: RequestAuth = { kind: "loopback", scopes: ["admin", "client"] };
 /** How index.ts answers `deps.owner` on an installation with two admin addresses: only this computer is the owner. */
 const onlyThisComputer = (auth: RequestAuth) => auth.kind === "loopback" && auth.trust !== "service";
 const servers: Server[] = [];
+let aboutMe = "";
 
-beforeEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
+beforeEach(() => {
+  rmSync(DATA_DIR, { recursive: true, force: true });
+  aboutMe = "";
+});
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
 });
@@ -27,7 +33,7 @@ afterEach(async () => {
 /** The table the way index.ts runs it: anything the module passes on falls
  * to a stand-in for the inline routes. */
 async function serve(auth: RequestAuth = OWNER, owner: (auth: RequestAuth) => boolean = () => true): Promise<string> {
-  const routes = [createSharedNotesRoutes({ owner })];
+  const routes = [createSharedNotesRoutes({ owner, aboutMe: () => aboutMe, saveAboutMe: (text) => { aboutMe = text; } })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
@@ -81,6 +87,35 @@ describe("shared notes over HTTP", () => {
     expect(readSharedNote("work.md")).not.toContain("sk-ant-api03-AAAA");
   });
 
+  it("deletes everything imported: entries, About me lines and the record of what was read", async () => {
+    const base = await serve();
+    writeSharedNote("food.md", "---\ntitle: Food\n---\n\n- 2025-03-02 · The person is vegetarian (imported · ChatGPT)\n- 2025-03-02 · Hates olives\n");
+    writeSharedNote("work.md", "---\ntitle: Work\n---\n\n- 2025-03-02 · Ships on Fridays (imported · Claude)\n");
+    const byBot = planLearned({ botId: "b1", botName: "Scout" }, ["Prefers short replies"], "", "2026-10-10");
+    const byImport = planLearned({ botId: "import:chatgpt", botName: "ChatGPT import" }, ["Lives in Pune"], "", "2026-10-10");
+    aboutMe = appendAboutMe("", [...byBot, ...byImport].map((fact) => fact.line))!;
+    commitLearned([...byBot, ...byImport]);
+    appendImportRecord({ id: "job-1", origin: "chatgpt", at: 1, conversations: 1, aboutMe: 1, sharedNotes: 2, from: 1, to: 2, hashes: ["abc"] });
+
+    // the bare DELETE never means "all notes"
+    expect((await fetch(`${base}/api/shared-notes`, { method: "DELETE" })).status).toBe(400);
+    expect(readSharedNote("work.md")).not.toBeNull();
+    // and an admin who is not the owner deletes nothing
+    const secondAdmin = await serve({ kind: "session", via: "bearer", scopes: ["admin", "client"], session: { id: "s2", email: "second@example.test" } as never }, onlyThisComputer);
+    expect((await fetch(`${secondAdmin}/api/shared-notes?imported=1`, { method: "DELETE" })).status).toBe(403);
+    expect(readSharedNote("work.md")).not.toBeNull();
+    expect(aboutMe).toContain("Lives in Pune");
+
+    const response = await fetch(`${base}/api/shared-notes?imported=1`, { method: "DELETE" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, entries: 2, files: 1, aboutMe: 1, aboutMeText: "- 2026-10-10 · learned by Scout · Prefers short replies", notes: [{ name: "food.md", entries: 1, imported: 0 }] });
+    expect(aboutMe).toBe("- 2026-10-10 · learned by Scout · Prefers short replies");
+    expect(listLearnedFacts().map((fact) => fact.botName)).toEqual(["Scout"]);
+    expect(readSharedNote("work.md")).toBeNull();
+    expect(readSharedNote("food.md")).toContain("Hates olives");
+    expect(listImportRecords()).toEqual([]);
+  });
+
   it("passes on what is not its own and answers only the owner", async () => {
     const base = await serve();
     expect(await (await fetch(`${base}/api/shared-notesx`)).json()).toEqual({ from: "inline routes" });
@@ -90,7 +125,7 @@ describe("shared notes over HTTP", () => {
     // a second admin has admin scope and is still not the owner: the notes are not theirs to read
     const secondAdmin = await serve({ kind: "session", via: "bearer", scopes: ["admin", "client"], session: { id: "s2", email: "second@example.test" } as never }, onlyThisComputer);
     writeSharedNote("food.md", "- Hates olives\n");
-    for (const [method, path] of [["GET", "/api/shared-notes"], ["GET", "/api/shared-notes/food.md"], ["PUT", "/api/shared-notes/food.md"], ["DELETE", "/api/shared-notes/food.md"]] as const) {
+    for (const [method, path] of [["GET", "/api/shared-notes"], ["DELETE", "/api/shared-notes"], ["GET", "/api/shared-notes/food.md"], ["PUT", "/api/shared-notes/food.md"], ["DELETE", "/api/shared-notes/food.md"]] as const) {
       const response = await fetch(`${guest}${path}`, { method });
       expect(response.status, `${method} ${path}`).toBe(403);
       const refused = await fetch(`${secondAdmin}${path}`, { method, ...(method === "PUT" ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "taken over" }) } : {}) });
