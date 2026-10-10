@@ -191,13 +191,16 @@ What counts as submitting a form:
   on the same element: the engine's check and uncheck click whatever they
   are pointed at, a Send button included.
 
-**Reload.** Reloading a page that a form was posted to posts it again. After
+**Reload.** Reloading a page that a form was posted to posts it again. Once
 a send or a payment has gone through in a browser (approved by you, or let
-through by the daily allowance), a reload there asks with the same card
-until the bot has opened another address. Going back or forward, or
-switching tabs, turns that on again, because the posted page may be in front
-once more. This asks more often than strictly needed, for instance after a
-site redirected.
+through by the daily allowance), every reload in that browser asks, for as
+long as the browser stays open. Opening another address does not end it:
+the page's own "back" link or script can put the posted page in front again.
+The reload card names the site and whether it was a send or a payment. It
+repeats nothing of what was sent. This asks more often than strictly needed.
+Closing the browser ends it. So does restarting OpenMausBot while the
+browser stays open, because the flag is kept in memory only: no state of a
+browser session is saved across a restart to keep it in.
 
 **Selectors.** The server reads the same element the engine would act on.
 Where two elements share one box, the one a click at its centre lands on is

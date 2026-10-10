@@ -261,16 +261,21 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     const before = engineCalls().length;
     const reloading = tool("agent_browser_reload");
     const again = await pending();
-    expect(again.card).toMatchObject({ title: "Send on your behalf?", tool: "agent_browser_reload", browserCommit: { label: "Reload, which can repeat “Send”" } });
+    expect(again.card).toMatchObject({ title: "Send on your behalf?", tool: "agent_browser_reload", browserCommit: { label: "Reload, which can repeat an earlier send", fields: [] } });
+    expect(again.card.subtitle).toBe("mail.example.com · Reload, which can repeat an earlier send");
     expect(again.card.browserCommit.shot).toBeUndefined();
     await respond(again, "deny");
     expect((await reloading).body.result.content[0].text).toMatch(/the user declined/);
     expect(engineCalls().slice(before)).toEqual([]);
-    // Once the bot has opened another address there is nothing to repeat.
+    // Opening another address does not end it: a reload is held for as long as this browser lives.
     page({ target: target() });
     expect((await tool("agent_browser_open", { url: "https://mail.example.com/inbox" })).status).toBe(200);
-    expect((await tool("agent_browser_reload")).body.result.isError).not.toBe(true);
-    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_open", "agent_browser_snapshot", "agent_browser_reload"]);
+    const elsewhere = tool("agent_browser_reload");
+    const third = await pending();
+    expect(third.card.tool).toBe("agent_browser_reload");
+    await respond(third, "deny");
+    await elsewhere;
+    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_open", "agent_browser_snapshot"]);
   }, 60_000);
 
   it("refuses Enter while the focus is inside a frame the page read cannot look into", async () => {

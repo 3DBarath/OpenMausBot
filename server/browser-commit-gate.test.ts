@@ -1000,12 +1000,16 @@ describe("reload after a commitment", () => {
     f.state.url = "https://shop.example.com/receipt";
     const held = f.call(reload);
     const card = await f.pending();
+    // The site and the class, and nothing of what was sent: on a shared
+    // browser the bot reloading may not be the bot that sent it.
     expect(card).toMatchObject({
       title: "Spend money?", tool: "agent_browser_reload",
-      subtitle: "shop.example.com · Reload, which can repeat “Continue”\nCard number: 16 characters, not shown",
-      browserCommit: { class: "money", host: "shop.example.com", label: "Reload, which can repeat “Continue”" },
+      subtitle: "shop.example.com · Reload, which can repeat an earlier payment",
+      browserCommit: { class: "money", host: "shop.example.com", label: "Reload, which can repeat an earlier payment", fields: [] },
     });
     expect(card.browserCommit).not.toHaveProperty("shot");
+    expect(card.browserCommit).not.toHaveProperty("more");
+    expect(JSON.stringify(card)).not.toContain("Card number");
     await f.answer("deny");
     expect(text(await held)).toMatch(/the user declined/);
     expect(f.state.dispatched).toEqual([click()]);
@@ -1031,12 +1035,21 @@ describe("reload after a commitment", () => {
     ]);
   });
 
-  it("stops holding once the bot has opened another address", async () => {
+  // The page's own "back" link, or its script, can bring the posted page to
+  // the front again after the bot opened another address (measured: a second
+  // order). Nothing the gate sees says a reload is safe again.
+  it("goes on holding after the bot has opened another address, and never reads the page for it", async () => {
     const f = fixture();
     await sent(f);
+    const reads = f.state.reads.length;
     await expect(f.call(open("https://mail.example.com/inbox"))).resolves.toBe(CLICKED);
-    await expect(f.call(reload)).resolves.toBe(CLICKED);
-    expect(f.cards.size).toBe(1);
+    f.state.url = "https://mail.example.com/inbox";
+    const held = f.call(reload);
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", subtitle: "mail.example.com · Reload, which can repeat an earlier send" });
+    await f.answer("deny");
+    await held;
+    expect(f.state.reads).toHaveLength(reads);
+    expect(f.state.dispatched).toEqual([click(), open("https://mail.example.com/inbox")]);
   });
 
   it.each([
@@ -1093,7 +1106,7 @@ describe("reload after a commitment", () => {
     f.state.target = SEND;
     await sent(f);
     const held = f.call(reload);
-    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { label: "Reload, which can repeat “Send”" } });
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { label: "Reload, which can repeat an earlier payment", fields: [] } });
     await f.answer("deny");
     await held;
   });

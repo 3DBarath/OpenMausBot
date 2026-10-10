@@ -27,10 +27,10 @@
 // | type | Real key presses: "\n" is Enter and "\t" is Tab. It focuses the element, it does not click it. | Text ending in one line break is judged as Enter there, and refused when "there" is a frame, an element inside one, or (on a page with a frame) a ref the snapshot names differently from the element read. Any other text with a line break is refused: the focus may have moved. |
 // | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
 // | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
-// | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, until the bot opens another address. |
-// | back, forward | Shows the page from history. Does not send a POST again, but a reload there does. | Not judged. Turns the reload hold back on. |
-// | tab_switch, tab_close | Brings another tab to the front. | Not judged. Turns the reload hold back on. |
-// | open | Navigates by GET. Refuses a `javascript:` address. | Not judged. Ends the reload hold when it goes to another address. |
+// | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, for as long as the browser lives. |
+// | back, forward | Shows the page from history. Does not send a POST again, but a reload there does. | Not judged. |
+// | tab_switch, tab_close | Brings another tab to the front. | Not judged. |
+// | open | Navigates by GET. Refuses a `javascript:` address. | Not judged. It does not end the reload hold: the page's own link or script can bring the posted page back. |
 // | tab_new | Opens a tab, by GET when given an address. | Not judged. |
 // | read | Fetches an address as text by GET. The page does not move. | Not judged. |
 // | scroll | Scrolls the page or an element. No click. | Not judged. |
@@ -192,16 +192,13 @@ function blindReason(intent: Intent, blind: Blind): string {
 /** Two names for one element, as the snapshot and the page read give them. */
 const sameName = (a: string, b: string): boolean => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
-/** The last commitment this gate let through in a browser session: a
- * reload there can send it again. */
+/** A commitment went out from this browser session, so a reload there can
+ * send it again. Only the class is kept: the reload card names the site and
+ * the class, and repeats nothing of what was sent (on a shared browser the
+ * bot reloading may not be the bot that sent it). */
 interface Sent {
   id: number;
   class: CommitClass;
-  label: string;
-  shown: CommitField[];
-  more: number;
-  /** The bot has opened another address since, so a reload repeats nothing. */
-  movedOn: boolean;
 }
 
 /** A card that is settled, or that nobody can answer any more, shows no
@@ -233,8 +230,6 @@ const EDGES = /^[\s\u0085]+|[\s\u0085]+$/g;
  * and agent_browser_uncheck make a real click on any element, and
  * agent_browser_select changes a control the page may submit on. */
 const CLICKS: ReadonlySet<string> = new Set(["agent_browser_click", "agent_browser_check", "agent_browser_uncheck", "agent_browser_select"]);
-/** Calls after which the page in front may again be one a form posted to. */
-const RETURNS: ReadonlySet<string> = new Set(["agent_browser_back", "agent_browser_forward", "agent_browser_tab_switch", "agent_browser_tab_close"]);
 /** Calls that close the browser, and its history with it. */
 const CLOSES: ReadonlySet<string> = new Set(["agent_browser_close", "restart_browser"]);
 
@@ -267,16 +262,6 @@ function place(url: string | null): { address: string; host: string } {
     parsed.hash = "";
     return { address: parsed.href, host: parsed.host || "this page" };
   } catch { return { address: "", host: "this page" }; } // an address the engine would not give is part of the digest as ""
-}
-
-/** Does opening `url` leave the document at `from`? Only a different
- * address (the fragment aside) does; anything unreadable counts as staying. */
-function leaves(from: string | null, url: unknown): boolean {
-  if (!from || typeof url !== "string" || !url.trim()) return false;
-  // The engine opens "example.com/x" as https://example.com/x.
-  const to = [url.trim(), `https://${url.trim()}`].map((candidate) => place(candidate).address).find(Boolean);
-  const here = place(from).address;
-  return Boolean(to) && Boolean(here) && to !== here;
 }
 
 const failed = (result: unknown): boolean => (result as { isError?: unknown } | null)?.isError === true;
@@ -370,9 +355,8 @@ export class BrowserCommitGate {
       if (!action) return call.dispatch(call.params);
       return refusal(`OpenMausBot did not run this script: ${SCRIPT_REFUSAL[action]}. Scripts are for reading the page. Use agent_browser_click, agent_browser_fill, agent_browser_press and agent_browser_open to act on it.`);
     }
-    const repeatable = this.sent.get(call.session);
-    const intent = commitIntent(call.params, name, args, Boolean(repeatable && !repeatable.movedOn));
-    if (!intent) return this.relay(call, name, args);
+    const intent = commitIntent(call.params, name, args, this.sent.has(call.session));
+    if (!intent) return this.relay(call, name);
     if (intent === "blind") return refusal(TYPED_BLIND);
     call.admit();
     const deadline = Date.now() + this.deps.holdMs;
@@ -504,21 +488,13 @@ export class BrowserCommitGate {
     }
   }
 
-  /** A call that is not judged. It goes through as the bot sent it; all
-   * that is kept is whether a reload could still repeat a commitment. */
-  private async relay(call: CommitCall, name: string, args: Record<string, unknown>): Promise<unknown> {
-    const sent = this.sent.get(call.session);
-    if (!sent) return call.dispatch(call.params);
-    // Where the page is before an open moves it: only another address
-    // leaves the document a form may have posted to.
-    const from = name === "agent_browser_open" && !sent.movedOn
-      ? await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read").catch(() => null)
-      : null;
+  /** A call that is not judged. It goes through as the bot sent it. Closing
+   * the browser is the one thing that ends the reload hold: its history
+   * goes with it. Opening another address does not, because the page's own
+   * link or script can bring the posted page back to the front. */
+  private async relay(call: CommitCall, name: string): Promise<unknown> {
     const result = await call.dispatch(call.params);
-    if (failed(result)) return result;
-    if (CLOSES.has(name)) this.sent.delete(call.session);
-    else if (RETURNS.has(name)) sent.movedOn = false;
-    else if (leaves(from, args.url)) sent.movedOn = true;
+    if (CLOSES.has(name) && !failed(result)) this.sent.delete(call.session);
     return result;
   }
 
@@ -527,13 +503,13 @@ export class BrowserCommitGate {
     return call.signal.aborted || !call.active();
   }
 
-  /** A commitment is about to be sent: a reload in this browser can repeat
-   * it. Money stays the class once money was spent here. */
+  /** A commitment is about to be sent: from now on a reload in this browser
+   * can repeat it, for as long as the browser lives. Money stays the class
+   * once money was spent here. */
   private remember(session: string, seen: Sighting): void {
     if (seen.repeat) return;
-    const before = this.sent.get(session);
     this.sentCount += 1;
-    this.sent.set(session, { id: this.sentCount, class: before?.class === "money" ? "money" : seen.class, label: seen.label, shown: seen.shown, more: seen.more, movedOn: false });
+    this.sent.set(session, { id: this.sentCount, class: this.sent.get(session)?.class === "money" ? "money" : seen.class });
   }
 
   /** What the call would act on right now. Null when it is no commitment
@@ -543,12 +519,11 @@ export class BrowserCommitGate {
   private async look(call: CommitCall, intent: Intent): Promise<Sighting | null | Blind> {
     if (intent.via === "reload") {
       const sent = this.sent.get(call.session);
-      if (!sent || sent.movedOn) return null;
+      if (!sent) return null;
       const { address, host } = place(await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read"));
       const digest = createHash("sha256").update(JSON.stringify([address, "reload", sent.id])).digest("hex");
-      const head = { host, label: `Reload, which can repeat “${clip(sent.label, 80)}”`, context: "" };
-      // No picture: the page a form posted to was never read for secrets.
-      return { class: sent.class, ...head, ...fit(head, sent.shown, sent.more), digest, picture: false, repeat: true };
+      // No fields and no picture: what was sent is not this call's to show.
+      return { class: sent.class, host, label: `Reload, which can repeat an earlier ${sent.class === "money" ? "payment" : "send"}`, context: "", shown: [], more: 0, digest, picture: false, repeat: true };
     }
     const [found, url] = await this.deps.runtime.withAgentAction(
       call.session,
