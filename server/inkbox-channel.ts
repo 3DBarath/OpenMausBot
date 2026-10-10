@@ -413,6 +413,8 @@ export class InkboxChannel {
   }
 
   private verifyKey(): Promise<boolean> {
+    // Only a passed check is kept for the life of the channel. A failed one
+    // may be an outage, so the next delivery checks again.
     this.keyVerification ??= (async () => {
       try {
         const response = await this.request("https://inkbox.ai/api/v1/api-keys/self", { method: "GET", redirect: "error",
@@ -421,7 +423,7 @@ export class InkboxChannel {
         const metadata = object(await response.json());
         return metadata?.status === "active" && metadata.scoped_identity_id === this.config!.identityId;
       } catch { return false; }
-    })();
+    })().then(verified => { if (!verified) this.keyVerification = null; return verified; });
     return this.keyVerification;
   }
 

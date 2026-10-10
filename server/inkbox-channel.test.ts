@@ -28,7 +28,7 @@ function signed(raw: string, seconds = Math.floor(NOW / 1000)) {
     "x-inkbox-signature": `sha256=${createHmac("sha256", CONFIG.signingSecret).update(`request-fixture.${stamp}.`).update(raw).digest("hex")}` };
 }
 
-async function fixture(options: { reply?: string; sendStatus?: number; sendThrow?: boolean; keyScope?: string | null; keyStatus?: string; file?: string; approvalMode?: () => "ask" | "auto"; onOwnerReceived?: (text: string, metadata: { receivedAt: number; eventTimestamp?: number }) => void; onOwner?: ConstructorParameters<typeof InkboxChannel>[0]["onOwner"]; onContact?: (contactId: string, eventId: string, text: string) => Promise<string>; config?: InkboxConfig | false } = {}) {
+async function fixture(options: { reply?: string; sendStatus?: number; sendThrow?: boolean; keyScope?: string | null; keyStatus?: string; keyOutage?: number; file?: string; approvalMode?: () => "ask" | "auto"; onOwnerReceived?: (text: string, metadata: { receivedAt: number; eventTimestamp?: number }) => void; onOwner?: ConstructorParameters<typeof InkboxChannel>[0]["onOwner"]; onContact?: (contactId: string, eventId: string, text: string) => Promise<string>; config?: InkboxConfig | false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "omb-inkbox-"));
   const file = options.file ?? join(dir, "inbox.json");
   const turns: unknown[][] = [];
@@ -38,7 +38,7 @@ async function fixture(options: { reply?: string; sendStatus?: number; sendThrow
     onOwner: options.onOwner ?? (async (id, text) => { turns.push(["owner", id, text]); return options.reply ?? "owner reply"; }),
     onContact: options.onContact ?? (async (contactId, id, text) => { turns.push(["contact", contactId, id, text]); return "contact reply"; }),
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-      if (init?.method === "GET") { keyChecks.push(String(input)); return Response.json({ scoped_identity_id: options.keyScope === undefined ? CONFIG.identityId : options.keyScope, status: options.keyStatus ?? "active" }); }
+      if (init?.method === "GET") { keyChecks.push(String(input)); if (keyChecks.length <= (options.keyOutage ?? 0)) return new Response("{}", { status: 503 }); return Response.json({ scoped_identity_id: options.keyScope === undefined ? CONFIG.identityId : options.keyScope, status: options.keyStatus ?? "active" }); }
       sends.push({ url: String(input), body: JSON.parse(String(init?.body)), options: init!, disk: JSON.parse(readFileSync(file, "utf8")) });
       if (options.sendThrow) throw new Error(`network ${CONFIG.apiKey} ${CONFIG.signingSecret}`);
       return new Response("{}", { status: options.sendStatus ?? 201 });
@@ -63,7 +63,7 @@ describe("InkboxChannel signed durable HTTP boundary", () => {
     const f = await fixture({ onOwner: async (id, text) => { calls.push([id, text]); await held; return "safe reply"; } });
     const response = await f.post(event());
     expect(response.status).toBe(202);
-    expect(statSync(f.file).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(f.file).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(f.file, "utf8")).deliveries[0].id).toBe("evt_one");
     release();
     await f.channel.idle();
@@ -99,6 +99,14 @@ describe("InkboxChannel signed durable HTTP boundary", () => {
   it("validates the remote identity-scoped API key once per process", async () => {
     const f = await fixture(); await f.post(event("evt_one")); await f.post(event("evt_two")); await f.channel.idle();
     expect(f.keyChecks).toEqual(["https://inkbox.ai/api/v1/api-keys/self"]); expect(f.turns).toHaveLength(2); expect(f.sends).toHaveLength(2);
+  });
+
+  it("checks the key again after a failed check, so one outage does not fail later messages", async () => {
+    const f = await fixture({ keyOutage: 1 });
+    await f.post(event("evt_one")); await f.channel.idle();
+    expect(f.turns).toHaveLength(0); expect(f.sends).toHaveLength(0);
+    await f.post(event("evt_two")); await f.post(event("evt_three")); await f.channel.idle();
+    expect(f.keyChecks).toHaveLength(2); expect(f.turns).toHaveLength(2); expect(f.sends).toHaveLength(2);
   });
 
   it("deduplicates stable events across requests and restarts and rejects changed replay bodies", async () => {
