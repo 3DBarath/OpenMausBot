@@ -101,7 +101,7 @@ export function capturePrompt(input: { botName: string; turns: readonly CaptureT
 }
 
 /** The JSON inside a model's answer, fenced or bare. */
-function jsonPayload(text: string): unknown {
+export function jsonPayload(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
   const candidate = (fenced ? fenced[1] : trimmed).trim();
