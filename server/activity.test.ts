@@ -144,6 +144,27 @@ describe("readBotActivity", () => {
     ]);
   });
 
+  it("reads a held browser click as what it was for, with the host and label it was shown with", () => {
+    decision({ at: "2026-09-07T09:00:00.000Z", requestId: "r1", tool: "agent_browser_click", summary: "mail.example.com · Send\nMessage: Hello", decision: "card-shown", source: "outbound", rule: "browser-commit:send" });
+    expect(read()).toEqual([
+      expect.objectContaining({ app: "Browser", label: "Send on your behalf", summary: "mail.example.com · Send\nMessage: Hello", outcome: "waiting", tool: "agent_browser_click" }),
+    ]);
+    decision({ at: "2026-09-07T09:00:04.000Z", requestId: "r1", tool: "agent_browser_click", summary: "mail.example.com · Send\nMessage: Hello", decision: "user-approved", source: "user", rule: "browser-commit:send" });
+    expect(read()).toEqual([expect.objectContaining({ app: "Browser", label: "Send on your behalf", outcome: "allowed" })]);
+    // The approval was void: the page had changed, so nothing was clicked.
+    decision({ at: "2026-09-07T09:00:05.000Z", requestId: "r1", tool: "agent_browser_click", decision: "auto-denied", source: "outbound", rule: "browser-commit:send:page-changed" });
+    expect(read()).toEqual([expect.objectContaining({ app: "Browser", label: "Send on your behalf", outcome: "denied" })]);
+  });
+
+  it("names money holds and allowance sends in the browser too", () => {
+    decision({ at: "2026-09-07T09:00:00.000Z", requestId: "r1", tool: "agent_browser_press", summary: "shop.example.com · Continue", decision: "card-shown", source: "outbound", rule: "browser-commit:money" });
+    decision({ at: "2026-09-07T09:01:00.000Z", tool: "agent_browser_click", summary: "mail.example.com · Reply", decision: "auto-approved", source: "outbound", rule: "browser-commit:send:daily-allowance:3/25" });
+    expect(read().map((row) => [row.app, row.label, row.outcome])).toEqual([
+      ["Browser", "Send on your behalf", "allowed"],
+      ["Browser", "Spend money", "waiting"],
+    ]);
+  });
+
   it("does not attach an approval to a different tool, or to a run long after it", () => {
     decision({ at: "2026-09-07T09:00:00.000Z", requestId: "r1", tool: "Bash", summary: "git status" });
     toolRun("t1", "i1", "Read", "2026-09-07T09:00:00.400Z", true);

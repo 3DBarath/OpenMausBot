@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
 
+import { commitRuleClass, type CommitClass } from "../shared/browser-commit.ts";
+
 import type { ActivityOutcome, ActivityRow } from "../shared/activity.ts";
 
 export type { ActivityOutcome, ActivityRow };
@@ -120,6 +122,10 @@ const OUTCOME_OF_DECISION: Record<DecisionKind, ActivityOutcome> = {
   "card-shown": "waiting",
 };
 
+/** A held browser click or Enter press reads as what it was for, not as
+ * the engine tool that would have made it. */
+const COMMIT_LABELS: Record<CommitClass, string> = { send: "Send on your behalf", money: "Spend money" };
+
 function describeRow(base: Omit<ActivityRow, "app" | "label">): ActivityRow {
   const { app, label } = describeTool(base.tool);
   return { ...base, app, label };
@@ -140,16 +146,16 @@ function foldDecisions(rows: DecisionRow[]): ActivityRow[] {
     const opened = group[0];
     const latest = group[group.length - 1];
     const summary = group.find((row) => row.summary)?.summary;
-    folded.push(
-      describeRow({
-        at: opened.at,
-        threadId: opened.threadId,
-        requestId: opened.requestId,
-        tool: latest.tool ?? opened.tool ?? "unknown",
-        ...(summary ? { summary } : {}),
-        outcome: OUTCOME_OF_DECISION[latest.decision],
-      }),
-    );
+    const base = {
+      at: opened.at,
+      threadId: opened.threadId,
+      requestId: opened.requestId,
+      tool: latest.tool ?? opened.tool ?? "unknown",
+      ...(summary ? { summary } : {}),
+      outcome: OUTCOME_OF_DECISION[latest.decision],
+    };
+    const commit = group.map((row) => commitRuleClass(row.rule)).find((kind) => kind !== null);
+    folded.push(commit ? { ...base, app: "Browser", label: COMMIT_LABELS[commit] } : describeRow(base));
   }
   return folded;
 }
