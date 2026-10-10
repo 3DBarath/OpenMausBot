@@ -1,0 +1,252 @@
+// The commit hold through the real harness: real browser route, respond
+// route, decision log and attachment store, under the shared disposable
+// launcher. The browser is an inert executable that answers the engine's
+// commands from a file the test writes, so no page, account or user data
+// is opened; the model is the repository's fake engine, parked mid-turn.
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { launchVerificationServer, type VerificationServer } from "../scripts/control-omb.ts";
+import { removeTempDir } from "./testing/cleanup.ts";
+
+const JPEG = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+const target = (extra: Record<string, unknown> = {}) => ({
+  found: true, label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], ...extra,
+});
+const SEND = target({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
+const PAY = target({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
+
+describe.skipIf(process.platform === "win32")("browser commit hold", () => {
+  let session: VerificationServer;
+  let fixture: string;
+  let botId: string;
+  let threadId: string;
+  let token: string;
+  const evidence: unknown[] = [];
+
+  const api = async (method: string, path: string, body?: unknown, bearer?: string) => {
+    const response = await fetch(`${session.info.url}${path}`, {
+      method, headers: { "content-type": "application/json", origin: session.info.url, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const result = { status: response.status, body: await response.json() as any };
+    if (method !== "GET") evidence.push({ method, path, status: result.status, ...(path.endsWith("/mcp") ? { call: (body as any)?.params?.name, result: result.body } : {}) });
+    return result;
+  };
+  const tool = (name: string, args: Record<string, unknown> = {}) => api("POST", "/api/internal/browser/mcp", { method: "tools/call", params: { name, arguments: args } }, token);
+  const click = (selector = "@e4") => tool("agent_browser_click", { selector });
+  /** What the inert browser says the page is. */
+  const page = (state: { url?: string; target: unknown }) => writeFileSync(join(fixture, "page.json"), JSON.stringify({ url: "https://mail.example.com/compose#top", ...state }));
+  /** The tool calls that reached the engine, in order. */
+  const engineCalls = (): Array<{ name: string; arguments: unknown }> => existsSync(join(fixture, "calls.ndjson"))
+    ? readFileSync(join(fixture, "calls.ndjson"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  const cards = async () => ((await api("GET", `/api/threads/${threadId}/messages?limit=100`)).body.messages as any[]).filter((row) => row.card?.browserCommit);
+  const pending = async () => {
+    let card: any;
+    await expect.poll(async () => {
+      card = (await cards()).findLast((row) => !row.card.answered);
+      return Boolean(card);
+    }, { timeout: 10_000 }).toBe(true);
+    return card;
+  };
+  const respond = (card: any, behavior: "allow" | "deny") => api("POST", `/api/threads/${threadId}/respond`, { requestId: card.card.requestId, behavior });
+
+  beforeAll(async () => {
+    fixture = mkdtempSync(join(tmpdir(), "omb-commit-hold-"));
+    const browser = join(fixture, "agent-browser");
+    writeFileSync(browser, [
+      "#!/usr/bin/env node",
+      'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+      'import { createInterface } from "node:readline";',
+      `const dir = ${JSON.stringify(fixture)};`,
+      "const args = process.argv.slice(2);",
+      'const page = () => JSON.parse(readFileSync(dir + "/page.json", "utf8"));',
+      "const answer = (data) => process.stdout.write(JSON.stringify({ success: true, data, error: null }));",
+      `if (args[0] === "screenshot") writeFileSync(args[1], Buffer.from(${JSON.stringify(JPEG)}, "base64"));`,
+      'else if (args[0] === "get" && args[1] === "box") answer({ x: 1, y: 2, width: 3, height: 4 });',
+      'else if (args[0] === "get" && args[1] === "url") answer({ url: page().url });',
+      'else if (args[0] === "eval") answer({ result: page().target });',
+      'else if (args[0] === "set") answer({});',
+      'else if (args[0] === "session") answer({ sessions: [] });',
+      'else if (args[0] === "mcp") {',
+      '  createInterface({ input: process.stdin }).on("line", (line) => {',
+      "    const message = JSON.parse(line); if (message.id === undefined) return;",
+      '    if (message.method === "tools/call") appendFileSync(dir + "/calls.ndjson", JSON.stringify(message.params) + "\\n");',
+      '    const result = message.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "inert-browser", version: "1" } }',
+      '      : message.method === "tools/list" ? { tools: [{ name: "agent_browser_click", inputSchema: { type: "object" } }] }',
+      '      : { content: [{ type: "text", text: "inert browser did " + message.params.name }] };',
+      '    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");',
+      "  });",
+      '} else process.stdout.write("1.0.0\\n");',
+    ].join("\n"), { mode: 0o700 });
+    page({ target: target() });
+    // The fake engine parks mid-turn, so the turn's browser capability stays live.
+    session = await launchVerificationServer(
+      { ...process.env, FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_RELEASE: join(fixture, "release") },
+      undefined, undefined, { binaryPath: browser, executablePath: browser },
+    );
+    evidence.push({ fixture: session.info });
+    expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+    const created = await api("POST", "/api/bots", { name: "Pepper", browser: true, computer: "browser", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    botId = created.body.bot.id;
+    threadId = created.body.bot.threadId;
+    expect((await api("POST", `/api/bots/${botId}/messages`, { text: "HOLD_FIXTURE", threadId })).status).toBe(202);
+    const deadline = Date.now() + 15_000;
+    let mount: Record<string, string> | undefined;
+    while (!mount?.OMB_MCP_TOKEN) {
+      if (Date.now() > deadline) throw new Error("the fake engine never received the browser tools");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      try { mount = JSON.parse(readFileSync(session.fixtureDumpPath, "utf8")).mcpConfig?.mcpServers?.browser?.env; }
+      catch { /* the dump is not written yet */ }
+    }
+    token = mount.OMB_MCP_TOKEN;
+    // The proxy is told to outlast a hold: nine minutes and a margin, inside the ten-minute default.
+    expect(mount.OMB_MCP_CALL_TIMEOUT_MS).toBe("570000");
+  }, 60_000);
+
+  afterAll(async () => {
+    if (session) {
+      writeFileSync(`${session.info.logPath}.browser-commit-hold.json`, JSON.stringify({ evidence, engineCalls: fixture ? engineCalls() : [] }, null, 2));
+      console.info(JSON.stringify({ ...session.info, evidencePath: `${session.info.logPath}.browser-commit-hold.json` }));
+      await session.close();
+    }
+    if (fixture) await removeTempDir(fixture);
+  });
+
+  it("relays an ordinary click, and holds a send until the person allows it", async () => {
+    page({ target: target() });
+    const plain = await click("#details");
+    expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    expect(plain.body.result.content[0].text).toBe("inert browser did agent_browser_click");
+    expect(await cards()).toEqual([]);
+
+    page({ target: SEND });
+    const before = engineCalls().length;
+    const held = click("@e4");
+    const card = await pending();
+    expect(card.card).toMatchObject({
+      title: "Send on your behalf?",
+      subtitle: "mail.example.com · Send\nMessage: Hello there",
+      options: ["Allow", "Deny"],
+      tool: "agent_browser_click",
+      heldCode: "approval.held.outbound",
+      outboundRequest: { tool: "agent_browser_click", app: "mail.example.com", calls: [{ app: "mail.example.com", label: "Send" }] },
+      browserCommit: { class: "send", host: "mail.example.com", label: "Send", fields: [{ name: "Message", type: "textarea", value: "Hello there" }] },
+    });
+    // The server's own screenshot is served while the card is open.
+    const shot = `/api/attachments/${String(card.card.browserCommit.shot).split("/").pop()}`;
+    const picture = await fetch(session.info.url + shot, { headers: { origin: session.info.url } });
+    expect(picture.status).toBe(200);
+    expect(picture.headers.get("content-type")).toBe("image/jpeg");
+    expect((await api("GET", "/api/bots")).body.bots.find((row: any) => row.id === botId).tasks.find((task: any) => task.threadId === threadId).activity).toBe("waiting-on-you");
+    // While it waits, the bot may read the page but not change it.
+    expect((await tool("agent_browser_snapshot")).status).toBe(200);
+    const blocked = await tool("agent_browser_fill", { selector: "@e3", text: "something else" });
+    expect(blocked.status).not.toBe(200);
+    expect(blocked.body.error).toMatch(/approval for this browser waits on the person/);
+    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_snapshot"]);
+
+    expect((await respond(card, "allow")).body).toMatchObject({ ok: true, outcome: "allowed-once" });
+    const result = await held;
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body.result.content[0].text).toBe("inert browser did agent_browser_click");
+    expect(engineCalls().at(-1)).toEqual({ name: "agent_browser_click", arguments: { selector: "@e4" } });
+    const settled = (await cards()).find((row) => row.card.requestId === card.card.requestId);
+    expect(settled.card.answered).toBe("allow");
+    expect(settled.card.browserCommit.shot).toBeUndefined();
+    expect((await fetch(session.info.url + shot, { headers: { origin: session.info.url } })).status).toBe(404);
+
+    const decisions = ((await api("GET", "/api/decisions?limit=50")).body.decisions as any[]).filter((row) => row.requestId === card.card.requestId);
+    expect(decisions.map((row) => [row.decision, row.source, row.rule, row.tool])).toEqual([
+      ["card-shown", "outbound", "browser-commit:send", "agent_browser_click"],
+      ["user-approved", "user", "browser-commit:send", "agent_browser_click"],
+    ]);
+    expect(decisions[0].summary).toBe("mail.example.com · Send\nMessage: Hello there");
+    const activity = (await api("GET", `/api/bots/${botId}/activity`)).body.rows as any[];
+    expect(activity.find((row) => row.requestId === card.card.requestId)).toMatchObject({ app: "Browser", label: "Send on your behalf", outcome: "allowed" });
+  }, 60_000);
+
+  it("clicks nothing on Deny, and re-asks when the page changed under an approval", async () => {
+    page({ target: SEND });
+    const before = engineCalls().length;
+    const denied = click();
+    await respond(await pending(), "deny");
+    const refusal = await denied;
+    expect(refusal.status).toBe(200);
+    expect(refusal.body.result.isError).toBe(true);
+    expect(refusal.body.result.content[0].text).toMatch(/the user declined\. Do not retry it/);
+
+    const held = click();
+    const first = await pending();
+    page({ target: { ...SEND, fields: [{ name: "Message", type: "textarea", value: "Edited after the card was shown" }] } });
+    await respond(first, "allow");
+    const second = await pending();
+    expect(second.card.requestId).not.toBe(first.card.requestId);
+    expect(second.card.subtitle).toContain("Edited after the card was shown");
+    expect((await cards()).find((row) => row.card.requestId === first.card.requestId).card).toMatchObject({ answered: "unavailable", dismissed: true, browserCommit: { pageChanged: true } });
+    await respond(second, "deny");
+    expect((await held).body.result.isError).toBe(true);
+    expect(engineCalls().slice(before)).toEqual([]);
+  }, 60_000);
+
+  it("spends the daily allowance for sends, asks past it, and always asks before money", async () => {
+    expect((await api("PATCH", `/api/bots/${botId}`, { outbound: { policy: "allow", dailyCap: 1 } })).status).toBe(200);
+    page({ target: SEND });
+    const open = (await cards()).length;
+    const allowed = await click();
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(allowed.body.result.isError).not.toBe(true);
+    expect(await cards()).toHaveLength(open);
+    expect((await api("GET", `/api/bots/${botId}/outbound`)).body.today).toBe(1);
+
+    const past = click();
+    const asked = await pending();
+    expect(asked.card.title).toBe("Send on your behalf?");
+    await respond(asked, "deny");
+    await past;
+
+    expect((await api("PATCH", `/api/bots/${botId}`, { outbound: { policy: "allow", dailyCap: 100 } })).status).toBe(200);
+    page({ url: "https://shop.example.com/checkout", target: PAY });
+    const paying = click("@e11");
+    const money = await pending();
+    expect(money.card).toMatchObject({
+      title: "Spend money?",
+      subtitle: "shop.example.com · Continue\nCard number: 16 characters, not shown",
+      heldCode: "approval.held.money",
+      browserCommit: { class: "money", host: "shop.example.com" },
+    });
+    await respond(money, "deny");
+    await paying;
+    expect((await api("GET", `/api/bots/${botId}/outbound`)).body.today).toBe(1);
+    expect((await api("PATCH", `/api/bots/${botId}`, { outbound: { policy: "ask", dailyCap: 25 } })).status).toBe(200);
+  }, 60_000);
+
+  it("refuses a script that would act and a typed line break that would send, without a card", async () => {
+    const before = engineCalls().length;
+    const open = (await cards()).length;
+    const script = await tool("agent_browser_eval", { script: "document.querySelector('form').submit()" });
+    expect(script.status).toBe(200);
+    expect(script.body.result.isError).toBe(true);
+    expect(script.body.result.content[0].text).toMatch(/did not run this script: it clicks or submits something/);
+    page({ target: target({ label: "Write a message", role: "textbox", box: "multiline", multiline: true }) });
+    const typed = await tool("agent_browser_type", { selector: "#composer", text: "On my way\n" });
+    expect(typed.body.result.isError).toBe(true);
+    expect(typed.body.result.content[0].text).toMatch(/agent_browser_fill/);
+    expect((await tool("agent_browser_eval", { script: "document.title" })).body.result.isError).not.toBe(true);
+    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_eval"]);
+    expect(await cards()).toHaveLength(open);
+  }, 60_000);
+
+  it("closes the card and frees the browser when the turn is stopped mid-hold", async () => {
+    page({ target: SEND });
+    const held = click();
+    const card = await pending();
+    expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId })).status).toBe(200);
+    expect((await held).status).toBe(401);
+    await expect.poll(async () => (await cards()).find((row) => row.card.requestId === card.card.requestId).card.answered, { timeout: 5_000 }).toBe("unavailable");
+    expect((await respond(card, "allow")).body).toMatchObject({ outcome: "unavailable" });
+  }, 60_000);
+});
