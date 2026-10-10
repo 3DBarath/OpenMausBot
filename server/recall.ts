@@ -1,7 +1,9 @@
 // Automatic recall before a turn. The person's message searches the bot's
 // own memory files and — only in a 1:1 turn the person started — its own
-// other conversations, and the best passages ride in with the turn. No model call;
-// every source is a bounded SQL lookup. A source that fails is empty.
+// other conversations and, when that person is the installation's owner,
+// the shared notes (server/shared-notes.ts), and the best passages ride in
+// with the turn. No model call; every source is a bounded lookup. A source
+// that fails is empty.
 // The block goes in front of this turn's message, never into the system
 // prompt: the volatile half is re-sent whole whenever any part of it
 // changes, and recall changes nearly every turn.
@@ -13,6 +15,7 @@ import { recallMessages, recallTerms, type MemoryHit, type RecallHit } from "./m
 import { parseTopicHeader, readTopicHead, topicBody, topicWords } from "./memory-topics.ts";
 import { listMemoryTopics, memoryDate, readMemoryTopic, searchMemoryFiles, workspaceDir } from "./workspace.ts";
 import { withoutExpired } from "./memory-entries.ts";
+import { listSharedNotes, readSharedNote } from "./shared-notes.ts";
 import { join } from "node:path";
 
 /** Below this many characters a message is a nod, not a question. */
@@ -110,6 +113,10 @@ export interface RecallInput {
   /** The bot's other conversations to search, current thread excluded;
    * empty when conversations must not be searched (rooms, peer or webhook turns). */
   threadIds: readonly string[];
+  /** Whether the shared notes may be recalled: true only in a one-to-one
+   * chat the installation's owner started (sharedNotesAllowed). It does not
+   * depend on the bot having other conversations. */
+  sharedNotes: boolean;
   /** How a conversation reads in the block: `chat "Title"`. */
   label: (threadId: string) => string;
   /** How a message's author reads: the person's name or the bot's. */
@@ -143,6 +150,37 @@ export function topicPassages(botId: string, query: string): RecallPassage[] {
       const body = topicBody(withoutExpired(readMemoryTopic(botId, topic.name) ?? "", memoryDate()).text);
       if (!body) continue;
       out.push({ source: "memory", label: `memory/${topic.name}`, snippet: body.length > TOPIC_PASSAGE_CHARS ? `${body.slice(0, TOPIC_PASSAGE_CHARS)}…` : body });
+      if (out.length >= MEMORY_HITS) break;
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+/** Whether a turn may recall the shared notes. They are the owner's, so
+ * three things must hold: a person started a one-to-one chat (the rule that
+ * lets conversations be searched); the message that started it is the
+ * owner's own (server/shared-notes-owner.ts), never a guest's, a member's,
+ * another admin's or a relayed one; and on a Cloud home the owner alone
+ * wrote in the conversation. */
+export function sharedNotesAllowed(turn: { personStarted: boolean; ownersLine: () => boolean; cloudHome: boolean; ownerOnlyThread: () => boolean }): boolean {
+  return turn.personStarted && turn.ownersLine() && (!turn.cloudHome || turn.ownerOnlyThread());
+}
+
+/** Shared notes whose name, title or aliases share a word with the message:
+ * the same rule as topicPassages, over the folder every bot shares. */
+export function sharedNotePassages(query: string): RecallPassage[] {
+  const terms = recallTerms(query);
+  if (!terms.length) return [];
+  const out: RecallPassage[] = [];
+  try {
+    for (const note of listSharedNotes()) {
+      const words = topicWords(note.name, note.header);
+      if (!terms.some((term) => words.some((word) => sameWord(term, word)))) continue;
+      const body = topicBody(withoutExpired(readSharedNote(note.name) ?? "", memoryDate()).text);
+      if (!body) continue;
+      out.push({ source: "memory", label: `shared/${note.name}`, snippet: body.length > TOPIC_PASSAGE_CHARS ? `${body.slice(0, TOPIC_PASSAGE_CHARS)}…` : body });
       if (out.length >= MEMORY_HITS) break;
     }
   } catch {
@@ -189,6 +227,9 @@ export function buildRecall(input: RecallInput): RecallResult | null {
   if (!query) return null;
   const topics = topicPassages(input.botId, query);
   const named = new Set(topics.map((passage) => passage.label));
-  const notes = [...topics, ...memoryPassages(input.botId, query).filter((passage) => !named.has(passage.label))].slice(0, MEMORY_HITS);
+  const own = [...topics, ...memoryPassages(input.botId, query).filter((passage) => !named.has(passage.label))];
+  // Shared notes come after the bot's own, inside the same four: on a
+  // subject the bot has its own note for, its own note wins.
+  const notes = [...own, ...(input.sharedNotes ? sharedNotePassages(query) : [])].slice(0, MEMORY_HITS);
   return renderRecall([...notes, ...conversationPassages(input, query)]);
 }

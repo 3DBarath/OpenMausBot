@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import { closeMessageDb, recallMatchTerm, recallTerms } from "./message-db.ts";
-import { buildRecall, enoughMatches, memoryPassages, RECALL_CLOSE, RECALL_OPEN, recallQuery, renderRecall, topicPassages } from "./recall.ts";
+import { buildRecall, enoughMatches, memoryPassages, RECALL_CLOSE, RECALL_MAX_CHARS, RECALL_OPEN, recallQuery, renderRecall, sharedNotePassages, sharedNotesAllowed, topicPassages } from "./recall.ts";
+import { writeSharedNote } from "./shared-notes.ts";
 import { appendMemoryLog, searchMemoryFiles, writeMemoryFile, writeMemoryTopic, WORKSPACES_DIR } from "./workspace.ts";
 
 const BOT = "bot-recall-test";
@@ -71,7 +72,7 @@ describe("recall from memory files", () => {
     writeMemoryTopic(BOT, "archive.md", "- 2026-09-01 · Dentist was Dr Old · expired 2026-09-05\n");
     expect(memoryPassages(BOT, "any good restaurants nearby tonight").map((p) => p.label)).toEqual(["memory/dining.md"]);
     expect(memoryPassages(BOT, "who is my dentist")).toEqual([]);
-    const block = buildRecall({ botId: BOT, message: "book a table, any restaurants?", threadIds: [], label: () => "", author: () => "" });
+    const block = buildRecall({ botId: BOT, message: "book a table, any restaurants?", threadIds: [], sharedNotes: false, label: () => "", author: () => "" });
     expect(block?.text).toContain("memory/dining.md");
     expect(block?.text).toContain("Loves pasta");
   });
@@ -148,7 +149,72 @@ describe("recall from memory files", () => {
 
   it("is null for a short message or nothing matching", () => {
     writeMemoryTopic(BOT, "dining.md", "- Loves pasta\n");
-    expect(buildRecall({ botId: BOT, message: "ok", threadIds: [], label: () => "", author: () => "" })).toBeNull();
-    expect(buildRecall({ botId: BOT, message: "schedule the quarterly review", threadIds: [], label: () => "", author: () => "" })).toBeNull();
+    expect(buildRecall({ botId: BOT, message: "ok", threadIds: [], sharedNotes: false, label: () => "", author: () => "" })).toBeNull();
+    expect(buildRecall({ botId: BOT, message: "schedule the quarterly review", threadIds: [], sharedNotes: false, label: () => "", author: () => "" })).toBeNull();
+  });
+});
+
+describe("recall from shared notes", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    rmSync(WORKSPACES_DIR, { recursive: true, force: true });
+  });
+
+  const recall = (message: string, sharedNotes: boolean) => buildRecall({ botId: BOT, message, threadIds: [], sharedNotes, label: () => "", author: () => "" });
+  const labels = (text: string | undefined) => [...(text ?? "").matchAll(/^\[\d+\] (\S+) /gm)].map((match) => match[1]);
+
+  it("allows shared notes only in a one-to-one chat the owner started", () => {
+    const never = () => { throw new Error("not asked"); };
+    const yes = () => true;
+    const no = () => false;
+    expect(sharedNotesAllowed({ personStarted: true, ownersLine: yes, cloudHome: false, ownerOnlyThread: never })).toBe(true);
+    // a room, a routine run, a peer, webhook or hand-off turn: nobody is asked whose line it was
+    expect(sharedNotesAllowed({ personStarted: false, ownersLine: never, cloudHome: false, ownerOnlyThread: never })).toBe(false);
+    expect(sharedNotesAllowed({ personStarted: false, ownersLine: never, cloudHome: true, ownerOnlyThread: never })).toBe(false);
+    // someone else on the installation started the chat: a guest, a member, another admin
+    expect(sharedNotesAllowed({ personStarted: true, ownersLine: no, cloudHome: false, ownerOnlyThread: never })).toBe(false);
+    expect(sharedNotesAllowed({ personStarted: true, ownersLine: no, cloudHome: true, ownerOnlyThread: never })).toBe(false);
+    // on a Cloud home the whole conversation must be the owner's
+    expect(sharedNotesAllowed({ personStarted: true, ownersLine: yes, cloudHome: true, ownerOnlyThread: yes })).toBe(true);
+    expect(sharedNotesAllowed({ personStarted: true, ownersLine: yes, cloudHome: true, ownerOnlyThread: no })).toBe(false);
+  });
+
+  it("recalls a shared note by name, title or alias only when sharedNotes is true", () => {
+    writeSharedNote("food.md", "---\ntitle: Food\naliases: [restaurants, dinner]\n---\n\n- 2025-03-02 · The person is vegetarian (imported · ChatGPT)\n");
+    const block = recall("any good restaurants nearby tonight?", true);
+    expect(block?.text).toContain("shared/food.md");
+    expect(block?.text).toContain("The person is vegetarian (imported · ChatGPT)");
+    expect(block).toMatchObject({ notes: 1, conversations: 0 });
+    // a room, a routine run, a peer or webhook turn: the caller passes false
+    expect(recall("any good restaurants nearby tonight?", false)).toBeNull();
+    // word matching, like topics: nothing in the name, title or aliases says "pasta"
+    expect(sharedNotePassages("do I like pasta")).toEqual([]);
+  });
+
+  it("puts the bot's own notes first and keeps shared ones inside the cap of four", () => {
+    for (const name of ["a", "b", "c"]) writeMemoryTopic(BOT, `travel-${name}.md`, `---\naliases: [travel]\n---\n- Own travel note ${name}\n`);
+    for (const name of ["x", "y"]) writeSharedNote(`trips-${name}.md`, `---\ntitle: Trips ${name}\naliases: [travel]\n---\n\n- 2025-01-01 · Shared travel note ${name} (imported · Claude)\n`);
+    const block = recall("plan my travel for June", true)!;
+    expect(labels(block.text)).toEqual(["memory/travel-a.md", "memory/travel-b.md", "memory/travel-c.md", "shared/trips-x.md"]);
+    expect(block.notes).toBe(4);
+    writeMemoryTopic(BOT, "travel-d.md", "---\naliases: [travel]\n---\n- Own travel note d\n");
+    // four of its own: a shared note on the same subject does not get in
+    expect(labels(recall("plan my travel for June", true)!.text).some((label) => label.startsWith("shared/"))).toBe(false);
+  });
+
+  it("stays inside the character cap and leaves an expired shared fact out", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 8, 26, 12));
+      writeSharedNote("trip.md", "---\naliases: [holiday]\n---\n\n- 2026-09-20 · Staying in Goa (imported · ChatGPT) · until 2026-09-25\n- 2026-09-20 · Prefers window seats (imported · ChatGPT)\n");
+      for (let index = 0; index < 3; index += 1) writeSharedNote(`holiday-${index}.md`, `---\ntitle: Holiday ${index}\n---\n\n- ${"long ".repeat(800)}\n`);
+      const block = recall("where should we go on holiday", true)!;
+      expect(block.text.length).toBeLessThanOrEqual(RECALL_MAX_CHARS);
+      expect(block.text).not.toContain("Goa");
+      expect(sharedNotePassages("holiday").find((passage) => passage.label === "shared/trip.md")?.snippet).toBe("- 2026-09-20 · Prefers window seats (imported · ChatGPT)");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

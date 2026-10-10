@@ -138,7 +138,8 @@ import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildRecall } from "./recall.ts";
+import { buildRecall, sharedNotesAllowed } from "./recall.ts";
+import { ownerLine, type OwnerFacts } from "./shared-notes-owner.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
@@ -1565,12 +1566,35 @@ function recentWorkSources(bot: BotRecord) {
   };
 }
 
+/** What decides whose the shared notes are (server/shared-notes-owner.ts). */
+function notesOwnerFacts(): OwnerFacts {
+  return { hosted: HOSTED_WORKSPACE, loopbackIsOwner: LOOPBACK.trust === "owner", admins: signInAllowList().admins };
+}
+
+/** Whether the installation's owner sent the message that started this turn:
+ * the harness's own record of which message started this exact turn, read
+ * the way lent computers are (sharedComputerPrincipal), so a routine, a
+ * webhook, a stopped request or anything unprovable is nobody's. */
+function ownerStartedTurn(threadId: string, generation: string | undefined): boolean {
+  const request = directRequestOwners.get(threadId);
+  if (!generation || !request?.messageId || request.stopped || request.automation || !request.generations.has(generation)) return false;
+  return ownerLine(store.messagesFor(threadId).find((message) => message.id === request.messageId), {
+    ...notesOwnerFacts(),
+    // a signed-in device is the owner's when it has admin access; a Cloud home's owner has one key
+    adminDevice: (person) => CLOUD_HOME
+      ? cloudProvenOwnerPerson(person)
+      : sessions.list().some((session) => session.scopes.includes("admin") && personKey(session) === person),
+  });
+}
+
 /** The automatic-recall block for a turn (server/recall.ts), or "". Notes
  * always; the bot's other conversations only when `conversations` — a 1:1
  * turn the person started — because a message from another bot, a webhook
  * or a room must not be able to pull a private chat into its reply. The
- * conversations are the ones session_search would search, minus this one. */
-function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opts: { conversations: boolean; userName: string }): string {
+ * conversations are the ones session_search would search, minus this one.
+ * The shared notes are the owner's alone: recalled only when the owner's
+ * own message started this turn (`generation` names the turn). */
+function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opts: { conversations: boolean; userName: string; generation?: string }): string {
   if (bot.memoryEnabled === false || !autoRecallEnabled(cfg)) return "";
   const roomByThread = new Map<string, GroupRecord>();
   if (opts.conversations) {
@@ -1591,6 +1615,12 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
       botId: bot.id,
       message,
       threadIds,
+      sharedNotes: sharedNotesAllowed({
+        personStarted: opts.conversations,
+        ownersLine: () => ownerStartedTurn(threadId, opts.generation),
+        cloudHome: Boolean(CLOUD_HOME),
+        ownerOnlyThread: () => cloudOwnerOnlyThread(threadId),
+      }),
       label: (id) => {
         const room = roomByThread.get(id);
         if (room) return `room ${JSON.stringify(room.name)}`;
@@ -11040,6 +11070,7 @@ async function startTurn(
         // neither pulls earlier conversations in
         conversations: commsDepth === 0 && !coordinationNode && !opts?.automationSource && !opts?.unattended,
         userName: cfg.profile?.name?.trim() || "User",
+        generation: dispatchClaimId,
       });
       runningTurnEngines.set(threadId, instance);
       // The prompt carries the soul as saved now. If it changed during setup,
