@@ -81,6 +81,35 @@ describe("secrets", () => {
     expect(screenTitle("Dinner ideas")).toBe("Dinner ideas");
   });
 
+  // A password written in groups is one value: an app password as Google and
+  // Apple hand them out, a recovery code. All of it goes, not its first group.
+  it("cuts a password written in groups as one value", () => {
+    const cases: Array<[string, string]> = [
+      ["My Gmail app password is abcd efgh ijkl mnop, keep it for the mail script.", `My Gmail app password is ${SECRET_CUT}, keep it for the mail script.`],
+      ["The app-specific password for iCloud: abcd-efgh-ijkl-mnop", `The app-specific password for iCloud: ${SECRET_CUT}`],
+      ["My recovery code is 4f7a 9c2d 11be 03aa and I keep it in the safe.", `My recovery code is ${SECRET_CUT} and I keep it in the safe.`],
+      ["Backup code: 1234 5678 9012", `Backup code: ${SECRET_CUT}`],
+    ];
+    for (const [message, read] of cases) {
+      expect(cutSecrets(message), message).toEqual({ text: read, cut: 1 });
+      expect(holdsSecret(read), read).toBe(false);
+    }
+    const tally: DropTally = { secrets: 0, instructions: 0 };
+    expect(proposed(["The person's Gmail app password is abcd efgh ijkl mnop"], {}, tally)).toEqual([]);
+    expect(tally.secrets).toBe(1);
+    // four short words after "password is" are a sentence, not a password, unless an app password is what is named
+    for (const text of ["The password is what they need most", "My password is with John for now", "The app password page is easy to find", "An app password is what Gmail asks for"]) {
+      expect(holdsSecret(text), text).toBe(false);
+    }
+  });
+
+  // A set of common wordings, not every way a password can be said. A plain
+  // word given as a password cannot be told from a word about one.
+  it("lets a plain word through as a password: the wording gives it no shape to go by", () => {
+    expect(holdsSecret("My wifi password is sunflower")).toBe(false);
+    expect(holdsSecret("My wifi password is weak")).toBe(false);
+  });
+
   it("takes a date, a year, a length or a count for what it is, not for a secret", () => {
     for (const text of [
       "My passport expires on 14 March 2031", "My licence expires 2027-05-20", "The passport is valid until 14/03/2031", "My bank account was opened on 2024-03-01",

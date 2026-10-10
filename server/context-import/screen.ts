@@ -50,6 +50,15 @@ const CODE_VALUE = "(\\d(?:[ -]?\\d){2,11}#?)";
 
 /** `the password is VALUE`, with a few words in between allowed ("for the wifi"). */
 const PASSWORD_THEN_VALUE = new RegExp(`\\b(?:${PASSWORD_WORD})\\b(?:\\s+(?!is\\b|was\\b|are\\b)[\\w'’.-]+){0,4}?\\s*${LINKER}\\s*${OPEN_QUOTE}${TOKEN}`, "gi");
+/** A value written in groups of four, as an app password or a recovery
+ * code is: three to eight groups, with spaces or dashes between them. */
+const GROUPED_VALUE = "([A-Za-z0-9]{4}(?:[ -][A-Za-z0-9]{4}){2,7})(?![A-Za-z0-9])";
+/** `the recovery code is 4f7a 9c2d 11be 03aa`: one value, when it holds a
+ * digit. Four short words after "the password is" are a sentence. */
+const PASSWORD_THEN_GROUPS = new RegExp(`\\b(?:${PASSWORD_WORD})\\b(?:\\s+(?!is\\b|was\\b|are\\b)[\\w'’.-]+){0,4}?\\s*${LINKER}\\s*${OPEN_QUOTE}${GROUPED_VALUE}`, "gi");
+/** `my app password is abcd efgh ijkl mnop`: an app password is sixteen
+ * letters in four groups, so there letters alone are enough. */
+const APP_PASSWORD_THEN_GROUPS = new RegExp(`\\bapp(?:lication)?(?:[\\s-]+specific)?[\\s-]+passwords?\\b(?:\\s+(?!is\\b|was\\b|are\\b)[\\w'’.-]+){0,4}?\\s*${LINKER}\\s*${OPEN_QUOTE}${GROUPED_VALUE}`, "gi");
 /** `the password VALUE`, the value straight after the word. */
 const PASSWORD_VALUE = new RegExp(`\\b(?:${PASSWORD_WORD})\\b\\s+${OPEN_QUOTE}${TOKEN}`, "gi");
 /** `VALUE is the wifi password`. The word ends its phrase: "1Password is my password manager" names no password. */
@@ -143,6 +152,9 @@ function secretSpans(text: string): Span[] {
     spans.push([start, start + found.replace(/[.!?)\]]+$/, "").length]);
   };
   for (const match of text.matchAll(PASSWORD_THEN_VALUE)) value(match, passwordLike);
+  // written in groups, the whole of it is the value, not its first group
+  for (const match of text.matchAll(PASSWORD_THEN_GROUPS)) value(match, (found) => /\d/.test(found));
+  for (const match of text.matchAll(APP_PASSWORD_THEN_GROUPS)) value(match);
   for (const match of text.matchAll(PASSWORD_VALUE)) value(match, (found) => /\d/.test(found) && passwordLike(found));
   for (const match of text.matchAll(VALUE_THEN_PASSWORD)) {
     const found = match[1];
