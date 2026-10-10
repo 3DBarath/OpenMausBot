@@ -58,7 +58,7 @@ Evidence covers:
 `server/shared-notes-adopt-lost.e2e.test.ts` covers what the owner's click must never take:
 
 - A chat-only device edits the owner's message after proof began: the stored edit carries its sender, and the conversation is left for that reason. Then `shared-notes-threads.json` is deleted and the server restarted: no conversation from before is sent a note, the click adopts none of them (not the edited one, not the one adopted before, not one that was the owner's alone), and it reports how many it could not take because the record was lost (`skipped.lost`). A conversation started after the loss recalls as usual. Deleting `shared-notes-proof.json` instead has the same effect, and what the record still proves keeps its standing.
-- A team backup is exported and imported on the same fixture: the imported conversation's lines carry no sender, and the click does not adopt it (`skipped.restored`), on a second click and after a restart either; the owner's own older conversation is adopted, and a new conversation with the imported bot recalls.
+- A team backup is exported and imported on the same fixture: the imported conversation's lines carry no sender, and the click does not adopt it (`skipped.restored`), on a second click and after a restart either; the owner's own older conversation is adopted, and a new conversation with the imported bot recalls. Then both record files are deleted: proof begins again and the owner's own conversations can be adopted, but the imported one is still left and still sent no note, because its mark is on the conversation itself.
 - The whole installation is backed up and restored from that archive (`POST /api/workspace-backup/restore`, then a restart): an older conversation that could have been adopted before the restore is left afterwards (`skipped.restored`), on every later start too; the conversation the archive's record proves still recalls, and so does a new one.
 
 `server/context-import-failures.e2e.test.ts` covers what an import may never do to the server:
@@ -75,7 +75,10 @@ write made at once is never replaced by a slower, older one, and that every
 copy is synced before it is renamed into place), that adoption gives way
 between batches and a conversation read for it is not kept loaded, that a
 list with no conversation among its first 10,000 items is refused and read no
-further, what each engine says about keeping the text, both parsers on
+further, that a list stops at 2,000,000 items and an upload at 4,000,000
+within a time bound and without a long stall, what each engine says about
+keeping the text (a hosted provider none, a model server on this computer or
+network unknown), a password written in groups cut as one value, both parsers on
 synthetic conversations (edited branches,
 images, unknown shapes), the list splitter on a 512 MB file within a fixed
 amount of memory, zip handling (names that climb out of the folder, the entry
@@ -124,9 +127,13 @@ these is a test gap; each is how it works.
 - A crash within a moment of a message loses that line's proof: the record is
   written about a quarter of a second after the message. That conversation
   then never recalls a shared note.
-- Both record files deleted cannot be told from a first start: proof begins
-  again and every existing conversation can be adopted. One of the two
-  missing is a loss and adopts nothing from before it.
+- Both record files deleted or damaged cannot be told from a first start:
+  proof begins again, every existing conversation can be adopted, and an
+  earlier loss of the record is forgotten. Still known then: which
+  conversations a team backup brought in (the mark is on the conversation's
+  own record in the store) and everything from before a restore of the whole
+  installation (by the restore's receipt). One of the two files missing or
+  unreadable is a loss and adopts nothing from before it.
 - A conversation where the owner wrote from a device since removed, or
   answered a card from a signed-in device, is never adopted. Neither is one
   from a team backup, one from before a restore of the whole installation or
@@ -141,18 +148,32 @@ these is a test gap; each is how it works.
   alias, never by its content alone.
 - An engine may keep its own record of the text an import sends it, and the
   import cannot delete that. The dialog says so where the engine cannot be
-  told otherwise or does not say; what a provider does with a request is not
-  known to the app for any engine.
+  told otherwise or does not say, and for any OpenAI-compatible engine whose
+  address is this computer, a private network address or a local name. Where
+  it says nothing, that means only that this app's call to a hosted provider
+  writes nothing on this computer; what a provider does with a request is not
+  known to the app for any engine. The address is judged as written, with no
+  lookup.
+- The secret screen recognises a set of common wordings. A plain word given
+  as a password ("my wifi password is sunflower") passes, as do wordings
+  nobody wrote down.
+- One list of an upload is read for at most 2,000,000 items and one upload
+  for 4,000,000 in all; the rest is reported as read in part or not read.
 - The screens for secrets, sensitive subjects and instruction-shaped facts are
-  a guard in front of the person's own review. An independent review of an
-  earlier version, on wordings the rules had not been written against,
-  measured approximately: 12 of 22 sensitive facts with no label from the
-  model still ticked, 11 of 26 secret wordings still ticked, 11 of 121
-  ordinary facts and 9 of 50 ordinary messages wrongly left out. The rules
-  were widened afterwards and pass the written sample in
-  `server/testing/context-import-ordinary.ts`; no independent sample has been
-  measured against the current rules in this repository, so expect misses of
-  a similar order on new wordings.
+  a guard in front of the person's own review, which is the real check. An
+  independent review measured them at `ce7128f67` on samples of its own;
+  the figures are approximate and the samples small:
+  - sensitive facts left unlabelled by the model and still ticked: 13 of 32;
+  - secret wordings kept as proposed facts: 12 of 32; the same wordings sent
+    to the engine uncut: 12 of 32;
+  - instruction-shaped facts kept: 8 of 12, the weakest of the screens;
+  - ordinary facts wrongly dropped: 2 of 121; ordinary messages left out: 0
+    of 50; messages with a value cut: 2 of 50; aliases refused: 4 of 40.
+
+  One rule changed after that measurement (a password written in groups is
+  cut whole), which was not measured again. The project's own written sample
+  in `server/testing/context-import-ordinary.ts` passes, and says little
+  about wordings nobody wrote down.
 
 ## Not proven here
 

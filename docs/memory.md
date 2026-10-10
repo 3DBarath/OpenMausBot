@@ -347,18 +347,23 @@ entries are given.
   card answer from anyone else ends its standing, and pressing the button
   again does not restore it.
 
-  Two more things are never adopted, whatever their messages look like:
+  Two more things are not adopted, whatever their messages look like:
   - **A conversation that came from a backup.** One a team backup brought in
     beside your own, and every conversation from before the whole
     installation was last restored from a backup or copied from another
     computer. No request made here wrote those messages, and a backup can
     hold anyone's. What the backup's own record already proves yours keeps
     its standing, and a conversation you start afterwards is yours as usual.
+    This does not depend on the record files: a team backup's conversation
+    carries the mark itself, in the list of conversations, and a restore is
+    known by its own receipt.
   - **A conversation from before the record was lost.** If the record of
     which messages are yours goes missing or cannot be read, nothing is
     proven by that: conversations from before then recall no shared note,
     and the button does not give them back. It says the record was lost and
-    how many conversations it could not take for that reason.
+    how many conversations it could not take for that reason. That a loss
+    happened is itself kept in the record files, so it holds while one of
+    the two survives (see "Both record files" below).
 
   What it can and cannot tell. A routine's conversation is recognised while it
   still carries its run, which it does until someone writes in it, or while
@@ -447,10 +452,16 @@ the known ones, in plain words.
   after the message. If the server is killed in that moment, that line is
   never proven and its conversation recalls no shared note from then on.
   Start a new conversation.
-- **Both record files gone is a fresh start.** If the record and the file
-  beside it are both deleted, the next start cannot tell it from the first
-  one: proof begins again, and every existing conversation counts as older
-  and can be adopted. One of the two missing is a loss, and adopts nothing.
+- **Both record files deleted or damaged is a fresh start.** If the record
+  and the file beside it are both deleted, or both cannot be read, the next
+  start cannot tell that from the first one. Proof begins again, every
+  existing conversation counts as older and can be adopted, and an earlier
+  loss of the record is forgotten with the files that noted it. Two things
+  are still known then, because they are kept elsewhere: which conversations
+  a team backup brought in (the mark is on the conversation itself), and
+  everything from before a restore of the whole installation (by the
+  restore's receipt, in the backups folder). One of the two files missing or
+  unreadable is a loss, and adopts nothing from before it.
 - **Some of your own conversations can never be adopted.** One where you
   wrote from a device you have since removed, or answered a card from a
   signed-in device rather than at the computer; one that came from a backup,
@@ -470,18 +481,28 @@ the known ones, in plain words.
 - **The engine and its provider are not under this app's control.** The
   import deletes its own copies of your chat text. Whether the engine keeps
   its own is the engine's doing: the dialog says so beside the engine choice
-  when it may. What the provider behind any engine does with text it is sent
-  is that provider's policy.
+  when it may, which includes any model server on this computer or your own
+  network. Where the dialog says nothing, that means only that this app's
+  call to a hosted provider writes nothing on this computer. What the
+  provider behind any engine does with text it is sent is that provider's
+  policy.
 - **The screens are a guard in front of your own review, not a guarantee.**
   The checks for secrets, sensitive subjects and instruction-like facts work
-  on wording. An independent check of an earlier version of them, on
-  wordings they had not been written against, found roughly half of the
-  sensitive facts a model had left unlabelled still ticked (12 of 22) and
-  roughly four in ten secret wordings still ticked (11 of 26), and about one
-  in ten ordinary facts wrongly dropped (11 of 121). The rules were widened
-  after that and now pass the project's own written sample, but those
-  figures are approximate, the sample is small, and new wordings will get
-  through at some similar rate. Read the list before you save.
+  on wording, and wording they were not written for gets through. An
+  independent review measured them on samples of its own. The figures are
+  approximate, the samples are small, and they were taken just before the
+  last small change to the password rule:
+  - sensitive facts the model left unlabelled that still started ticked: 13
+    of 32;
+  - secret wordings kept as proposed facts: 12 of 32, and the same wordings
+    sent to the engine with nothing cut: 12 of 32;
+  - instruction-like facts kept: 8 of 12;
+  - ordinary facts wrongly dropped: 2 of 121; ordinary messages left out: 0
+    of 50; messages with a value cut out: 2 of 50; aliases refused: 4 of 40.
+
+  The check for instruction-like facts is the weakest: it kept most of what
+  it was shown. Reading the list yourself before you save is the real check;
+  the screens only take out what is plainly recognisable first.
 - **Not tried.** A real ChatGPT or Claude export, a real model's answers, a
   hosted installation, a Cloud home and Windows have not been run with this
   feature. See `docs/verification/context-import.md`.
@@ -512,7 +533,10 @@ it saves goes to the owner's About me and shared notes.
    long as together they unpack to no more than 8 GB; past any of these, the
    dialog says so. A list whose first 10,000 items hold no conversation is
    not a list of conversations: it is left there, unread, and the dialog
-   names it.
+   names it. One list is read for at most 2,000,000 items and one upload for
+   4,000,000 in all, far more than any real export holds: a list that goes on
+   past that is shown as read in part, with how far the read got, and lists
+   after it as not read.
 3. **Read.** You pick which bot's engine reads it. When that engine may keep
    its own record of the text it is sent, the dialog says so under the choice
    before anything is read; it does not refuse (see below). Only your own
@@ -550,13 +574,19 @@ it saves goes to the owner's About me and shared notes.
 **What is never kept or sent.** Before anything reaches a model or is written
 to the import's working files, the value of a secret is cut out of the message
 that holds it and replaced by `[removed]`; the rest of the message is read,
-and the dialog counts such messages. A secret here is a password, passcode or
-PIN (said before or after its name), a door, gate, alarm or safe code, the
-answer to a security question, a payment card number (one that passes the card
-check anywhere, or any number of that length near the word "card"), a card's
-security code, or a common identity or bank account number. A message that
-only talks about passwords, keys, codes or a document's expiry date is read as
-it is. A proposed fact that holds a secret is dropped whole, not masked.
+and the dialog counts such messages. What is recognised is a set of common
+wordings, not every way a secret can be written: a password, passcode or PIN
+said before or after its name, when the value has a digit, a sign, mixed
+capitals or some length; one written in groups, as an app password or a
+recovery code is ("abcd efgh ijkl mnop"); a door, gate, alarm or safe code;
+the answer to a security question; a payment card number (one that passes the
+card check anywhere, or any number of that length near the word "card"); a
+card's security code; a common identity or bank account number. Other
+wordings pass. A plain word given as a password is one: "my wifi password is
+sunflower" is read as it is, because nothing in the wording tells it from "my
+wifi password is weak". A message that only talks about passwords, keys, codes
+or a document's expiry date is read as it is. A proposed fact that holds a
+recognised secret is dropped whole, not masked.
 
 A proposed fact is also dropped when it is an instruction to an assistant, a
 grant of permission to one in any person ("has authorised assistants to…"),
@@ -572,9 +602,12 @@ and a fact brings at most five.
 
 The screen works on shapes and wording, held to a written sample from both
 sides (`server/testing/context-import-ordinary.ts`): at most 2 in 100 ordinary
-facts or messages touched, and every secret and instruction in the sample
-caught. It is a net, not a guarantee, and the review asks you to look for
-passwords and codes before you save.
+facts or messages touched, and every secret and instruction in that sample
+caught. That sample is the project's own, so it says little about wordings
+nobody wrote down; what an independent sample found is under
+[What this does not cover](#what-this-does-not-cover). It is a net, not a
+guarantee, and the review asks you to look for passwords and codes before you
+save.
 
 On save or cancel the uploaded file, the text cut from it and the proposed
 facts are deleted; if they cannot be deleted, the dialog says so and names the
@@ -621,9 +654,16 @@ own copies either way."
   the text then lands in the CLI's own session files under its config folder,
   which the import's clean-up does not reach, and the dialog shows the line.
   It shows it too when the CLI could not be asked.
-- **Engines called over an API** (the OpenAI-compatible ones) get one request
-  per call from this app itself. No engine program runs, so no session or
-  history of the text is written on this computer, and the line is not shown.
+- **Engines called over an API at a hosted provider** (the OpenAI-compatible
+  ones) get one request per call from this app itself. The line is not shown
+  for them, and all that means is that this app's call writes no session or
+  history of the text on this computer. It says nothing about the provider.
+- **A model server on this computer or your own network** (Ollama, LM Studio
+  and the like; an address such as `127.0.0.1`, `192.168.x.x` or a `.local`
+  name) is reached the same way, but it is a program of its own and may keep
+  a log of what it is sent. This app cannot tell, so the line is shown. The
+  address is judged as written: a public-looking name that points at your own
+  network is taken for a hosted provider.
 - **Engines that run their own agent program** (Gemini, Qwen, Cursor, Grok
   CLI and the others of that family) start a fresh session for each call, in
   an empty folder with no tools. Whether that program keeps its own history
