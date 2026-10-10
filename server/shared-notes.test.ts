@@ -129,4 +129,28 @@ describe("delete everything imported", () => {
     expect(readSharedNote("family.md")).toBe("---\ntitle: Family\n---\n\n- 2025-02-02 · Mother's birthday is in May\n");
     expect(deleteImportedEntries()).toEqual({ entries: 0, files: 0 });
   });
+
+  it("removes exactly the lines that carry an import's own mark, and nothing else", () => {
+    writeSharedNote("travel.md", [
+      "---", "title: Travel", "---", "",
+      "- 2025-01-01 · Prefers window seats (imported · ChatGPT)",
+      "  my own note under it: aisle on long flights",
+      "- 2025-01-02 · Bought a rail pass (imported · from Japan)",
+      "- 2025-01-03 · Staying in Goa (imported · Claude) · until 2099-01-05",
+      "- 2025-01-04 · Pasted fact (imported · Pasted text)",
+      "- 2025-01-05 · Someone wrote (imported · ChatGPT) in the middle of a line",
+      "- 2025-01-06 · A mark of no import (imported · Gemini)",
+      "",
+    ].join("\n"));
+    expect(describeSharedNotes()[0]).toMatchObject({ imported: 3 });
+    expect(deleteImportedEntries()).toEqual({ entries: 3, files: 0 });
+    expect(readSharedNote("travel.md")).toBe([
+      "---", "title: Travel", "---", "",
+      "  my own note under it: aisle on long flights",
+      "- 2025-01-02 · Bought a rail pass (imported · from Japan)",
+      "- 2025-01-05 · Someone wrote (imported · ChatGPT) in the middle of a line",
+      "- 2025-01-06 · A mark of no import (imported · Gemini)",
+      "",
+    ].join("\n"));
+  });
 });

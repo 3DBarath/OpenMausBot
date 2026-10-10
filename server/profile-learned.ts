@@ -123,22 +123,38 @@ export function removeLearned(id: string, aboutMe: string, saveAboutMe?: (text: 
   return { fact, aboutMe: next };
 }
 
-/** Forget every learned fact that matches, in one save: their lines leave
- * About me (when still there, unedited). Unlike removeLearned this is no
- * judgement on each fact, so none is remembered as removed: "Delete
- * everything imported" must not stop a later import from adding them again. */
-export function removeLearnedWhere(match: (fact: LearnedFact) => boolean, aboutMe: string, saveAboutMe?: (text: string) => void): { removed: number; aboutMe: string } {
+/** Forget every learned fact that matches, in one save, and take their
+ * lines out of About me. Unlike removeLearned this is no judgement on each
+ * fact, so none is remembered as removed: "Delete everything imported" must
+ * not stop a later import from adding them again.
+ *
+ * `lineMarks` names sources by the mark their lines carry (`learned by
+ * ChatGPT import`). The list above keeps only the newest 200 facts, so a
+ * record can be gone while its line is still in About me: with marks, every
+ * line of the exact shape aboutMeLine writes for one of them is removed,
+ * record or no record. A line the person took the mark off is theirs.
+ * `removed` counts the lines that left About me. */
+export function removeLearnedWhere(
+  match: (fact: LearnedFact) => boolean,
+  aboutMe: string,
+  saveAboutMe?: (text: string) => void,
+  opts: { lineMarks?: readonly string[] } = {},
+): { removed: number; aboutMe: string } {
   const file = load();
   const gone = file.learned.filter(match);
-  if (!gone.length) return { removed: 0, aboutMe };
+  const exact = new Set(gone.map((fact) => fact.line));
+  const marks = (opts.lineMarks ?? []).map((mark) => ` · learned by ${mark} · `);
+  const marked = (line: string) => {
+    const dated = /^- \d{4}-\d{2}-\d{2}(?= · learned by )/.exec(line);
+    return Boolean(dated) && marks.some((mark) => line.startsWith(mark, dated![0].length));
+  };
   const lines = aboutMe.split("\n");
-  for (const fact of gone) {
-    const at = lines.indexOf(fact.line);
-    if (at !== -1) lines.splice(at, 1);
-  }
-  const next = lines.join("\n");
+  const kept = lines.filter((line) => !exact.has(line) && !marked(line));
+  const next = kept.join("\n");
   if (next !== aboutMe) saveAboutMe?.(next);
-  file.learned = file.learned.filter((fact) => !match(fact));
-  save(file);
-  return { removed: gone.length, aboutMe: next };
+  if (gone.length) {
+    file.learned = file.learned.filter((fact) => !match(fact));
+    save(file);
+  }
+  return { removed: lines.length - kept.length, aboutMe: next };
 }

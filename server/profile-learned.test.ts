@@ -30,15 +30,37 @@ describe("removing every imported line", () => {
     expect(imported[0]!.line).toBe("- 2026-10-10 · learned by ChatGPT import · The person is vegetarian");
     let aboutMe = appendAboutMe("", [...bot, ...imported].map((fact) => fact.line))!;
     commitLearned([...bot, ...imported]);
-    // the person edited one imported line by hand: it is theirs now and stays
-    aboutMe = aboutMe.replace("Lives in Pune", "Lives in Pune, near the river");
+    // The person reworded one imported line and took the mark off another by
+    // hand. A line is the import's by the mark it carries: the reworded one
+    // still carries it and goes; the one without it is theirs and stays.
+    const more = planLearned(chatgpt, ["Has a sister called Asha"], aboutMe, TODAY);
+    aboutMe = appendAboutMe(aboutMe, more.map((fact) => fact.line))!;
+    commitLearned(more);
+    aboutMe = aboutMe.replace("Lives in Pune", "Lives in Pune, near the river").replace("- 2026-10-10 · learned by ChatGPT import · Has a sister called Asha", "- My sister is Asha");
     const saved: string[] = [];
-    const result = removeLearnedWhere((fact) => fact.botId.startsWith("import:"), aboutMe, (text) => saved.push(text));
+    const result = removeLearnedWhere((fact) => fact.botId.startsWith("import:"), aboutMe, (text) => saved.push(text), { lineMarks: ["ChatGPT import", "Claude import"] });
     expect(result.removed).toBe(2);
-    expect(result.aboutMe).toBe("- 2026-10-10 · learned by Scout · Prefers short replies\n- 2026-10-10 · learned by ChatGPT import · Lives in Pune, near the river");
+    expect(result.aboutMe).toBe("- 2026-10-10 · learned by Scout · Prefers short replies\n- My sister is Asha");
     expect(saved).toEqual([result.aboutMe]);
     expect(listLearnedFacts().map((fact) => fact.botName)).toEqual(["Scout"]);
     expect(planLearned(chatgpt, ["The person is vegetarian"], result.aboutMe, TODAY)).toHaveLength(1);
     expect(removeLearnedWhere((fact) => fact.botId.startsWith("import:"), result.aboutMe)).toEqual({ removed: 0, aboutMe: result.aboutMe });
+  });
+
+  it("finds an imported line by its mark after its record has fallen off the list", () => {
+    const imported = planLearned(chatgpt, ["The person is vegetarian"], "", TODAY);
+    let aboutMe = appendAboutMe("I write short emails.", imported.map((fact) => fact.line))!;
+    commitLearned(imported);
+    // 200 facts learned since: the list keeps the newest 200, so the import's record is gone
+    const later = planLearned({ botId: "b1", botName: "Scout" }, Array.from({ length: 200 }, (_, index) => `Later fact number ${index}`), aboutMe, TODAY);
+    commitLearned(later);
+    expect(listLearnedFacts().some((fact) => fact.botId.startsWith("import:"))).toBe(false);
+    aboutMe = appendAboutMe(aboutMe, ["- 2026-10-10 · learned by Scout · Later fact number 0", "A line of mine that says learned by ChatGPT import in passing"])!;
+    const result = removeLearnedWhere((fact) => fact.botId.startsWith("import:"), aboutMe, undefined, { lineMarks: ["ChatGPT import", "Claude import", "Pasted text import"] });
+    expect(result.aboutMe).toBe("I write short emails.\n- 2026-10-10 · learned by Scout · Later fact number 0\nA line of mine that says learned by ChatGPT import in passing");
+    expect(result.removed).toBe(1);
+    // a bot whose name only starts the same way is not the import
+    const scout = "- 2026-10-10 · learned by ChatGPT import helper · Not an import";
+    expect(removeLearnedWhere(() => false, scout, undefined, { lineMarks: ["ChatGPT import"] })).toEqual({ removed: 0, aboutMe: scout });
   });
 });

@@ -3,9 +3,12 @@
 // of a bot's topic file (frontmatter with `title` and `aliases`, then dated
 // entries), so the same word matching finds it. An entry an import wrote
 // ends with `(imported · ChatGPT)`, which is how "delete everything imported"
-// tells it from a line the person wrote. Bots have no tool for this folder:
-// automatic recall is the only way a note reaches a turn, and only in a
-// one-to-one chat the installation's owner started (server/recall.ts).
+// tells it from a line the person wrote. Bots get no tool for this folder:
+// automatic recall is the only way the app puts a note in front of a turn,
+// and only in a one-to-one chat the installation's owner started
+// (server/recall.ts). The folder is ordinary data under the app's data
+// folder: a bot that can run commands on this computer as the app's user
+// can read these files like any other file that user owns.
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,6 +19,7 @@ import { factIdentity, parseMemoryEntries, untilMark } from "./memory-entries.ts
 import { mergeTopicText, parseTopicHeader, readTopicHead, topicBody, type TopicHeader } from "./memory-topics.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { isMemoryTopicName } from "./workspace.ts";
+import { IMPORT_ORIGIN_LABEL } from "../shared/context-import.ts";
 import type { SharedNoteInfo } from "../shared/shared-notes.ts";
 
 export const SHARED_NOTES_MAX_FILES = 200;
@@ -23,7 +27,20 @@ export const SHARED_NOTE_MAX_BYTES = 64 * 1024;
 
 /** ` (imported · ChatGPT)` at the end of an entry's text, before any ` · until` mark. */
 const IMPORTED_IN_LINE = / \(imported · [^()\n]{1,40}\)(?= · |$)/;
-const IMPORTED_BODY = / \(imported · [^()\n]{1,40}\)$/;
+/** The marks an import itself writes, exactly: ` (imported · ChatGPT)`,
+ * ` (imported · Claude)`, ` (imported · Pasted text)`. "Delete everything
+ * imported" removes the lines that end with one of these (before any
+ * ` · until` mark) and no other line: not a line under such an entry, and
+ * not a line the person ended with words of their own in the same shape. */
+const IMPORT_MARKS = Object.values(IMPORT_ORIGIN_LABEL).map((label) => ` (imported · ${label})`);
+const UNTIL_TAIL = / · until \d{4}-\d{2}-\d{2}$/;
+
+/** Whether this one line is an entry an import wrote. */
+export function importedLine(line: string): boolean {
+  if (!/^\s*[-*•]\s/.test(line)) return false;
+  const body = line.trimEnd().replace(UNTIL_TAIL, "");
+  return IMPORT_MARKS.some((mark) => body.endsWith(mark));
+}
 
 export class SharedNotesError extends Error {
   readonly status: number;
@@ -143,13 +160,28 @@ export function sharedNoteIdentities(): Set<string> {
 const oneLine = (value: string, max: number) => value.replace(/\s+/g, " ").trim().slice(0, max);
 const aliasSafe = (value: string) => oneLine(value.replace(/[,[\]]+/g, " "), 40);
 
-/** Add entry lines to a subject's note, creating it with a header the first
- * time. A line whose fact the note already holds is left out. Both caps
- * hold: `dropped` counts the lines that did not fit and `reason` says which
- * cap stopped them; nothing already in the note is ever removed to make room. */
-export function appendSharedEntries(input: { subject: string; aliases: readonly string[]; lines: readonly string[] }): { name: string; added: number; dropped: number; reason?: "files" | "bytes" } {
+/** What adding entry lines to a subject's note would do, without writing
+ * anything: which lines are new, how many of them fit under the size limit,
+ * and the note's text with those added. `notes` is a listing taken once
+ * when many subjects are planned together. */
+export interface SharedEntriesPlan {
+  name: string;
+  /** The note is there already; adding to it needs no room for a new file. */
+  exists: boolean;
+  /** Lines whose fact the note does not hold yet. */
+  fresh: number;
+  /** How many of them fit; the rest would pass the size limit. */
+  fit: number;
+  /** The note's text with the lines that fit added. */
+  text: string;
+}
+
+export function planSharedEntries(
+  input: { subject: string; aliases: readonly string[]; lines: readonly string[] },
+  notes: ReadonlyArray<{ name: string }> = listSharedNotes(),
+): SharedEntriesPlan {
   const wanted = sharedNoteFileName(input.subject);
-  const existing = listSharedNotes().find((note) => note.name.toLowerCase() === wanted.toLowerCase());
+  const existing = notes.find((note) => note.name.toLowerCase() === wanted.toLowerCase());
   const name = existing?.name ?? wanted;
   const current = existing ? readSharedNote(name) : null;
   const seen = identitiesOf(current ?? "");
@@ -160,36 +192,58 @@ export function appendSharedEntries(input: { subject: string; aliases: readonly 
     seen.add(key);
     fresh.push(redactSecretsInText(line));
   }
-  if (!fresh.length) return { name, added: 0, dropped: 0 };
-  if (!existing && listSharedNotes().length >= SHARED_NOTES_MAX_FILES) return { name, added: 0, dropped: fresh.length, reason: "files" };
+  if (!fresh.length) return { name, exists: Boolean(existing), fresh: 0, fit: 0, text: current ?? "" };
   const title = oneLine(input.subject, 80) || name.replace(/\.md$/, "");
   const aliases = [...new Set(input.aliases.map(aliasSafe).filter(Boolean))];
-  const merged = (lines: readonly string[]) => mergeTopicText(current, { title, aliases, lines });
-  let fit = fresh.length;
-  while (fit > 0 && Buffer.byteLength(merged(fresh.slice(0, fit)), "utf8") > SHARED_NOTE_MAX_BYTES) fit -= 1;
-  if (fit > 0) {
-    mkdirSync(sharedNotesDir(), { recursive: true, mode: 0o700 });
-    writeFileAtomic(join(sharedNotesDir(), name), merged(fresh.slice(0, fit)), { mode: 0o600 });
+  const merged = (count: number) => mergeTopicText(current, { title, aliases, lines: fresh.slice(0, count) });
+  // The size only grows with the number of lines: find the most that fit by
+  // halving, so a note that takes a thousand lines is merged ten times, not a thousand.
+  let fit = 0;
+  let text = current ?? "";
+  for (let low = 1, high = fresh.length; low <= high;) {
+    const middle = (low + high) >> 1;
+    const candidate = merged(middle);
+    if (Buffer.byteLength(candidate, "utf8") <= SHARED_NOTE_MAX_BYTES) {
+      fit = middle;
+      text = candidate;
+      low = middle + 1;
+    } else high = middle - 1;
   }
-  return { name, added: fit, dropped: fresh.length - fit, ...(fit < fresh.length ? { reason: "bytes" as const } : {}) };
+  return { name, exists: Boolean(existing), fresh: fresh.length, fit, text };
 }
 
-/** Remove every entry an import wrote, from every note. A note left with no
- * text of its own is deleted; lines the person wrote stay. */
+/** Add entry lines to a subject's note, creating it with a header the first
+ * time. A line whose fact the note already holds is left out. Both caps
+ * hold: `dropped` counts the lines that did not fit and `reason` says which
+ * cap stopped them; nothing already in the note is ever removed to make room.
+ * The note is written once. */
+export function appendSharedEntries(input: { subject: string; aliases: readonly string[]; lines: readonly string[] }): { name: string; added: number; dropped: number; reason?: "files" | "bytes" } {
+  const notes = listSharedNotes();
+  const plan = planSharedEntries(input, notes);
+  if (!plan.fresh) return { name: plan.name, added: 0, dropped: 0 };
+  if (!plan.exists && notes.length >= SHARED_NOTES_MAX_FILES) return { name: plan.name, added: 0, dropped: plan.fresh, reason: "files" };
+  if (plan.fit > 0) {
+    mkdirSync(sharedNotesDir(), { recursive: true, mode: 0o700 });
+    writeFileAtomic(join(sharedNotesDir(), plan.name), plan.text, { mode: 0o600 });
+  }
+  return { name: plan.name, added: plan.fit, dropped: plan.fresh - plan.fit, ...(plan.fit < plan.fresh ? { reason: "bytes" as const } : {}) };
+}
+
+/** Remove every entry an import wrote, from every note: exactly the lines
+ * that carry an import's own mark (importedLine). A line under such an
+ * entry, and any line the person wrote, stays. A note left with no text of
+ * its own is deleted. */
 export function deleteImportedEntries(): { entries: number; files: number } {
   let entries = 0;
   let files = 0;
   for (const note of listSharedNotes()) {
     const text = readSharedNote(note.name);
     if (text === null) continue;
-    const drop = new Set<number>();
-    for (const entry of parseMemoryEntries(text)) {
-      if (!IMPORTED_BODY.test(entry.body)) continue;
-      entries += 1;
-      for (let line = entry.line; line < entry.end; line += 1) drop.add(line);
-    }
-    if (!drop.size) continue;
-    const rest = text.split("\n").filter((_, index) => !drop.has(index)).join("\n");
+    const lines = text.split("\n");
+    const kept = lines.filter((line) => !importedLine(line));
+    if (kept.length === lines.length) continue;
+    entries += lines.length - kept.length;
+    const rest = kept.join("\n");
     if (topicBody(rest)) writeFileAtomic(join(sharedNotesDir(), note.name), rest, { mode: 0o600 });
     else {
       rmSync(join(sharedNotesDir(), note.name), { force: true });
@@ -202,14 +256,15 @@ export function deleteImportedEntries(): { entries: number; files: number } {
 /** Every note as Settings lists it: title, other words for it, and how much an import wrote. */
 export function describeSharedNotes(): SharedNoteInfo[] {
   return listSharedNotes().map((note) => {
-    const entries = parseMemoryEntries(readSharedNote(note.name) ?? "");
+    const text = readSharedNote(note.name) ?? "";
+    const entries = parseMemoryEntries(text);
     return {
       name: note.name,
       title: note.header.title ?? note.name.replace(/\.md$/, ""),
       aliases: note.header.aliases,
       bytes: note.bytes,
       entries: entries.length,
-      imported: entries.filter((entry) => IMPORTED_BODY.test(entry.body)).length,
+      imported: text.split("\n").filter(importedLine).length,
     };
   });
 }
