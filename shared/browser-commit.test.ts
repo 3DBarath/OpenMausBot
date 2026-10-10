@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chordPress, classifyCommit, commitRule, commitRuleClass, enterPress, isButtonRole, scriptAction, spacePress, type CommitTarget } from "./browser-commit.ts";
+import { chordPress, classifyCommit, linkGoes, commitRule, commitRuleClass, enterPress, isButtonRole, scriptAction, spacePress, type CommitTarget } from "./browser-commit.ts";
 
 const click = (label: string, extra: Partial<CommitTarget> = {}): CommitTarget => ({
   via: "click", label, role: "button", box: null, submits: false, search: false, card: false, multiline: false, ...extra,
@@ -59,13 +59,25 @@ describe("classifyCommit", () => {
     expect(classifyCommit(click("Veröffentlichen", { multiline: true }))).toBeNull();
   });
 
-  it("never treats search as a commitment of either class", () => {
+  // A search sends nothing: it skips the send rules and the unknown-label
+  // fallback. It is no way round a payment.
+  it("never treats search as a send, whatever its button says", () => {
     expect(classifyCommit(click("Submit", { submits: true, search: true }))).toBeNull();
+    expect(classifyCommit(click("Send", { submits: true, search: true }))).toBeNull();
     expect(classifyCommit(click("Go", { submits: true, search: true, multiline: true }))).toBeNull();
-    expect(classifyCommit(click("Buy", { submits: true, search: true }))).toBeNull();
-    // A query that happens to be a card number does not make the search a payment.
-    expect(classifyCommit(click("Search", { submits: true, search: true, card: true, button: true }))).toBeNull();
-    expect(classifyCommit(enter({ label: "Search", role: "button", box: "search", submits: true, search: true, card: true }))).toBeNull();
+    expect(classifyCommit(click("Suchen", { submits: true, search: true, multiline: true, lang: "de" }))).toBeNull();
+  });
+
+  it("still holds a money label on a search form, and anything in a card region around a search field", () => {
+    expect(classifyCommit(click("Buy", { submits: true, search: true }))).toBe("money");
+    expect(classifyCommit(click("Buy now", { submits: true, search: true }))).toBe("money");
+    expect(classifyCommit(enter({ label: "Pay now", role: "button", box: "search", submits: true, search: true }))).toBe("money");
+    // The page read never calls a region a card region for what is typed in a search field: this one has another sign.
+    expect(classifyCommit(click("Continue", { submits: true, search: true, card: true, button: true }))).toBe("money");
+    expect(classifyCommit(enter({ label: "Continue", role: "button", box: "search", submits: true, search: true, card: true }))).toBe("money");
+    expect(classifyCommit(click("Search", { search: true, card: true, button: true }))).toBe("money");
+    // A click that only puts the cursor in the search field is still nothing.
+    expect(classifyCommit(click("Find your address", { role: "searchbox", box: "search", search: true, card: true }))).toBeNull();
   });
 });
 
@@ -105,8 +117,8 @@ describe("real button labels", () => {
     expect(classifyCommit(click("Order now", { role: "textbox", box: "single" }))).toBeNull();
   });
 
-  it("still never treats search as a commitment", () => {
-    expect(classifyCommit(click("Submit order", { submits: true, search: true }))).toBeNull();
+  it("never lets a search field excuse a money label", () => {
+    expect(classifyCommit(click("Submit order", { submits: true, search: true }))).toBe("money");
     expect(classifyCommit(click("Send", { submits: true, search: true }))).toBeNull();
   });
 });
@@ -316,6 +328,101 @@ describe("the labels added in the tuning pass", () => {
   });
 });
 
+// Round four.
+describe("a form with a multi-line field and a label on neither list", () => {
+  const submit = (label: string, lang?: string) => click(label, { submits: true, multiline: true, ...(lang === undefined ? {} : { lang }) });
+
+  it.each(["Save settings", "Save draft", "Update profile", "Translate", "Format", "Run", "Generate", "Create", "Add note", "Finish", "Convert", "Check grammar", "Go", "Enviar"])
+  ("passes on an English page: %j", (label) => {
+    for (const lang of ["en", "en-US", "EN-gb", "en_AU", " en "]) expect(classifyCommit(submit(label, lang)), lang).toBeNull();
+    // A page that declares no language is taken for English.
+    expect(classifyCommit(submit(label, ""))).toBeNull();
+    expect(classifyCommit(enter({ label, role: "button", submits: true, multiline: true, lang: "en" }))).toBeNull();
+  });
+
+  it.each(["de", "es-MX", "fr", "pt-BR", "ja", "enx", "zh-Hans"])("is held as a send on a page that declares %j", (lang) => {
+    for (const label of ["Speichern", "Enviar", "Go", "Save draft", ""]) expect(classifyCommit(submit(label, lang)), label).toBe("send");
+    // A harmless label is harmless there too.
+    for (const label of ["OK", "Save", "Cancel"]) expect(classifyCommit(submit(label, lang)), label).toBeNull();
+  });
+
+  it.each(["Veröffentlichen", "Envíar", "送信", "Отправить", "Gönder", "إرسال"])("is held as a send when the label has letters outside basic Latin, whatever the page declares: %j", (label) => {
+    for (const lang of ["en", "", "de"]) expect(classifyCommit(submit(label, lang)), lang).toBe("send");
+  });
+
+  it("is held when the read said nothing of the page's language: not knowing is not English", () => {
+    expect(classifyCommit(submit("Save draft"))).toBe("send");
+  });
+
+  // A button with no words (an icon with no name) says nothing either way.
+  it.each(["", "➤", "→", "✓", "..."])("is held on an English page when the label has no words at all: %j", (label) => {
+    expect(classifyCommit(submit(label, "en"))).toBe("send");
+    expect(classifyCommit(submit(label, ""))).toBe("send");
+  });
+
+  // A tick box or a list whose own handler submits such a form has no button
+  // to go by: what it is called names a state, not what submitting does.
+  it("is held on an English page when what submits it is a toggle or a list, not a button", () => {
+    expect(classifyCommit(click("Notify me", { role: "checkbox", submits: true, multiline: true, lang: "en" }))).toBe("send");
+    expect(classifyCommit(click("When", { role: "combobox", submits: true, multiline: true, lang: "en" }))).toBe("send");
+    expect(classifyCommit(click("When", { role: "combobox", submits: true, lang: "en" }))).toBeNull();
+    expect(classifyCommit(click("Notify me", { role: "checkbox", multiline: true, lang: "en" }))).toBeNull();
+  });
+
+  it("still holds a send or a money label on an English page", () => {
+    expect(classifyCommit(submit("Send", "en"))).toBe("send");
+    expect(classifyCommit(submit("Save and publish", "en"))).toBe("send");
+    expect(classifyCommit(submit("Pay now", "en"))).toBe("money");
+    expect(classifyCommit(submit("Continue", "en"))).toBeNull();
+    expect(classifyCommit(click("Continue", { submits: true, multiline: true, lang: "en", card: true, button: true }))).toBe("money");
+  });
+});
+
+describe("option, tab and switch roles in a card region", () => {
+  it.each(["option", "tab", "switch"])("pays like a button there: %s", (role) => {
+    expect(classifyCommit(click("Use this card", { role, card: true }))).toBe("money");
+    expect(classifyCommit(click("Use this card", { role, card: true, button: true }))).toBe("money");
+    expect(classifyCommit(enter({ label: "Use this card", role, box: null, card: true }))).toBe("money");
+  });
+
+  it.each(["option", "tab", "switch"])("is a toggle anywhere else, whatever it says: %s", (role) => {
+    expect(classifyCommit(click("Pay with this card", { role }))).toBeNull();
+    expect(classifyCommit(click("Send money", { role, button: true }))).toBeNull();
+  });
+
+  it("leaves a tick box or a radio button there to its change handler", () => {
+    expect(classifyCommit(click("Save this card", { role: "checkbox", card: true }))).toBeNull();
+    expect(classifyCommit(click("Save this card", { role: "checkbox", card: true, changes: true }))).toBe("money");
+    expect(classifyCommit(click("Visa", { role: "radio", card: true }))).toBeNull();
+  });
+});
+
+describe("linkGoes", () => {
+  const PAGE = "https://shop.example.com/lamps?page=2#top";
+
+  it.each(["/story", "story.html", "../up", "?page=3", "https://other.example.com/", "//cdn.example.com/x", "mailto:ada@example.com", "/lamps?page=2&x=1", "/story#comments", "#/blog", "#!/share", "#/", " /story "])
+  ("says %j goes somewhere", (href) => {
+    expect(linkGoes(href, PAGE)).toBe(true);
+  });
+
+  it.each(["#", "", "   ", "#comments", "#top", "javascript:void(0)", " JavaScript:send()", "https://shop.example.com/lamps?page=2#reviews", "/lamps?page=2#reviews", "?page=2#x", null, undefined, 7])
+  ("says %j goes nowhere it can vouch for", (href) => {
+    expect(linkGoes(href, PAGE)).toBe(false);
+  });
+
+  it("says a link to this same address, with no fragment, loads the page again", () => {
+    expect(linkGoes("/lamps?page=2", PAGE)).toBe(true);
+  });
+
+  it("without the page's address, vouches only for what needs none", () => {
+    expect(linkGoes("https://other.example.com/x", null)).toBe(true);
+    expect(linkGoes("#/blog", null)).toBe(true);
+    expect(linkGoes("/story", null)).toBe(true);
+    expect(linkGoes("/story#part", null)).toBe(false);
+    expect(linkGoes("#", null)).toBe(false);
+  });
+});
+
 describe("Space", () => {
   // agent-browser 0.37.0 presses the space bar for each of these, and with
   // the focus on a button that clicks it.
@@ -331,6 +438,7 @@ describe("Space", () => {
 describe("isButtonRole", () => {
   it("is true for what a click activates, by the names a snapshot gives", () => {
     for (const role of ["button", "link", "menuitem"]) expect(isButtonRole(role), role).toBe(true);
+    // In a card region these pay like a button, by a rule of their own; they are not buttons anywhere else.
     for (const role of ["textbox", "searchbox", "checkbox", "combobox", "tab", "option", "Iframe", "generic", "", "heading"]) expect(isButtonRole(role), role).toBe(false);
   });
 });
@@ -480,6 +588,9 @@ describe("scriptAction", () => {
     "const r = {}; r.role = el.getAttribute('role'); r",
     "const list = []; list.type = 'rows'; list",
     "[...document.querySelectorAll('tr')].map((tr) => { const row = {}; row.value = tr.cells[1].innerText; row.checked = tr.querySelector('input').checked; return row; })",
+    "const out = {}; out.selected = option.selected; out",
+    "const out = {};\nout.value = el.value;\nout",
+    "const rows = []; for (const tr of document.querySelectorAll('tr')) { const row = {}; row.checked = tr.querySelector('input').checked; rows.push(row); } rows",
     "emitter.once('ready', done)",
     "new Promise((resolve) => bus.once('loaded', resolve))",
     "x.onload()",
@@ -498,6 +609,25 @@ describe("scriptAction", () => {
     ["const out = {}; out.el = document.querySelector('input'); out.el.value = 'x'", "write"],
     ["const out = {}; document.querySelector('#to').value = 'mallory@example.com'", "write"],
     ["const out = {}; rows.forEach((row) => { row.checked = true; })", "write"],
+    // A name is the script's own result only when it is made as an empty
+    // object or array, once, and is bound to nothing else anywhere.
+    ["const el = [document.querySelector('#amount')][0]; el.value = '999'", "write"],
+    ["const el = { a: document.querySelector('#amount') }.a; el.value = '999'", "write"],
+    ["const el = [] && document.querySelector('#amount'); el.value = '999'", "write"],
+    ["const el = {}.x ?? document.querySelector('#amount'); el.checked = true", "write"],
+    ["const out = {}; [document.querySelector('#amount')].forEach((out) => { out.value = '999'; })", "write"],
+    ["const out = {}; [document.querySelector('#amount')].forEach(out => { out.value = '999'; })", "write"],
+    ["const out = {}; [[1, document.querySelector('#amount')]].forEach(([n, out]) => { out.value = '999'; })", "write"],
+    ["const out = {}; (function (out) { out.value = '999'; })(document.querySelector('#amount'))", "write"],
+    ["const out = {}; { const out = document.querySelector('#amount'); out.value = '999'; }", "write"],
+    ["const out = {}; for (const out of document.querySelectorAll('input')) out.value = ''", "write"],
+    ["const out = {}; try { go(); } catch (out) { out.value = 1; }", "write"],
+    ["const out = {}; const { el: out2 } = { el: document.querySelector('#amount') }; out2.value = '999'", "write"],
+    ["const out = []; out.push(document.querySelector('#amount')); out[0].value = '999'", "write"],
+    ["const { out } = { out: document.querySelector('#amount') }; out.value = '999'", "write"],
+    ["document.querySelector('option').selected = true", "write"],
+    ["opt.selected = true", "write"],
+    ["list.selectedIndex = 2", "write"],
     ["x.onclick()", "click"],
     ["form.onsubmit()", "click"],
     ["x.onchange()", "event"],

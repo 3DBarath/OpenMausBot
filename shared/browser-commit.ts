@@ -122,11 +122,13 @@ export interface CommitTarget {
   /** Activating the control submits its form. */
   submits: boolean;
   /** A search field, something inside role="search", or a form whose only
-   * text field is a search field. */
+   * text field is a search field. It skips the send rules, never the money
+   * rules. */
   search: boolean;
   /** The control is in a card region: its form, or with no form the region
    * of the page around it, holds a card field (by its autofill hint, or by
-   * the names of two fields), a payment frame, or a card number typed in. */
+   * the names of two fields), a frame for typing a card in, or a card
+   * number typed in (never one typed into a search field). */
   card: boolean;
   /** The form has a multi-line text field. */
   multiline: boolean;
@@ -156,6 +158,9 @@ export interface CommitTarget {
   only?: boolean;
   says?: string;
   near?: string[];
+  /** The language the page declares (`<html lang>`), "" when it declares
+   * none. Left out when the read said nothing of it. */
+  lang?: string;
 }
 
 /** The roles a snapshot gives to what a click activates. */
@@ -164,11 +169,22 @@ export function isButtonRole(role: string): boolean {
   return BUTTON_ROLES.has(role);
 }
 
+/** Roles a click only toggles anywhere else, that pay like a button inside
+ * a card region: "Use this card" as an option, a saved card as a tab. */
+const CARD_ROLES: ReadonlySet<string> = new Set(["option", "tab", "switch"]);
+
+/** Is the page, or the label, in a language other than English, or is
+ * there no telling? The unknown-label rule below is for those. A page that
+ * declares no language is taken for English; a read that said nothing of
+ * it is not, and neither is a label with no words in it (an icon). */
+function foreign(target: CommitTarget): boolean {
+  if (target.lang === undefined || !/\p{L}/u.test(target.label)) return true;
+  const lang = target.lang.trim().toLowerCase();
+  return (lang !== "" && !/^en(?:[-_]|$)/.test(lang)) || /(?![a-z])\p{L}/iu.test(target.label);
+}
+
 /** Is this a commitment, and of which class? Money wins when both match. */
 export function classifyCommit(target: CommitTarget): CommitClass | null {
-  // A search is never a commitment of either class, whatever its button
-  // says and whatever was typed into it.
-  if (target.search) return null;
   // A plain link is never a commitment by its text: it opens a page. Inside
   // a card region it is a control like any other.
   if (target.link && !target.card) return null;
@@ -180,8 +196,13 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   // In a card region what a control is called says nothing about what it
   // does. Any activation of a button-like control there is money, whatever
   // its type or label: a click, Enter or Space on it, a submit, a list or a
-  // tick box whose handler runs on change, Enter in one of its one-line fields.
-  if (target.card && (target.submits || target.changes || (target.button && target.box === null && !passive) || (target.via === "enter" && target.box === "single"))) return "money";
+  // tick box whose handler runs on change, Enter in one of its one-line
+  // fields. An option, a tab and a switch are button-like there.
+  const pressed = target.box === null && (CARD_ROLES.has(target.role) || (Boolean(target.button) && !passive));
+  if (target.card && (target.submits || target.changes || pressed || (target.via === "enter" && target.box === "single"))) return "money";
+  // A search sends nothing: it skips the send rules and the unknown-label
+  // rule. It is no way round the two money rules above.
+  if (target.search) return null;
   // A sign-in form is never a send, whatever its button says.
   if (target.signin) return null;
   if (activates && sends(target)) return "send";
@@ -189,7 +210,12 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   // message composer or another key is held. Inside a card region nothing
   // is taken for a new line.
   if (target.via === "enter" && target.box === "multiline" && !target.shift && (target.chord || target.card || composer(target))) return "send";
-  if (target.submits && target.multiline && !harmless(target.label)) return "send";
+  // A form with a multi-line field, and a label on neither list. On a page
+  // that is not in English the lists know nothing of its words, so it is
+  // taken for a send; on an English page it passes. A tick box or a list
+  // that submits the form by its own handler has no button's label to go
+  // by, in any language.
+  if (target.submits && target.multiline && (passive || foreign(target)) && !harmless(target.label)) return "send";
   return null;
 }
 
@@ -212,6 +238,28 @@ export function enterPress(key: unknown): { shift: boolean } | null {
   if (!enters) return null;
   const shifts = parts.filter((part) => part.trim().toLowerCase() === "shift").length;
   return { shift: enters === 1 && shifts > 0 && shifts === parts.length - 1 };
+}
+
+/** Does a link's address, as its `href` attribute says it, go somewhere:
+ * another document, or a "#/" or "#!" route of this one? A bare "#", an
+ * empty address and "javascript:" go nowhere, and a place on the same page
+ * ("#comments") is something only the page itself can vouch for. Used for
+ * the address the engine gives for a ref's own element. */
+export function linkGoes(href: unknown, pageUrl: string | null): boolean {
+  if (typeof href !== "string") return false;
+  const raw = href.trim();
+  if (!raw || /^javascript:/i.test(raw)) return false;
+  if (raw.startsWith("#")) return /^#[/!]/.test(raw);
+  if (!raw.includes("#")) return true;
+  // An address with a fragment goes somewhere when it is another document's.
+  try {
+    const here = new URL(pageUrl ?? "");
+    const there = new URL(raw, here);
+    here.hash = "";
+    const route = /^#[/!]/.test(there.hash);
+    there.hash = "";
+    return there.href !== here.href || route;
+  } catch { return false; }
 }
 
 /** Enter with a key other than Shift held ("Control+Enter", "Enter+Meta").
@@ -239,19 +287,31 @@ const INTERACTION = "change|input|beforeinput|key(?:down|up|press)|mouse(?:down|
 
 /** A property whose write changes a field's content, or what this gate
  * reads an element by: its label, its role, its type. */
-const WRITES = /\.\s*(?:value|checked|textContent|innerText|innerHTML|outerHTML|outerText|role|type|autocomplete|contentEditable|aria[A-Z]\w*)\s*[+-]?=(?!=)/g;
+const WRITES = /\.\s*(?:value|checked|selected|selectedIndex|textContent|innerText|innerHTML|outerHTML|outerText|role|type|autocomplete|contentEditable|aria[A-Z]\w*)\s*[+-]?=(?!=)/g;
 const OTHER_WRITES = /\bsetRangeText\s*\(|\bexecCommand\s*\(|\b(?:set|remove|toggle)Attribute(?:NS|Node)?\s*\(/;
 
-/** Does the script write one of those properties on anything but an object
+/** Is `name` a result the script made for itself? Only when it is declared
+ * once, with `const`, as an empty object or array and nothing more (`const
+ * out = {}`), and is bound nowhere else: not as a parameter, a catch
+ * binding or a name taken out of something. `const el = [query][0]` is a
+ * page element under a name that looks like a literal. */
+function ownResult(script: string, name: string): boolean {
+  const id = name.replace(/\$/g, "\\$");
+  const declared = script.match(new RegExp(`\\b(?:const|let|var)\\s+${id}(?![\\w$])`, "g")) ?? [];
+  if (declared.length !== 1 || !new RegExp(`\\bconst\\s+${id}\\s*=\\s*(?:\\{\\s*\\}|\\[\\s*\\])\\s*(?:[;,\\n]|$)`).test(script)) return false;
+  const bound = new RegExp(`(?<![\\w$.])${id}\\s*=>|\\([^()]*(?<![\\w$.])${id}(?![\\w$])[^()]*\\)\\s*=>|\\bfunction\\b[^(]*\\([^)]*(?<![\\w$.])${id}(?![\\w$])|\\bcatch\\s*\\(\\s*${id}(?![\\w$])|\\b(?:const|let|var)\\s*[{[][^=]*(?<![\\w$.])${id}(?![\\w$])`);
+  return !bound.test(script);
+}
+
+/** Does the script write one of those properties on anything but a result
  * of its own? `out.value = el.value` is a read when the script itself says
- * `const out = {}` (or `[]`): a plain name, declared once, as a literal.
- * Anything else (an element, a call, a longer chain, a `let`) is a write. */
+ * `const out = {}` (or `[]`). Anything else (an element, a call, a longer
+ * chain, a `let`, a name that is also a parameter) is a write. */
 function writesToPage(script: string): boolean {
   if (OTHER_WRITES.test(script)) return true;
   for (const write of script.matchAll(WRITES)) {
     const receiver = /(?:^|[^\w$.)\]])([A-Za-z_$][\w$]*)\s*$/.exec(script.slice(0, write.index))?.[1];
-    const own = receiver !== undefined && new RegExp(`\\bconst\\s+${receiver.replace(/\$/g, "\\$")}\\s*=\\s*[{[]`).test(script);
-    if (!own) return true;
+    if (receiver === undefined || !ownResult(script, receiver)) return true;
   }
   return false;
 }
@@ -316,8 +376,11 @@ export interface BrowserCommitCard {
    * the card does not list. */
   others?: number;
   /** The page changed under two approvals in a row, so this one is bound to
-   * less: the element's place, its label and the fields. */
+   * less: the address, the element's label and the controls. */
   changing?: boolean;
+  /** The form or region holds a component whose inside could not be read:
+   * what is in it is not on the card and not part of the approval. */
+  partial?: boolean;
   /** The server's own screenshot, as an attachment path, while the card is open. */
   shot?: string;
   /** No screenshot was taken, while the card is open: the page shows a
