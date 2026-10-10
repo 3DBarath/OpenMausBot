@@ -11,7 +11,10 @@ import { clip, type PreparedConversation } from "./cuts.ts";
 import { jsonPayload } from "../memory-capture.ts";
 import { factIdentity, isMemoryDate } from "../memory-entries.ts";
 import { redactSecretsInText } from "../redact.ts";
-import { IMPORT_ORIGIN_LABEL, SENSITIVE_CATEGORIES, type ImportCandidate, type ImportOrigin, type SensitiveCategory } from "../../shared/context-import.ts";
+import { ALIASES_MAX, holdsCodeOrLink, holdsSecret, readsAsInstruction, sensitiveCategory, usableAlias } from "./screen.ts";
+import { IMPORT_ORIGIN_LABEL, SENSITIVE_CATEGORIES, type ImportCandidate, type ImportOrigin } from "../../shared/context-import.ts";
+
+export { ALIASES_MAX };
 
 /** The first words of every extraction prompt: the fake engine answers by it (FAKE_CLAUDE_TEXT_ROUTES). */
 export const IMPORT_MARKER = "You are the IMPORT step of a memory system";
@@ -69,10 +72,27 @@ export function cleanSubject(raw: unknown): string {
   return typeof raw === "string" ? oneLine(raw.replace(/[,[\]:]+/g, " "), SUBJECT_MAX) || FALLBACK_SUBJECT : FALLBACK_SUBJECT;
 }
 
+/** What the screen left out of an answer (screen.ts): facts that held a
+ * secret, and facts that read like an instruction or held a command, code
+ * or a link. Counted, so the person is told. */
+export interface DropTally {
+  secrets: number;
+  instructions: number;
+}
+
+/** A fact's aliases as they are kept: one line each, at most five, none a
+ * common word, a secret or a link. */
+export function cleanAliases(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = raw.filter((alias): alias is string => typeof alias === "string").map((alias) => oneLine(alias.replace(/[,[\]]+/g, " "), 40)).filter(usableAlias);
+  return [...new Set(cleaned)].slice(0, ALIASES_MAX);
+}
+
 /** The facts in one answer, or null when the answer is not the list that was
  * asked for (the call is then tried once more). An item that breaks a rule
- * is dropped by itself. A sensitive fact starts unticked. */
-export function parseImportCandidates(answer: string, conversations: readonly PreparedConversation[], today: string): ImportCandidate[] | null {
+ * is dropped by itself; one the screen refuses is dropped and counted in
+ * `dropped`. A sensitive fact starts unticked. */
+export function parseImportCandidates(answer: string, conversations: readonly PreparedConversation[], today: string, dropped?: DropTally): ImportCandidate[] | null {
   const parsed = jsonPayload(answer);
   const list = Array.isArray(parsed)
     ? parsed
@@ -83,29 +103,37 @@ export function parseImportCandidates(answer: string, conversations: readonly Pr
   const out: ImportCandidate[] = [];
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
-    const { text: raw, kind, subject, aliases, date, until, sensitive, chat } = item as Record<string, unknown>;
+    const { text: raw, kind, subject, aliases, date, until: rawUntil, sensitive, chat } = item as Record<string, unknown>;
     if (typeof raw !== "string" || (kind !== "core" && kind !== "subject")) continue;
     const text = cleanFactText(raw);
     if (!text) continue;
+    // an until that is not a date says nothing (a model may echo the placeholder): the fact is kept without one
+    const until = isMemoryDate(rawUntil) ? rawUntil : undefined;
     // an until in the past is a fact that is already over
-    if (until !== undefined && until !== null && until !== "") {
-      if (!isMemoryDate(until) || until < today) continue;
+    if (until !== undefined && until < today) continue;
+    const filedUnder = cleanSubject(subject);
+    // a secret is dropped, never masked: checked on the text as the model wrote it
+    if (holdsSecret(raw.replace(/\s+/g, " ")) || holdsSecret(text) || holdsSecret(filedUnder)) {
+      if (dropped) dropped.secrets += 1;
+      continue;
+    }
+    if (readsAsInstruction(text) || holdsCodeOrLink(filedUnder)) {
+      if (dropped) dropped.instructions += 1;
+      continue;
     }
     const source = typeof chat === "number" && Number.isInteger(chat) ? conversations[chat - 1] : undefined;
-    const sensitiveCategory = SENSITIVE_CATEGORIES.includes(sensitive as SensitiveCategory) ? (sensitive as SensitiveCategory) : null;
+    const sensitiveAs = sensitiveCategory(sensitive, text);
     out.push({
       id: randomUUID(),
       text,
       kind,
-      subject: cleanSubject(subject),
-      aliases: Array.isArray(aliases)
-        ? [...new Set(aliases.filter((alias): alias is string => typeof alias === "string").map((alias) => oneLine(alias.replace(/[,[\]]+/g, " "), 40)).filter(Boolean))].slice(0, 8)
-        : [],
+      subject: filedUnder,
+      aliases: cleanAliases(aliases),
       date: isMemoryDate(date) && date <= today ? date : source?.date ?? today,
-      ...(isMemoryDate(until) ? { until } : {}),
-      sensitive: sensitiveCategory,
+      ...(until !== undefined ? { until } : {}),
+      sensitive: sensitiveAs,
       chatTitle: source ? clip(source.title, 80) : "",
-      keep: sensitiveCategory === null,
+      keep: sensitiveAs === null,
     });
     if (out.length >= MAX_BATCH_CANDIDATES) break;
   }

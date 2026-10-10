@@ -16,7 +16,7 @@
 import { z } from "zod";
 
 import { clearImportRecords } from "../context-import/records.ts";
-import { IMPORT_BOT_PREFIX } from "../context-import/save.ts";
+import { IMPORT_BOT_PREFIX, IMPORT_LINE_MARKS } from "../context-import/save.ts";
 import { removeLearnedWhere } from "../profile-learned.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import { deleteImportedEntries, deleteSharedNote, describeSharedNotes, readSharedNote, SharedNotesError, writeSharedNote } from "../shared-notes.ts";
@@ -50,7 +50,8 @@ export function createSharedNotesRoutes(deps: SharedNotesRouteDeps): RouteHandle
         // Imported entries leave the notes, imported lines leave About me, and
         // the record of what was read goes too, so a later import starts over.
         const notes = deleteImportedEntries();
-        const learned = removeLearnedWhere((fact) => fact.botId.startsWith(IMPORT_BOT_PREFIX), deps.aboutMe(), deps.saveAboutMe);
+        // …found by the mark each line carries, so a line whose record has left the capped list goes too
+        const learned = removeLearnedWhere((fact) => fact.botId.startsWith(IMPORT_BOT_PREFIX), deps.aboutMe(), deps.saveAboutMe, { lineMarks: IMPORT_LINE_MARKS });
         clearImportRecords();
         return json(res, 200, { ok: true, entries: notes.entries, files: notes.files, aboutMe: learned.removed, aboutMeText: learned.aboutMe, notes: describeSharedNotes() });
       }

@@ -77,14 +77,18 @@ it("imports a ChatGPT export into About me and shared notes that every bot then 
       ["The person's company Supamaus ships on Fridays", "subject", true, "Launch plan"],
     ]);
     // the last one-shot was the conflict check, over the proposed facts
-    expect(JSON.parse(readFileSync(textDump, "utf8")).prompt).toContain("The person is vegetarian");
+    const lastCall = JSON.parse(readFileSync(textDump, "utf8")) as { prompt: string; argv: string[] };
+    expect(lastCall.prompt).toContain("The person is vegetarian");
+    // an import's calls keep no session of the chat text and have no tools
+    expect(lastCall.argv).toContain("--no-session-persistence");
+    expect(lastCall.argv[lastCall.argv.indexOf("--tools") + 1]).toBe("");
     expect((await api("/api/config")).profile.aboutMe).toBe("");
     expect((await api("/api/shared-notes")).notes).toEqual([]);
     expect((await api("/api/profile/learned")).learned).toEqual([]);
 
     // ── save ────────────────────────────────────────────────────────────
     const { result } = await api<{ result: ImportSaveResult }>(`/api/context-import/${job.id}/save`, "POST");
-    expect(result).toMatchObject({ aboutMe: 1, continued: 0, subjects: 2, entries: 2 });
+    expect(result).toMatchObject({ aboutMe: 1, overflowed: 0, subjects: 2, entries: 2, full: [] });
     expect((await api("/api/config")).profile.aboutMe).toMatch(/^- \d{4}-\d{2}-\d{2} · learned by ChatGPT import · The person is vegetarian$/);
     const { learned } = await api<{ learned: Array<{ id: string; text: string; botName: string }> }>("/api/profile/learned");
     expect(learned).toMatchObject([{ text: "The person is vegetarian", botName: "ChatGPT import" }]);

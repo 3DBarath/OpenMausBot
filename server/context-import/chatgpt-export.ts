@@ -15,7 +15,7 @@
 // The branch the person last saw runs from `current_node` up through
 // `parent`; only that branch is read. Anything of another shape is skipped
 // and counted, never an error.
-import { isRecord, toMillis, type ExportConversation } from "./types.ts";
+import { exportTitle, isRecord, toMillis, type ExportConversation } from "./types.ts";
 
 export function isChatGptConversation(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && isRecord(value.mapping);
@@ -87,7 +87,7 @@ export function parseChatGptConversation(value: unknown): ExportConversation | n
   const id = typeof value.conversation_id === "string" && value.conversation_id ? value.conversation_id : typeof value.id === "string" ? value.id : "";
   return {
     id,
-    title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : "Untitled",
+    title: exportTitle(value.title),
     updatedAt: toMillis(value.update_time) || toMillis(value.create_time),
     messages,
     skippedMessages,

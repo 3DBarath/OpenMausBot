@@ -3,10 +3,11 @@
 // contradiction step Memory upkeep has (server/memory-tidy.ts); the newer
 // fact wins and the older one stays in the list, unticked, pointing at it.
 // Core, which goes to About me, holds at most 30 facts. Pure here.
-import { cleanFactText, cleanSubject } from "./extract.ts";
+import { cleanFactText, cleanSubject, FALLBACK_SUBJECT } from "./extract.ts";
+import { holdsCodeOrLink, holdsSecret, readsAsInstruction, usableAlias } from "./screen.ts";
 import type { MemoryEntryLine } from "../memory-entries.ts";
 import type { Contradiction } from "../memory-tidy.ts";
-import { CORE_MAX, type CandidatePatch, type ImportCandidate } from "../../shared/context-import.ts";
+import { CORE_MAX, IMPORT_SUBJECTS_MAX, type CandidatePatch, type ImportCandidate } from "../../shared/context-import.ts";
 
 /** contradictionPrompt lists at most this many lines (PROMPT_ENTRIES in memory-tidy.ts). */
 export const CONSOLIDATE_CHUNK = 200;
@@ -60,12 +61,37 @@ export function capCore(candidates: readonly ImportCandidate[]): ImportCandidate
   return candidates.map((candidate) => (candidate.kind === "core" && !stay.has(candidate.id) ? { ...candidate, kind: "subject" as const } : candidate));
 }
 
+function screenedSubject(raw: string): string {
+  const subject = cleanSubject(raw);
+  if (holdsSecret(subject) || holdsCodeOrLink(subject)) throw new ReviewError("A subject cannot hold a password, a number that identifies you, a command or a link.", 400);
+  return subject;
+}
+
+/** One import files its facts under a bounded number of subjects, so a
+ * model that names a subject per fact cannot fill the shared notes with
+ * hundreds of one-line notes. The subjects with the most facts stay; the
+ * rest are folded into the general one, and each folded fact keeps the name
+ * of the subject it had as an alias, so asking about it still finds it. */
+export function foldSubjects(candidates: readonly ImportCandidate[], max = IMPORT_SUBJECTS_MAX): ImportCandidate[] {
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) counts.set(candidate.subject.toLowerCase(), (counts.get(candidate.subject.toLowerCase()) ?? 0) + 1);
+  if (counts.size <= max) return [...candidates];
+  const general = FALLBACK_SUBJECT.toLowerCase();
+  const stay = new Set([...counts].filter(([subject]) => subject !== general).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, max - 1).map(([subject]) => subject));
+  return candidates.map((candidate) => {
+    const subject = candidate.subject.toLowerCase();
+    if (subject === general || stay.has(subject)) return candidate;
+    const aliases = usableAlias(candidate.subject) && !candidate.aliases.includes(candidate.subject) ? [candidate.subject, ...candidate.aliases] : candidate.aliases;
+    return { ...candidate, subject: FALLBACK_SUBJECT, aliases };
+  });
+}
+
 /** What the person changed in the review: ticks, text, where a fact goes, and a subject's name. */
 export function patchCandidates(candidates: readonly ImportCandidate[], patch: CandidatePatch): ImportCandidate[] {
   let next = [...candidates];
   if (patch.renameSubject) {
     const from = patch.renameSubject.from.trim().toLowerCase();
-    const to = cleanSubject(patch.renameSubject.to);
+    const to = screenedSubject(patch.renameSubject.to);
     next = next.map((candidate) => (candidate.subject.toLowerCase() === from ? { ...candidate, subject: to } : candidate));
   }
   for (const change of patch.changes ?? []) {
@@ -76,9 +102,12 @@ export function patchCandidates(candidates: readonly ImportCandidate[], patch: C
     if (change.text !== undefined) {
       const text = cleanFactText(change.text);
       if (!text) throw new ReviewError("A fact cannot be empty. Untick it to leave it out.", 400);
+      // what the import would not take from a model it does not take from an edit either
+      if (holdsSecret(change.text.replace(/\s+/g, " ")) || holdsSecret(text)) throw new ReviewError("A fact cannot hold a password, a card number or an identity or bank number. Leave that part out.", 400);
+      if (readsAsInstruction(text)) throw new ReviewError("A fact cannot be an instruction, a command, code or a link. Write it as something true about you.", 400);
       updated.text = text;
     }
-    if (change.subject !== undefined) updated.subject = cleanSubject(change.subject);
+    if (change.subject !== undefined) updated.subject = screenedSubject(change.subject);
     if (change.kind !== undefined && change.kind !== updated.kind) {
       if (change.kind === "core" && next.filter((candidate) => candidate.kind === "core").length >= CORE_MAX) {
         throw new ReviewError(`Core holds at most ${CORE_MAX} facts. Move one to a subject first.`, 409);

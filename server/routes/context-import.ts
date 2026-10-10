@@ -8,7 +8,8 @@
 //   POST   /api/context-import/<id>/text          pasted text {text}
 //   GET    /api/context-import/<id>               state, scan, progress, candidates; ?from=&to=&cap= prices another range
 //   POST   /api/context-import/<id>/extract       read it {botId, from?, to?, cap?}
-//   POST   /api/context-import/<id>/pause         and /resume, /cancel
+//   POST   /api/context-import/<id>/pause         and /cancel
+//   POST   /api/context-import/<id>/resume        carry on {skipFailed?}: true leaves out the parts the engine failed
 //   PATCH  /api/context-import/<id>/candidates    tick, edit, move, rename {changes?, renameSubject?}
 //   POST   /api/context-import/<id>/save          write the kept facts
 //
@@ -96,7 +97,12 @@ export function createContextImportRoutes(deps: ContextImportRouteDeps): RouteHa
         return json(res, 202, { job: deps.imports.extract(id, parsed.data) });
       }
       if (action === "pause" && method === "POST") return json(res, 200, { job: deps.imports.pause(id) });
-      if (action === "resume" && method === "POST") return json(res, 202, { job: deps.imports.resume(id) });
+      if (action === "resume" && method === "POST") {
+        // no body at all is a plain resume
+        const parsed = z.object({ skipFailed: z.boolean().optional() }).safeParse((await readBody(req)) ?? {});
+        if (!parsed.success) return json(res, 400, { error: "skipFailed is true or false" });
+        return json(res, 202, { job: deps.imports.resume(id, { skipFailed: parsed.data.skipFailed === true }) });
+      }
       if (action === "cancel" && method === "POST") {
         await deps.imports.cancel(id);
         return json(res, 200, { ok: true });
@@ -106,7 +112,7 @@ export function createContextImportRoutes(deps: ContextImportRouteDeps): RouteHa
         if (!parsed.success) return json(res, 400, { error: "changes is a list of {id, keep?, text?, kind?, subject?}; renameSubject is {from, to}" });
         return json(res, 200, { job: deps.imports.patch(id, parsed.data) });
       }
-      if (action === "save" && method === "POST") return json(res, 200, { result: deps.imports.save(id) });
+      if (action === "save" && method === "POST") return json(res, 200, { result: await deps.imports.save(id) });
       return PASS;
     } catch (error) {
       if (error instanceof ImportError) return json(res, error.status, { error: error.message });

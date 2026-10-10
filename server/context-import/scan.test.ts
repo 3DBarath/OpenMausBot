@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { chatGptConversation, claudeConversation, sampleConversations, writeExportJson, writeExportZip } from "../testing/context-import-fixtures.ts";
-import { clampSlice, conversationHash, estimateSlice, proposeSlice, scanExport, scanPaste, selectSlice, type ScanRow } from "./scan.ts";
+import { clampSlice, conversationHash, conflictCalls, estimateSlice, proposeSlice, scanExport, scanPaste, selectSlice, type ScanRow } from "./scan.ts";
 
 const NOW = Date.UTC(2026, 9, 10, 12);
 const DAY = 86_400_000;
@@ -29,7 +29,7 @@ describe("scanning an export", () => {
     expect(summary).toEqual({
       format: "chatgpt", conversations: 4, withOwnMessages: 3, oldest: NOW - 500 * DAY, newest: NOW - DAY,
       ownChars: sample.flatMap((conversation) => conversation.messages).reduce((total, message) => total + message.length, 0),
-      alreadyRead: 0, skipped: { conversations: 3, messages: 0, oversized: 0, entries: [] }, truncated: false,
+      alreadyRead: 0, skipped: { conversations: 3, messages: 0, oversized: 0, entries: [], secrets: 0, overLimit: 0 }, truncated: false,
     });
     expect(rows).toHaveLength(4);
     expect(rows.find((row) => row.hash === conversationHash({ id: "conv-empty", title: "", updatedAt: NOW - DAY }))).toMatchObject({ chars: 0 });
@@ -100,8 +100,14 @@ describe("the slice and the estimate", () => {
   });
 
   it("estimates one call per batch of about 24,000 characters, plus the conflict check", () => {
-    expect(estimateSlice([])).toEqual({ conversations: 0, chars: 0, calls: 0, minSeconds: 0, maxSeconds: 0 });
+    expect(estimateSlice([])).toEqual({ conversations: 0, chars: 0, calls: 0, maxCalls: 0, minSeconds: 0, maxSeconds: 0 });
     const ten = Array.from({ length: 10 }, (_, index) => row(`c${index}`, index, 5_880));
-    expect(estimateSlice(ten)).toEqual({ conversations: 10, chars: 58_800, calls: 4, minSeconds: 40, maxSeconds: 188 });
+    // three batches and one check; at most every batch twice
+    expect(estimateSlice(ten)).toEqual({ conversations: 10, chars: 58_800, calls: 4, maxCalls: 7, minSeconds: 40, maxSeconds: 188 });
+    // facts are checked 200 at a time, a batch brings at most 40, an import stops at 2,000: never more than ten checks
+    expect(conflictCalls(5)).toBe(1);
+    expect(conflictCalls(6)).toBe(2);
+    expect(conflictCalls(50)).toBe(10);
+    expect(conflictCalls(500)).toBe(10);
   });
 });

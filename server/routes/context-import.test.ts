@@ -129,7 +129,7 @@ describe("an import over HTTP", () => {
     await call(base, "PATCH", `/api/context-import/${job.id}/candidates`, { changes: "all" }, 400);
 
     const { result } = await call<{ result: ImportSaveResult }>(base, "POST", `/api/context-import/${job.id}/save`);
-    expect(result).toMatchObject({ aboutMe: 1, entries: 1, subjects: 1, continued: 0 });
+    expect(result).toMatchObject({ aboutMe: 1, entries: 1, subjects: 1, overflowed: 0 });
     expect(aboutMe).toContain("learned by ChatGPT import · The person is vegetarian");
     expect(readSharedNote("eating-out.md")).toContain("The person loves Irani cafes in Pune (imported · ChatGPT)");
     expect(readSharedNote("health.md")).toBeNull();

@@ -8,7 +8,7 @@ import { copyText } from "@/lib/copy-text";
 import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes } from "@/lib/context-import";
 import { ContextImportReview } from "./ContextImportReview";
 import {
-  PASTE_MAX_CHARS,
+  IMPORT_EXPIRES_DAYS, PASTE_MAX_CHARS, UPLOAD_MINUTES,
   type CandidateChange, type CandidatePatch, type ImportEngineChoice, type ImportJobView, type ImportOrigin, type ImportOverview, type ImportSaveResult,
 } from "../../shared/context-import";
 
@@ -47,6 +47,8 @@ export interface ContextImportActions {
   extract(): void;
   pause(): void;
   resume(): void;
+  /** Carry on without the parts the engine failed. */
+  resumeSkipping(): void;
   cancel(): void;
   change(change: CandidateChange): void;
   renameSubject(from: string, to: string): void;
@@ -75,16 +77,22 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
   const error = draft.error && <p role="alert" className="mt-3 text-[12.5px] text-danger">{draft.error}</p>;
   const cancel = <button type="button" className={QUIET} disabled={draft.busy} title={t("contextImport.cancelHint")} onClick={actions.cancel}>{t("contextImport.cancel")}</button>;
   const number = (value: number) => value.toLocaleString("en-US");
+  /** What the import's own screen left out of the proposed facts, when it left anything out. */
+  const dropped = (progress: ImportJobView["progress"]) => progress && progress.droppedSecrets + progress.droppedInstructions > 0
+    && <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.progress.dropped", { secrets: number(progress.droppedSecrets), instructions: number(progress.droppedInstructions) })}</p>;
+  const expires = <p className="mt-3 text-[12px] text-ink-secondary">{t("contextImport.expires", { days: IMPORT_EXPIRES_DAYS })}</p>;
 
   if (draft.result) {
     const result = draft.result;
     return <div>
-      {heading(t("contextImport.done.title"), t("contextImport.done.saved", { aboutMe: result.aboutMe, entries: result.entries + result.continued }))}
+      {heading(t("contextImport.done.title"), t("contextImport.done.saved", { aboutMe: result.aboutMe, entries: result.entries }))}
       <ul className="mt-3 flex flex-col gap-1.5 text-[12.5px] text-ink-secondary">
-        {result.continued > 0 && <li>{t("contextImport.done.continued", { count: result.continued })}</li>}
+        {result.overflowed > 0 && <li>{t("contextImport.done.overflowed", { count: result.overflowed })}</li>}
         {result.full.map((full) => <li key={full.subject}>{t("contextImport.done.full", { subject: full.subject, count: full.dropped })}</li>)}
         {result.duplicates > 0 && <li>{t("contextImport.done.duplicates", { count: result.duplicates })}</li>}
-        <li>{t("contextImport.done.deleted")}</li>
+        {result.notDeleted
+          ? <li role="alert" className="text-danger">{t("contextImport.done.notDeleted", { path: result.notDeleted })}</li>
+          : <li>{t("contextImport.done.deleted")}</li>}
       </ul>
       <div className="mt-5 flex justify-end"><button type="button" className={PRIMARY} onClick={actions.close}>{t("contextImport.done.done")}</button></div>
     </div>;
@@ -129,6 +137,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
     return <div>
       {heading(t("contextImport.file.title"), t("contextImport.file.hint"))}
       <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.file.limit")}</p>
+      <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.file.time", { minutes: UPLOAD_MINUTES })}</p>
       <input type="file" accept=".zip,.json,application/zip,application/json" aria-label={t("contextImport.file.aria")} disabled={draft.busy}
         onChange={(event) => actions.chooseFile(event.target.files?.[0] ?? null)} className="mt-3 block w-full text-[13px] text-ink" />
       {error}
@@ -163,6 +172,8 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
         {scan.alreadyRead > 0 && <li>{t("contextImport.scan.alreadyRead", { count: number(scan.alreadyRead) })}</li>}
         {scan.skipped.conversations + scan.skipped.oversized > 0 && <li>{t("contextImport.scan.skipped", { count: number(scan.skipped.conversations + scan.skipped.oversized) })}</li>}
         {scan.skipped.entries.map((entry) => <li key={entry}>{t("contextImport.scan.refused", { entry })}</li>)}
+        {scan.skipped.secrets > 0 && <li>{t("contextImport.scan.secrets", { count: number(scan.skipped.secrets) })}</li>}
+        {scan.skipped.overLimit > 0 && <li>{t("contextImport.scan.overLimit", { count: number(scan.skipped.overLimit) })}</li>}
         {scan.truncated && <li>{t("contextImport.scan.truncated")}</li>}
       </ul>
       {!paste && <>
@@ -179,7 +190,9 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
       <p role="status" className="mt-3 text-[13px] text-ink">
         {nothing ? t("contextImport.scan.nothing") : t("contextImport.scan.estimate", { conversations: number(estimate.conversations), calls: number(estimate.calls), min: minutes!.min, max: minutes!.max })}
       </p>
-      <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">{t("contextImport.scan.estimateNote")} {t("contextImport.scan.sent")}</p>
+      <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
+        {!nothing && <>{t("contextImport.scan.estimateMax", { max: number(estimate.maxCalls ?? estimate.calls) })} </>}{t("contextImport.scan.estimateNote")} {t("contextImport.scan.sent")}
+      </p>
       <label className="mt-4 flex flex-col gap-1 text-[12.5px] text-ink-secondary">{t("contextImport.engine.label")}
         <select value={draft.botId} disabled={draft.busy} onChange={(event) => actions.setBot(event.target.value)} className={FIELD}>
           <option value="">{t("contextImport.engine.choose")}</option>
@@ -189,6 +202,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
         </select>
         <span className="text-[12px]">{t("contextImport.engine.hint")}</span>
       </label>
+      {expires}
       {error}
       <div className="mt-5 flex justify-between gap-2">{cancel}
         <button type="button" className={PRIMARY} disabled={draft.busy || nothing || !draft.botId} onClick={actions.extract}>
@@ -210,13 +224,19 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
       </p>
       <progress className="mt-3 w-full accent-accent" aria-label={t("contextImport.progress.aria")} {...(progress ? { max: progress.batches, value: progress.done } : {})} />
       {progress && progress.skipped > 0 && <p className="mt-2 text-[12.5px] text-ink-secondary">{t("contextImport.progress.skipped", { count: progress.skipped })}</p>}
+      {dropped(progress)}
       {paused && <p className="mt-2 text-[12.5px] text-ink">{job!.pausedBy === "restart" ? t("contextImport.progress.pausedRestart") : t("contextImport.progress.paused")}</p>}
       {job!.note && <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{job!.note}</p>}
+      {paused && job!.failedBatches ? <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.progress.skipFailedHint", { count: job!.failedBatches })}</p> : null}
       {!paused && <p className="mt-2 text-[12px] text-ink-secondary">{t("contextImport.progress.background")}</p>}
+      {paused && expires}
       {error}
-      <div className="mt-5 flex justify-between gap-2">{cancel}
+      <div className="mt-5 flex flex-wrap justify-between gap-2">{cancel}
         {paused
-          ? <button type="button" className={PRIMARY} disabled={draft.busy} onClick={actions.resume}>{t("contextImport.progress.resume")}</button>
+          ? <span className="flex flex-wrap items-center gap-2">
+              {job!.failedBatches ? <button type="button" className="ui-button" disabled={draft.busy} onClick={actions.resumeSkipping}>{t("contextImport.progress.skipFailed", { count: job!.failedBatches })}</button> : null}
+              <button type="button" className={PRIMARY} disabled={draft.busy} onClick={actions.resume}>{t("contextImport.progress.resume")}</button>
+            </span>
           : <button type="button" className="ui-button" disabled={draft.busy || job!.status === "preparing"} onClick={actions.pause}>{t("contextImport.progress.pause")}</button>}
       </div>
     </div>;
@@ -232,16 +252,28 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
 
   const candidates = job!.candidates ?? [];
   const kept = keptCounts(candidates);
+  const fit = job!.fit ?? [];
   return <div>
     {heading(t("contextImport.review.title"), t("contextImport.review.hint"))}
     {job!.note && <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{job!.note}</p>}
+    {job!.unreadAtLimit !== undefined && <p className="mt-2 text-[12.5px] leading-relaxed text-ink">{t("contextImport.review.atLimit", { count: number(job!.unreadAtLimit) })}</p>}
     {job!.progress && job!.progress.skipped > 0 && <p className="mt-2 text-[12.5px] text-ink-secondary">{t("contextImport.progress.skipped", { count: job!.progress.skipped })}</p>}
+    {dropped(job!.progress)}
     <div className="mt-3"><ContextImportReview candidates={candidates} busy={draft.busy} onChange={actions.change} onRenameSubject={actions.renameSubject} /></div>
+    {fit.length > 0 && <div role="alert" className="mt-3 rounded-lg border border-danger/40 p-3 text-[12.5px] leading-relaxed text-ink">
+      <p className="font-medium">{t("contextImport.review.fitTitle")}</p>
+      <ul className="mt-1 flex flex-col gap-1">
+        {fit.map((problem) => problem.kind === "files"
+          ? <li key="files">{t("contextImport.review.fitFiles", { needed: number(problem.needed), room: number(problem.room) })}</li>
+          : <li key={problem.subject}>{t("contextImport.review.fitBytes", { subject: problem.subject, over: number(problem.over) })}</li>)}
+      </ul>
+    </div>}
+    {expires}
     {error}
     <div className="mt-5 flex flex-wrap items-center justify-between gap-2">{cancel}
       <span className="flex items-center gap-3">
         <span className="text-[12.5px] text-ink-secondary">{t("contextImport.review.summary", { core: kept.core, subjects: kept.subjects })}</span>
-        <button type="button" className={PRIMARY} disabled={draft.busy} onClick={actions.save}>{draft.busy ? t("contextImport.review.saving") : t("contextImport.review.save")}</button>
+        <button type="button" className={PRIMARY} disabled={draft.busy || fit.length > 0} onClick={actions.save}>{draft.busy ? t("contextImport.review.saving") : t("contextImport.review.save")}</button>
       </span>
     </div>
   </div>;
@@ -355,6 +387,7 @@ export function ContextImportDialog({ onClose, onSaved }: { onClose: () => void;
     },
     pause: () => void send(`/api/context-import/${job!.id}/pause`, "POST"),
     resume: () => void send(`/api/context-import/${job!.id}/resume`, "POST"),
+    resumeSkipping: () => void send(`/api/context-import/${job!.id}/resume`, "POST", { skipFailed: true }),
     cancel: () => {
       edit({ busy: true, error: "" });
       void api(`/api/context-import/${job!.id}/cancel`, { method: "POST" })

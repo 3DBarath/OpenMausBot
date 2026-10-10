@@ -9,8 +9,11 @@ export const IMPORT_ORIGINS: readonly ImportOrigin[] = ["chatgpt", "claude", "pa
  * About me, `learned by ChatGPT import`. */
 export const IMPORT_ORIGIN_LABEL: Record<ImportOrigin, string> = { chatgpt: "ChatGPT", claude: "Claude", paste: "Pasted text" };
 
-export type SensitiveCategory = "health" | "money" | "relationships" | "politics" | "religion";
-export const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ["health", "money", "relationships", "politics", "religion"];
+export type NamedSensitiveCategory = "health" | "money" | "relationships" | "politics" | "religion";
+/** "other": the model called the fact sensitive without naming one of the five. */
+export type SensitiveCategory = NamedSensitiveCategory | "other";
+/** The categories the model is asked to name. */
+export const SENSITIVE_CATEGORIES: readonly NamedSensitiveCategory[] = ["health", "money", "relationships", "politics", "religion"];
 
 /** Core facts go to About me, which every bot reads on every turn. */
 export const CORE_MAX = 30;
@@ -19,6 +22,12 @@ export const UPLOAD_MAX_BYTES = 4 * 1024 ** 3;
 export const DEFAULT_SLICE_MONTHS = 12;
 export const DEFAULT_SLICE_CAP = 500;
 export const MAX_SLICE_CAP = 2_000;
+/** One import files its facts under at most this many subjects; the rarest are folded into a general one before review. */
+export const IMPORT_SUBJECTS_MAX = 40;
+/** An import nobody touches for this many days is deleted, with its upload. */
+export const IMPORT_EXPIRES_DAYS = 14;
+/** An upload must arrive within this many minutes (the server's limit for one request). */
+export const UPLOAD_MINUTES = 5;
 
 export interface ImportCandidate {
   id: string;
@@ -51,8 +60,10 @@ export interface ImportEstimate {
   conversations: number;
   /** Characters that would be sent, after the cuts. */
   chars: number;
-  /** Model calls: one per batch, plus the check for conflicting facts. */
+  /** Model calls when nothing goes wrong: one per batch, plus the checks for conflicting facts. */
   calls: number;
+  /** The most calls there can be: every batch read twice (one retry each), plus every check. */
+  maxCalls: number;
   minSeconds: number;
   maxSeconds: number;
 }
@@ -77,6 +88,10 @@ export interface ImportScanSummary {
     oversized: number;
     /** Archive entries refused, as `name: reason`. Names only, never content. */
     entries: string[];
+    /** Messages left out, unread by any model, because they held a password, a card number or an identity or bank number. */
+    secrets: number;
+    /** Conversations past the most one scan keeps: counted, never read. */
+    overLimit: number;
   };
   /** The file ended in the middle of the list. */
   truncated: boolean;
@@ -92,7 +107,18 @@ export interface ImportProgress {
   candidates: number;
   /** Facts dropped because About me, the shared notes or this import already had them. */
   duplicates: number;
+  /** Proposed facts dropped because they held a secret: never masked, never kept. */
+  droppedSecrets: number;
+  /** Proposed facts dropped because they read like an instruction, or held a command, code or a link. */
+  droppedInstructions: number;
 }
+
+/** Why saving the ticked facts would not fit the shared notes as they stand. */
+export type ImportFitProblem =
+  /** More new notes than there is room for: `needed` new subjects, room for `room`. */
+  | { kind: "files"; needed: number; room: number }
+  /** One subject's note would pass its size limit: `over` facts do not fit. */
+  | { kind: "bytes"; subject: string; over: number };
 
 export interface ImportJobView {
   id: string;
@@ -111,6 +137,14 @@ export interface ImportJobView {
   botId?: string;
   progress?: ImportProgress;
   candidates?: ImportCandidate[];
+  /** Parts given back when the engine stopped answering: resume reads them again, or skips them when asked to. */
+  failedBatches?: number;
+  /** The import stopped at its limit of facts: this many conversations of the range were left unread, for a later import of the same file. */
+  unreadAtLimit?: number;
+  /** In review: why saving the ticked facts would be refused, when it would. */
+  fit?: ImportFitProblem[];
+  /** When an import nobody touches is deleted (epoch milliseconds). */
+  expiresAt?: number;
 }
 
 /** A bot whose engine could read the export, or the reason it cannot. */
@@ -156,16 +190,18 @@ export interface CandidatePatch {
 export interface ImportSaveResult {
   /** Lines added to About me. */
   aboutMe: number;
-  /** Core facts About me had no room for, saved to the "About me, continued" note. */
-  continued: number;
+  /** Core facts About me had no room for, filed under their subject instead (counted in `entries`). */
+  overflowed: number;
   /** Subject notes written to. */
   subjects: number;
   /** Entries added across them. */
   entries: number;
   /** Facts left out because About me or the notes already had them. */
   duplicates: number;
-  /** Subjects that took fewer entries than asked, with how many did not fit. */
+  /** Always empty: a save that would not fit is refused whole, never cut short. Kept for clients written before that. */
   full: Array<{ subject: string; dropped: number; reason: "files" | "bytes" }>;
   /** About me after the save. */
   aboutMeText: string;
+  /** Set when the upload and what was read from it could not be deleted afterwards: the folder that is left. */
+  notDeleted?: string;
 }

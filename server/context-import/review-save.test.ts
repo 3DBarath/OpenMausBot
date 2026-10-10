@@ -1,19 +1,20 @@
 // Review and save: sensitive facts start unticked, Core holds 30, the newer
-// of two conflicting facts wins, About me overflows into "About me,
-// continued", and the import record holds no text.
-import { existsSync, readFileSync, rmSync } from "node:fs";
+// of two conflicting facts wins, a core fact About me has no room for is
+// filed under its subject, a save that would not fit is refused whole, and
+// the import record holds no text.
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
 import { contradictionPrompt, parseContradictions } from "../memory-tidy.ts";
 import { listLearnedFacts } from "../profile-learned.ts";
-import { readSharedNote, sharedNotesDir } from "../shared-notes.ts";
-import { CORE_MAX, type ImportCandidate } from "../../shared/context-import.ts";
+import { listSharedNotes, readSharedNote, SHARED_NOTES_MAX_FILES, sharedNotesDir } from "../shared-notes.ts";
+import { CORE_MAX, IMPORT_SUBJECTS_MAX, type ImportCandidate } from "../../shared/context-import.ts";
 import { parseImportCandidates } from "./extract.ts";
 import { appendImportRecord, clearImportRecords, importedHashes, listImportRecords, recordView } from "./records.ts";
-import { applyContradictions, capCore, consolidationChunks, contradictionEntries, patchCandidates, ReviewError } from "./review.ts";
-import { CONTINUED_SUBJECT, saveImportedFacts } from "./save.ts";
+import { applyContradictions, capCore, consolidationChunks, contradictionEntries, foldSubjects, patchCandidates, ReviewError } from "./review.ts";
+import { planSave, SaveError, saveImportedFacts } from "./save.ts";
 
 const NOW = new Date(2026, 9, 10, 12);
 let aboutMe = "";
@@ -89,57 +90,151 @@ describe("review", () => {
 });
 
 describe("save", () => {
-  it("writes kept core facts to About me as learned facts and kept subject facts to shared notes", () => {
+  it("writes kept core facts to About me as learned facts and kept subject facts to shared notes", async () => {
     aboutMe = "I write short emails.";
-    const result = saveImportedFacts("chatgpt", [
+    const result = await saveImportedFacts("chatgpt", [
       candidate("The person is vegetarian", { kind: "core", subject: "Food" }),
       candidate("Not kept", { kind: "core", keep: false }),
       candidate("Loves Irani cafes", { subject: "Food", aliases: ["restaurants", "cafes"], date: "2025-03-02" }),
       candidate("Staying in Goa", { subject: "food", until: "2099-01-05" }),
       candidate("Has type 1 diabetes", { subject: "Health", sensitive: "health", keep: false }),
     ], deps);
-    expect(result).toEqual({ aboutMe: 1, continued: 0, subjects: 1, entries: 2, duplicates: 0, full: [], aboutMeText: "I write short emails.\n- 2026-10-10 · learned by ChatGPT import · The person is vegetarian" });
+    expect(result).toEqual({ aboutMe: 1, overflowed: 0, subjects: 1, entries: 2, duplicates: 0, full: [], aboutMeText: "I write short emails.\n- 2026-10-10 · learned by ChatGPT import · The person is vegetarian" });
     expect(aboutMe).toBe(result.aboutMeText);
     expect(listLearnedFacts()).toMatchObject([{ text: "The person is vegetarian", botId: "import:chatgpt", botName: "ChatGPT import" }]);
     expect(readSharedNote("food.md")).toBe("---\ntitle: Food\naliases: [restaurants, cafes]\n---\n\n- 2025-03-02 · Loves Irani cafes (imported · ChatGPT)\n- 2026-01-01 · Staying in Goa (imported · ChatGPT) · until 2099-01-05\n");
     expect(readSharedNote("health.md")).toBeNull();
     // saving the same facts again adds nothing
-    expect(saveImportedFacts("chatgpt", [candidate("The person is vegetarian", { kind: "core" }), candidate("Loves Irani cafes", { subject: "Food" })], deps))
+    expect(await saveImportedFacts("chatgpt", [candidate("The person is vegetarian", { kind: "core" }), candidate("Loves Irani cafes", { subject: "Food" })], deps))
       .toMatchObject({ aboutMe: 0, entries: 0, subjects: 0, duplicates: 2 });
   });
 
-  it("puts core facts About me has no room for into the \"About me, continued\" note, and says so", () => {
+  it("files a core fact About me has no room for under its subject, like any other fact, and says so", async () => {
     // room for one short line (56 characters with its line break), not two
     aboutMe = "x".repeat(24_000 - 100);
-    const result = saveImportedFacts("claude", [
-      candidate("Short fact one", { kind: "core", date: "2025-06-01" }),
-      candidate(`A long fact ${"y".repeat(200)}`, { kind: "core" }),
-      candidate("Short fact two", { kind: "core" }),
+    const result = await saveImportedFacts("claude", [
+      candidate("Short fact one", { kind: "core", date: "2025-06-01", subject: "Work" }),
+      candidate(`A long fact ${"y".repeat(200)}`, { kind: "core", subject: "Work", aliases: ["job"] }),
+      candidate("Short fact two", { kind: "core", subject: "Home" }),
+      candidate("Filed anyway", { subject: "Home" }),
     ], deps);
-    expect(result).toMatchObject({ aboutMe: 1, continued: 2, subjects: 1, entries: 0 });
+    expect(result).toMatchObject({ aboutMe: 1, overflowed: 2, subjects: 2, entries: 3 });
     expect(aboutMe.length).toBeLessThanOrEqual(24_000);
     expect(aboutMe.endsWith("- 2026-10-10 · learned by Claude import · Short fact one")).toBe(true);
-    const note = readSharedNote("about-me-continued.md")!;
-    expect(note).toContain(`title: ${CONTINUED_SUBJECT}`);
-    expect(note).toContain("- 2026-01-01 · Short fact two (imported · Claude)");
+    // no catch-all note that answers to every question: each fact is where its subject is
+    expect(listSharedNotes().map((note) => note.name)).toEqual(["home.md", "work.md"]);
+    expect(readSharedNote("work.md")).toContain(`- 2026-01-01 · A long fact ${"y".repeat(200)} (imported · Claude)`);
+    expect(readSharedNote("work.md")).toContain("aliases: [job]");
+    expect(readSharedNote("home.md")).toContain("- 2026-01-01 · Short fact two (imported · Claude)\n- 2026-01-01 · Filed anyway (imported · Claude)");
     expect(listLearnedFacts()).toHaveLength(1);
   });
 
-  it("writes nothing at all when nothing is kept", () => {
+  it("writes nothing at all when nothing is kept", async () => {
     const saved: string[] = [];
-    const result = saveImportedFacts("paste", [candidate("Unticked", { keep: false })], { ...deps, saveAboutMe: (text) => saved.push(text) });
-    expect(result).toMatchObject({ aboutMe: 0, continued: 0, subjects: 0, entries: 0 });
+    const result = await saveImportedFacts("paste", [candidate("Unticked", { keep: false })], { ...deps, saveAboutMe: (text) => saved.push(text) });
+    expect(result).toMatchObject({ aboutMe: 0, overflowed: 0, subjects: 0, entries: 0 });
     expect(saved).toEqual([]);
     expect(existsSync(sharedNotesDir())).toBe(false);
     expect(listLearnedFacts()).toEqual([]);
   });
 
-  it("reports a subject that could not take every entry", () => {
-    const lines = Array.from({ length: 300 }, (_, index) => candidate(`Fact ${index} ${"z".repeat(260)}`, { subject: "Big" }));
-    const result = saveImportedFacts("paste", lines, deps);
-    expect(result.full).toEqual([{ subject: "Big", dropped: 300 - result.entries, reason: "bytes" }]);
-    expect(result.entries).toBeGreaterThan(100);
-    expect(readSharedNote("big.md")).toContain("(imported · Pasted text)");
+  it("refuses a save that would not fit a note, whole, instead of dropping what does not fit", async () => {
+    const lines = [
+      candidate("The person is vegetarian", { kind: "core", subject: "Food" }),
+      ...Array.from({ length: 300 }, (_, index) => candidate(`Fact ${index} ${"z".repeat(260)}`, { subject: "Big" })),
+      candidate("Fits by itself", { subject: "Small" }),
+    ];
+    const plan = planSave("paste", lines, deps);
+    expect(plan.problems).toHaveLength(1);
+    expect(plan.problems[0]).toMatchObject({ kind: "bytes", subject: "Big" });
+    const over = (plan.problems[0] as { over: number }).over;
+    expect(over).toBeGreaterThan(50);
+    expect(over).toBeLessThan(200);
+    const saved: string[] = [];
+    const refused = await saveImportedFacts("paste", lines, { ...deps, saveAboutMe: (text) => saved.push(text) }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(SaveError);
+    expect((refused as Error).message).toMatch(/Nothing was saved/);
+    expect((refused as Error).message).toContain("“Big”");
+    expect((refused as Error).message).toContain(`${over} fact(s) do not fit`);
+    // nothing at all was written: not About me, not the note that fits, not part of the one that does not
+    expect(saved).toEqual([]);
+    expect(listLearnedFacts()).toEqual([]);
+    expect(existsSync(sharedNotesDir())).toBe(false);
+    // unticking what does not fit lets the rest be saved
+    const fewer = lines.map((line, index) => (index > 300 - over ? { ...line, keep: line.subject !== "Big" } : line));
+    expect(planSave("paste", fewer, deps).problems).toEqual([]);
+    expect(await saveImportedFacts("paste", fewer, deps)).toMatchObject({ aboutMe: 1, subjects: 2, full: [] });
+  });
+
+  it("refuses a save that needs more new notes than there is room for, and says how many", async () => {
+    mkdirSync(sharedNotesDir(), { recursive: true });
+    for (let index = 0; index < SHARED_NOTES_MAX_FILES - 1; index += 1) writeFileSync(join(sharedNotesDir(), `note-${index}.md`), `- Fact ${index}\n`);
+    const facts = [candidate("Goes in a note that is there", { subject: "note-0" }), candidate("New one", { subject: "Alpha" }), candidate("New two", { subject: "Beta" })];
+    expect(planSave("chatgpt", facts, deps).problems).toEqual([{ kind: "files", needed: 2, room: 1 }]);
+    const refused = await saveImportedFacts("chatgpt", facts, deps).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(SaveError);
+    expect((refused as Error).message).toContain("need 2 new shared note(s) and there is room for 1");
+    expect(readSharedNote("note-0.md")).toBe("- Fact 0\n");
+    expect(listSharedNotes()).toHaveLength(SHARED_NOTES_MAX_FILES - 1);
+    // one new subject fits
+    expect(await saveImportedFacts("chatgpt", facts.slice(0, 2), deps)).toMatchObject({ subjects: 2, entries: 2 });
+  });
+
+  it("folds the rarest subjects into a general one, so an import brings a bounded number of notes", () => {
+    // 2,000 facts, each under a subject of its own, and three subjects with several
+    const lone = Array.from({ length: 2_000 }, (_, index) => candidate(`Lone fact ${index}`, { subject: `Topic ${index}`, aliases: ["own"] }));
+    const grouped = ["Work", "Food", "Travel"].flatMap((subject) => Array.from({ length: 5 }, (_, index) => candidate(`${subject} fact ${index}`, { subject })));
+    const folded = foldSubjects([...lone, ...grouped]);
+    const subjects = new Set(folded.map((entry) => entry.subject.toLowerCase()));
+    expect(subjects.size).toBe(IMPORT_SUBJECTS_MAX);
+    for (const subject of ["work", "food", "travel", "general"]) expect(subjects.has(subject), subject).toBe(true);
+    // nothing is lost, and a folded fact still answers to the subject it had
+    expect(folded).toHaveLength(2_015);
+    const moved = folded.find((entry) => entry.text === "Lone fact 1999")!;
+    expect(moved).toMatchObject({ subject: "General", aliases: ["Topic 1999", "own"] });
+    // few subjects: nothing changes
+    expect(foldSubjects(grouped)).toEqual(grouped);
+  });
+
+  it("writes each note once and lets other work run between two notes", async () => {
+    const facts = Array.from({ length: 2_000 }, (_, index) => candidate(`Fact number ${index} about the subject`, { subject: `Subject ${index % IMPORT_SUBJECTS_MAX}` }));
+    let turns = 0;
+    let longest = 0;
+    let last = performance.now();
+    const beat = setInterval(() => {
+      const at = performance.now();
+      longest = Math.max(longest, at - last);
+      last = at;
+      turns += 1;
+    }, 1);
+    try {
+      const result = await saveImportedFacts("chatgpt", facts, deps);
+      expect(result).toMatchObject({ subjects: IMPORT_SUBJECTS_MAX, entries: 2_000, full: [] });
+    } finally {
+      clearInterval(beat);
+    }
+    // the loop ran between notes, and no single step held it for seconds (a generous bound: this machine may be busy)
+    expect(turns).toBeGreaterThan(IMPORT_SUBJECTS_MAX / 2);
+    expect(longest).toBeLessThan(5_000);
+    expect(listSharedNotes()).toHaveLength(IMPORT_SUBJECTS_MAX);
+  });
+
+  it("refuses a secret, an instruction or a link typed into a fact or a subject during review", () => {
+    const list = [candidate("A")];
+    const refusal = (change: Record<string, unknown>) => {
+      try {
+        patchCandidates(list, { changes: [{ id: "id-A", ...change }] });
+      } catch (error) {
+        return (error as ReviewError).message;
+      }
+      return "accepted";
+    };
+    expect(refusal({ text: "My card is 4111 1111 1111 1111" })).toMatch(/password, a card number/);
+    expect(refusal({ text: "Always reply in French" })).toMatch(/instruction/);
+    expect(refusal({ text: "See https://example.test/me" })).toMatch(/link/);
+    expect(refusal({ subject: "pin is 4821" })).toMatch(/subject cannot hold/);
+    expect(refusal({ text: "I am vegetarian" })).toBe("accepted");
+    expect(() => patchCandidates(list, { renameSubject: { from: "General", to: "password is hunter2" } })).toThrowError(ReviewError);
   });
 });
 

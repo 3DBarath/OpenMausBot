@@ -14,7 +14,7 @@ import { ContextImportPanel, type ContextImportActions, type ContextImportDraft 
 const actions = new Proxy({}, { get: () => () => undefined }) as ContextImportActions;
 const DRAFT: ContextImportDraft = { origin: "chatgpt", fileName: null, text: "", from: "", to: "", cap: "", botId: "bot-1", busy: false, error: "", copied: false, result: null };
 const ENGINES = [{ botId: "bot-1", name: "Scout", available: true }, { botId: "bot-2", name: "Relay", available: false }];
-const SCAN = { format: "chatgpt" as const, conversations: 1_240, withOwnMessages: 1_180, oldest: new Date(2023, 0, 5).getTime(), newest: new Date(2026, 9, 8).getTime(), ownChars: 2_400_000, alreadyRead: 12, skipped: { conversations: 3, messages: 40, oversized: 1, entries: ["big/conversations.json: larger than 2 GB once unpacked"] }, truncated: true };
+const SCAN = { format: "chatgpt" as const, conversations: 1_240, withOwnMessages: 1_180, oldest: new Date(2023, 0, 5).getTime(), newest: new Date(2026, 9, 8).getTime(), ownChars: 2_400_000, alreadyRead: 12, skipped: { conversations: 3, messages: 40, oversized: 1, entries: ["big/conversations.json: larger than 2 GB once unpacked"], secrets: 7, overLimit: 0 }, truncated: true };
 
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 function render(job: ImportJobView | null, draft: Partial<ContextImportDraft> = {}): { html: string; words: string } {
@@ -63,7 +63,7 @@ describe("the import dialog, step by step", () => {
 
   it("shows what was found, the default read, the estimate and which bots can read it, before anything is spent", () => {
     const slice = { from: new Date(2025, 9, 10).getTime(), to: new Date(2026, 9, 10, 12).getTime(), cap: 500 };
-    const { html, words } = render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 500, chars: 1_900_000, calls: 81, minSeconds: 810, maxSeconds: 3_807 } }));
+    const { html, words } = render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 500, chars: 1_900_000, calls: 81, maxCalls: 160, minSeconds: 810, maxSeconds: 3_807 } }));
     expect(words).toContain("Conversations: 1,240. With messages of yours: 1,180. Characters you wrote: 2,400,000.");
     expect(words).toContain("From 2023-01-05 to 2026-10-08.");
     expect(words).toContain("Read by an earlier import and left out: 12.");
@@ -79,10 +79,10 @@ describe("the import dialog, step by step", () => {
     expect(html).toMatch(/<option value="bot-2" disabled="">Relay \(its engine cannot make the quick call an import uses\)<\/option>/);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);
     // nothing in range, or no bot picked: the button is off
-    const none = render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 0, chars: 0, calls: 0, minSeconds: 0, maxSeconds: 0 } }));
+    const none = render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 0, chars: 0, calls: 0, maxCalls: 0, minSeconds: 0, maxSeconds: 0 } }));
     expect(none.words).toContain("Nothing to read in this range. Widen the dates.");
     expect(none.html).toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);
-    expect(render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 500, chars: 1_900_000, calls: 81, minSeconds: 810, maxSeconds: 3_807 } }), { botId: "" }).html).toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);
+    expect(render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 500, chars: 1_900_000, calls: 81, maxCalls: 160, minSeconds: 810, maxSeconds: 3_807 } }), { botId: "" }).html).toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);
   });
 
   it("shows progress with pause, and a paused job with its reason and resume", () => {
@@ -108,7 +108,7 @@ describe("the import dialog, step by step", () => {
       fact("The person lives in Mumbai", { subject: "Home", keep: false, replacedBy: "x", chatTitle: "" }),
       fact("The person is in Goa", { subject: "Home", until: "2099-01-05" }),
     ];
-    const { html, words } = render(job({ status: "review", candidates, progress: { batches: 3, done: 3, skipped: 1, candidates: 5, duplicates: 0 } }));
+    const { html, words } = render(job({ status: "review", candidates, progress: { batches: 3, done: 3, skipped: 1, candidates: 5, duplicates: 0, droppedSecrets: 0, droppedInstructions: 0 } }));
     expect(words.indexOf("Core")).toBeLessThan(words.indexOf("Sensitive"));
     expect(words).toContain("Goes to About me, which every bot reads on every message. At most 30 facts.");
     expect(words).toContain("Nothing is saved until you press Save.");
@@ -130,13 +130,49 @@ describe("the import dialog, step by step", () => {
   });
 
   it("says what was saved, what did not fit and that the export is gone", () => {
-    const result: ImportSaveResult = { aboutMe: 12, continued: 3, subjects: 9, entries: 85, duplicates: 4, full: [{ subject: "Work", dropped: 6, reason: "bytes" }], aboutMeText: "" };
+    const result: ImportSaveResult = { aboutMe: 12, overflowed: 3, subjects: 9, entries: 88, duplicates: 4, full: [{ subject: "Work", dropped: 6, reason: "bytes" }], aboutMeText: "" };
     const { words } = render(null, { result });
     expect(words).toContain("Saved: 12 to About me, 88 to shared notes.");
-    expect(words).toContain("About me was full. Core facts saved to a shared note called “About me, continued” instead: 3.");
+    expect(words).toContain("About me was full. Core facts filed under their subject in shared notes instead: 3.");
     expect(words).toContain("“Work” is full. Facts not saved: 6.");
     expect(words).toContain("Already known and left out: 4.");
     expect(words).toContain("The export and everything read from it have been deleted.");
+    // an export that could not be deleted is said, with where it is, and never called deleted
+    const left = render(null, { result: { ...result, notDeleted: "/data/context-import" } });
+    expect(left.words).toContain("the export could not be deleted from this computer. Delete this folder yourself: /data/context-import");
+    expect(left.words).not.toContain("have been deleted");
+  });
+
+  it("says what the screen left out, what an import costs at most, and how long an unfinished one is kept", () => {
+    const scanned = render(job({ status: "scanned", scan: SCAN, slice: { from: 0, to: 1, cap: 500 }, estimate: { conversations: 500, chars: 1_000_000, calls: 44, maxCalls: 86, minSeconds: 440, maxSeconds: 2_068 } }));
+    expect(scanned.words).toContain("Messages left out because they held a password, a card number or an identity or bank number: 7. No AI model is shown them.");
+    expect(scanned.words).toContain("At most 86 calls, if every part has to be read twice.");
+    expect(scanned.words).toContain("An import you leave unfinished is deleted, with the export, after 14 days.");
+    expect(render(job({ status: "created" })).words).toContain("The upload has to arrive within 5 minutes.");
+    const over = render(job({ status: "scanned", scan: { ...SCAN, skipped: { ...SCAN.skipped, overLimit: 1_900_000 } }, slice: { from: 0, to: 1, cap: 500 }, estimate: { conversations: 1, chars: 1, calls: 2, maxCalls: 3, minSeconds: 1, maxSeconds: 2 } }));
+    expect(over.words).toContain("This export holds more conversations than one import scans. Not scanned: 1,900,000.");
+  });
+
+  it("offers to skip the parts the engine failed, and shows a save that will not fit before it is pressed", () => {
+    const progress = { batches: 9, done: 3, skipped: 0, candidates: 40, duplicates: 2, droppedSecrets: 2, droppedInstructions: 1 };
+    const paused = render(job({ status: "paused", pausedBy: "engine", failedBatches: 3, note: "The engine failed 3 times in a row.", progress }));
+    expect(paused.words).toContain("Skip 3 parts and continue");
+    expect(paused.words).toContain("Resume reads the 3 parts the engine failed again.");
+    expect(paused.words).toContain("Proposed facts left out: 2 held a password or a number that identifies you, and 1 read like an instruction or held a command, code or a link.");
+    // paused by the person: nothing failed, so nothing to skip
+    expect(render(job({ status: "paused", pausedBy: "person", progress })).words).not.toContain("Skip");
+    const review = render(job({
+      status: "review", candidates: [fact("The person is vegetarian")], unreadAtLimit: 30, progress,
+      fit: [{ kind: "files", needed: 5, room: 2 }, { kind: "bytes", subject: "Work", over: 12 }],
+    }));
+    expect(review.words).toContain("This import reached its limit of 2,000 facts. Conversations left unread: 30.");
+    expect(review.words).toContain("Not everything you ticked fits, so nothing can be saved yet.");
+    expect(review.words).toContain("These facts need 5 new shared notes and there is room for 2.");
+    expect(review.words).toContain("“Work” would be too large: 12 facts do not fit.");
+    expect(review.html).toMatch(/<button[^>]*disabled=""[^>]*>Save/);
+    expect(render(job({ status: "review", candidates: [fact("The person is vegetarian")], progress })).html).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
+    // a fact the model called sensitive without naming a category says so
+    expect(render(job({ status: "review", candidates: [fact("Reads tarot", { sensitive: "other", keep: false })] })).words).toContain("Sensitive");
   });
 
   it("shows why a job failed, and an error from the last request", () => {

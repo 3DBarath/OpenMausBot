@@ -3,7 +3,7 @@
 // a hash of each conversation's id and update time. The hashes are how a
 // later import knows what was already read ("Read more", a newer export).
 // No title, no message, no fact: nothing here says what a conversation held.
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeFileAtomic } from "../atomic.ts";
@@ -31,9 +31,23 @@ export function listImportRecords(): ImportRecord[] {
   }
 }
 
-/** Every conversation an earlier import read. */
-export function importedHashes(): Set<string> {
-  return new Set(listImportRecords().flatMap((record) => record.hashes.filter((hash) => typeof hash === "string" && hash.length > 0)));
+let cached: { stamp: string; hashes: Set<string> } | null = null;
+
+/** Every conversation an earlier import read. Read again whenever the file
+ * has changed, so an import that is open when "Delete everything imported"
+ * clears the records sees at once that nothing has been read. */
+export function importedHashes(): ReadonlySet<string> {
+  let stamp = "none";
+  try {
+    const stat = statSync(filePath());
+    stamp = `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    // no record file: nothing was read
+  }
+  if (cached?.stamp !== stamp) {
+    cached = { stamp, hashes: new Set(listImportRecords().flatMap((record) => record.hashes.filter((hash) => typeof hash === "string" && hash.length > 0))) };
+  }
+  return cached.hashes;
 }
 
 export function appendImportRecord(record: ImportRecord): void {

@@ -7,11 +7,21 @@
 import { createHash } from "node:crypto";
 
 import { conversationText, packBatches, pastePieces } from "./cuts.ts";
+import { MAX_BATCH_CANDIDATES } from "./extract.ts";
+import { CONSOLIDATE_CHUNK } from "./review.ts";
+import { screenMessages } from "./screen.ts";
 import { isChatGptConversation, parseChatGptConversation } from "./chatgpt-export.ts";
 import { isClaudeConversation, parseClaudeConversation } from "./claude-export.ts";
 import { isRecord, type ExportConversation } from "./types.ts";
 import { readExport } from "./zip-source.ts";
 import { DEFAULT_SLICE_CAP, DEFAULT_SLICE_MONTHS, MAX_SLICE_CAP, type ImportEstimate, type ImportScanSummary, type ImportSlice } from "../../shared/context-import.ts";
+
+/** One scan keeps a row for at most this many conversations. Past it the
+ * rest of the file is still read, so the count is true, but nothing is kept
+ * of it: memory stays bounded whatever the file holds. */
+export const SCAN_MAX_CONVERSATIONS = 100_000;
+/** One import proposes at most this many facts (job.ts stops reading there). */
+export const MAX_CANDIDATES = 2_000;
 
 /** The pause between two model calls (job.ts), which the estimate counts. */
 export const CALL_GAP_MS = 2_000;
@@ -56,20 +66,26 @@ export function parseConversation(value: unknown): { format: "chatgpt" | "claude
   return null;
 }
 
-export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet<string>; signal?: AbortSignal } = {}): Promise<ScanResult> {
+export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet<string>; signal?: AbortSignal; maxConversations?: number } = {}): Promise<ScanResult> {
+  const max = opts.maxConversations ?? SCAN_MAX_CONVERSATIONS;
   const rows: ScanRow[] = [];
   const seen = new Set<string>();
   const formats = { chatgpt: 0, claude: 0 };
   const unknownShapes: Record<string, number> = {};
   const summary: ImportScanSummary = {
     format: "unknown", conversations: 0, withOwnMessages: 0, oldest: null, newest: null, ownChars: 0, alreadyRead: 0,
-    skipped: { conversations: 0, messages: 0, oversized: 0, entries: [] }, truncated: false,
+    skipped: { conversations: 0, messages: 0, oversized: 0, entries: [], secrets: 0, overLimit: 0 }, truncated: false,
   };
   const report = await readExport(path, (value) => {
+    if (rows.length >= max) {
+      // counted, so the person is told how many; nothing of it is parsed or kept
+      summary.skipped.overLimit += 1;
+      return;
+    }
     const parsed = parseConversation(value);
     if (!parsed) {
       summary.skipped.conversations += 1;
-      const shape = isRecord(value) ? Object.keys(value).sort().slice(0, 12).join(",") || "(empty object)" : Array.isArray(value) ? "(list)" : `(${typeof value})`;
+      const shape = isRecord(value) ? Object.keys(value).sort().slice(0, 12).map((key) => key.slice(0, 40)).join(",") || "(empty object)" : Array.isArray(value) ? "(list)" : `(${typeof value})`;
       if (Object.keys(unknownShapes).length < 20 || Object.hasOwn(unknownShapes, shape)) unknownShapes[shape] = (unknownShapes[shape] ?? 0) + 1;
       return;
     }
@@ -81,7 +97,10 @@ export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet
     formats[parsed.format] += 1;
     summary.conversations += 1;
     summary.skipped.messages += conversation.skippedMessages;
-    const chars = conversationText(conversation.messages).length;
+    // what would be sent: the person's messages, without any that holds a secret (screen.ts)
+    const screened = screenMessages(conversation.messages);
+    summary.skipped.secrets += screened.dropped;
+    const chars = conversationText(screened.messages).length;
     if (chars) summary.withOwnMessages += 1;
     summary.ownChars += conversation.messages.reduce((total, message) => total + message.length, 0);
     if (conversation.updatedAt) {
@@ -105,7 +124,7 @@ export function scanPaste(text: string, now: number): ScanResult {
   return {
     summary: {
       format: "paste", conversations: pieces.length, withOwnMessages: pieces.length, oldest: pieces.length ? now : null, newest: pieces.length ? now : null,
-      ownChars: text.length, alreadyRead: 0, skipped: { conversations: 0, messages: 0, oversized: 0, entries: [] }, truncated: false,
+      ownChars: text.length, alreadyRead: 0, skipped: { conversations: 0, messages: 0, oversized: 0, entries: [], secrets: 0, overLimit: 0 }, truncated: false,
     },
     rows: pieces.map((piece) => ({ hash: "", updatedAt: now, chars: piece.length })),
     unknownShapes: {},
@@ -151,15 +170,26 @@ export function selectSlice(rows: readonly ScanRow[], slice: ImportSlice, alread
     .slice(0, slice.cap);
 }
 
-/** What reading these conversations costs: one call per batch, and one more to check for conflicting facts. */
+/** How many conflict checks an import of this many batches can need: the
+ * proposed facts are checked 200 at a time, a batch proposes at most 40, and
+ * an import stops at 2,000. */
+export function conflictCalls(batches: number): number {
+  return batches ? Math.ceil(Math.min(MAX_CANDIDATES, batches * MAX_BATCH_CANDIDATES) / CONSOLIDATE_CHUNK) : 0;
+}
+
+/** What reading these conversations costs: one call per batch and the
+ * checks for conflicting facts; and at most, when every batch has to be
+ * read twice (one retry each). */
 export function estimateSlice(selected: readonly ScanRow[]): ImportEstimate {
   const batches = packBatches(selected.map((row) => row.chars)).length;
-  const calls = batches ? batches + 1 : 0;
+  const checks = conflictCalls(batches);
+  const calls = batches + checks;
   const gap = CALL_GAP_MS / 1000;
   return {
     conversations: selected.length,
     chars: selected.reduce((total, row) => total + row.chars, 0),
     calls,
+    maxCalls: batches * 2 + checks,
     minSeconds: Math.round(calls * (CALL_MIN_SECONDS + gap)),
     maxSeconds: Math.round(calls * (CALL_MAX_SECONDS + gap)),
   };

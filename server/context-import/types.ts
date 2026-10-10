@@ -26,3 +26,17 @@ export function toMillis(value: unknown): number {
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+/** A title is shown, sent and kept in the job: it is cut where it is read. */
+export const TITLE_MAX_CHARS = 200;
+
+/** A conversation's title as the export gives it: one line, bounded, never empty. */
+export function exportTitle(value: unknown): string {
+  if (typeof value !== "string") return "Untitled";
+  // cut first, so a title of megabytes is never trimmed or scanned whole
+  const title = value.slice(0, TITLE_MAX_CHARS * 4).replace(/\s+/g, " ").trim();
+  if (!title) return "Untitled";
+  if (title.length <= TITLE_MAX_CHARS) return title;
+  const last = title.charCodeAt(TITLE_MAX_CHARS - 1);
+  return title.slice(0, last >= 0xd800 && last <= 0xdbff ? TITLE_MAX_CHARS - 1 : TITLE_MAX_CHARS);
+}

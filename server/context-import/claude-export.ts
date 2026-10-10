@@ -12,7 +12,7 @@
 // Only messages whose sender is the person are read. What a file attachment
 // said is not the person's words and is left out. Anything of another shape
 // is skipped and counted, never an error.
-import { isRecord, toMillis, type ExportConversation } from "./types.ts";
+import { exportTitle, isRecord, toMillis, type ExportConversation } from "./types.ts";
 
 export function isClaudeConversation(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && Array.isArray(value.chat_messages);
@@ -49,7 +49,7 @@ export function parseClaudeConversation(value: unknown): ExportConversation | nu
   }
   return {
     id: typeof value.uuid === "string" ? value.uuid : "",
-    title: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Untitled",
+    title: exportTitle(value.name),
     updatedAt: toMillis(value.updated_at) || toMillis(value.created_at),
     messages,
     skippedMessages,
