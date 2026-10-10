@@ -69,11 +69,16 @@ function lineIdentity(line: string): string {
   return factIdentity(line.replace(/^\s*-\s*\d{4}-\d{2}-\d{2} · learned by [^·\n]* · /, ""));
 }
 
+/** Every fact About me already holds, and every fact the person removed
+ * before: what a new fact is checked against. */
+export function knownFactIdentities(aboutMe: string): Set<string> {
+  return new Set([...load().removed, ...aboutMe.split("\n").map(lineIdentity)].filter(Boolean));
+}
+
 /** Facts not yet in About me and never removed by the person, as the lines
  * to append. Nothing is recorded until commitLearned. */
 export function planLearned(from: { botId: string; botName: string }, texts: readonly string[], aboutMe: string, today: string, now = Date.now()): LearnedFact[] {
-  const file = load();
-  const known = new Set([...file.removed, ...aboutMe.split("\n").map(lineIdentity)]);
+  const known = knownFactIdentities(aboutMe);
   const out: LearnedFact[] = [];
   for (const raw of texts) {
     const text = redactSecretsInText(raw.replace(/\s+/g, " ").trim()).slice(0, TEXT_MAX);
@@ -116,4 +121,24 @@ export function removeLearned(id: string, aboutMe: string, saveAboutMe?: (text: 
   file.removed = [...file.removed, factIdentity(fact.text)].slice(-MAX_REMOVED);
   save(file);
   return { fact, aboutMe: next };
+}
+
+/** Forget every learned fact that matches, in one save: their lines leave
+ * About me (when still there, unedited). Unlike removeLearned this is no
+ * judgement on each fact, so none is remembered as removed: "Delete
+ * everything imported" must not stop a later import from adding them again. */
+export function removeLearnedWhere(match: (fact: LearnedFact) => boolean, aboutMe: string, saveAboutMe?: (text: string) => void): { removed: number; aboutMe: string } {
+  const file = load();
+  const gone = file.learned.filter(match);
+  if (!gone.length) return { removed: 0, aboutMe };
+  const lines = aboutMe.split("\n");
+  for (const fact of gone) {
+    const at = lines.indexOf(fact.line);
+    if (at !== -1) lines.splice(at, 1);
+  }
+  const next = lines.join("\n");
+  if (next !== aboutMe) saveAboutMe?.(next);
+  file.learned = file.learned.filter((fact) => !match(fact));
+  save(file);
+  return { removed: gone.length, aboutMe: next };
 }
