@@ -185,6 +185,9 @@ export interface CandidatePatch {
   changes?: CandidateChange[];
   /** Rename a subject for every fact filed under it. */
   renameSubject?: { from: string; to: string };
+  /** After the changes above: untick whatever of the ticked facts does not
+   * fit the shared notes, keeping the newest. Nothing is removed from the list. */
+  keepWhatFits?: boolean;
 }
 
 export interface ImportSaveResult {

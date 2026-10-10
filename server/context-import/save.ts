@@ -18,6 +18,7 @@ import { appendAboutMe, commitLearned, planLearned, type LearnedFact } from "../
 import { memoryDate } from "../workspace.ts";
 import { CORE_MAX, IMPORT_ORIGIN_LABEL, type ImportCandidate, type ImportFitProblem, type ImportOrigin, type ImportSaveResult } from "../../shared/context-import.ts";
 
+
 /** The bot id a learned fact from an import carries: `import:chatgpt`. */
 export const IMPORT_BOT_PREFIX = "import:";
 /** The marks an import's lines carry in About me: `learned by ChatGPT import`. */
@@ -44,6 +45,15 @@ interface NoteGroup {
   subject: string;
   aliases: string[];
   lines: string[];
+  /** The fact each line was made from, in the same order. */
+  members: ImportCandidate[];
+  /** The note is there already: writing to it needs no room for a new one. */
+  exists: boolean;
+}
+
+/** A kept fact as the entry line its note gains. */
+function entryLine(origin: ImportOrigin, candidate: ImportCandidate): string {
+  return sharedNoteEntry(candidate.text, { date: candidate.date, origin: IMPORT_ORIGIN_LABEL[origin], ...(candidate.until ? { until: candidate.until } : {}) });
 }
 
 export interface SavePlan {
@@ -69,7 +79,6 @@ export function planSave(origin: ImportOrigin, candidates: readonly ImportCandid
   const kept = candidates.filter((candidate) => candidate.keep && candidate.text.trim());
   const core = kept.filter((candidate) => candidate.kind === "core").slice(0, CORE_MAX);
   const coreIds = new Set(core.map((candidate) => candidate.id));
-  const entry = (candidate: ImportCandidate) => sharedNoteEntry(candidate.text, { date: candidate.date, origin: label, ...(candidate.until ? { until: candidate.until } : {}) });
   const aboutMe = deps.aboutMe();
   const plan: SavePlan = { origin, fitted: [], aboutMeText: aboutMe, overflowed: 0, groups: [], entries: 0, duplicates: 0, problems: [] };
 
@@ -95,9 +104,10 @@ export function planSave(origin: ImportOrigin, candidates: readonly ImportCandid
   const groups = new Map<string, NoteGroup>();
   for (const candidate of [...overflow, ...kept.filter((candidate) => !coreIds.has(candidate.id))]) {
     const key = sharedNoteFileName(candidate.subject).toLowerCase();
-    const group = groups.get(key) ?? { subject: candidate.subject, aliases: [], lines: [] };
+    const group = groups.get(key) ?? { subject: candidate.subject, aliases: [], lines: [], members: [], exists: false };
     for (const alias of candidate.aliases) if (group.aliases.length < NOTE_ALIASES_MAX && !group.aliases.includes(alias)) group.aliases.push(alias);
-    group.lines.push(entry(candidate));
+    group.lines.push(entryLine(origin, candidate));
+    group.members.push(candidate);
     groups.set(key, group);
   }
 
@@ -107,6 +117,7 @@ export function planSave(origin: ImportOrigin, candidates: readonly ImportCandid
     const note = planSharedEntries(group, notes);
     plan.duplicates += group.lines.length - note.fresh;
     if (!note.fresh) continue;
+    group.exists = note.exists;
     plan.groups.push(group);
     plan.entries += note.fit;
     if (!note.exists) newNotes += 1;
@@ -124,6 +135,45 @@ export function saveRefusal(problems: readonly ImportFitProblem[]): string {
     : `The note “${problem.subject}” would be too large: ${problem.over} fact(s) do not fit.`);
   const more = problems.length > 4 ? ` And ${problems.length - 4} more note(s) are too large.` : "";
   return `Nothing was saved, because not everything you ticked fits. ${parts.join(" ")}${more} Untick some facts, give facts that share a subject the same subject, or split a large subject in two, then save again.`;
+}
+
+/** The same facts with whatever does not fit unticked, so that what is left
+ * can be saved: the review's one action for a selection that is past a cap.
+ * Where there are more new subjects than room for notes, the subjects with
+ * the newest facts stay; where a note would be too large, its newest facts
+ * stay. Nothing leaves the list: an unticked fact is still there to tick
+ * again, move or edit, and is deleted only with the import. */
+export function keepWhatFits(origin: ImportOrigin, candidates: readonly ImportCandidate[], deps: Pick<SaveDeps, "aboutMe" | "now">): { candidates: ImportCandidate[]; unticked: number } {
+  const plan = planSave(origin, candidates, deps);
+  if (!plan.problems.length) return { candidates: [...candidates], unticked: 0 };
+  const notes = listSharedNotes();
+  const untick = new Set<string>();
+  const newest = (group: NoteGroup) => group.members.reduce((latest, member) => (member.date > latest ? member.date : latest), "");
+  // room for new notes goes to the subjects whose facts are newest
+  const room = Math.max(0, SHARED_NOTES_MAX_FILES - notes.length);
+  const fresh = plan.groups.filter((group) => !group.exists).sort((a, b) => newest(b).localeCompare(newest(a)) || b.members.length - a.members.length);
+  const gone = new Set(fresh.slice(room));
+  for (const group of gone) for (const member of group.members) untick.add(member.id);
+  // within a note that would be too large, the newest facts that fit
+  for (const group of plan.groups) {
+    if (gone.has(group)) continue;
+    const sorted = [...group.members].sort((a, b) => b.date.localeCompare(a.date));
+    const fits = (count: number) => {
+      const note = planSharedEntries({ subject: group.subject, aliases: group.aliases, lines: sorted.slice(0, count).map((member) => entryLine(origin, member)) }, notes);
+      return note.fit === note.fresh;
+    };
+    if (fits(sorted.length)) continue;
+    let most = 0;
+    for (let low = 1, high = sorted.length - 1; low <= high;) {
+      const middle = (low + high) >> 1;
+      if (fits(middle)) {
+        most = middle;
+        low = middle + 1;
+      } else high = middle - 1;
+    }
+    for (const member of sorted.slice(most)) untick.add(member.id);
+  }
+  return { candidates: candidates.map((candidate) => (untick.has(candidate.id) ? { ...candidate, keep: false } : candidate)), unticked: untick.size };
 }
 
 const breathe = () => new Promise<void>((resolve) => setImmediate(resolve));

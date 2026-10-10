@@ -15,7 +15,7 @@ import { CORE_MAX, IMPORT_SUBJECTS_MAX, type ImportCandidate } from "../../share
 import { parseImportCandidates } from "./extract.ts";
 import { appendImportRecord, clearImportRecords, importedHashes, listImportRecords, recordView } from "./records.ts";
 import { applyContradictions, capCore, consolidationChunks, contradictionEntries, foldSubjects, patchCandidates, ReviewError } from "./review.ts";
-import { planSave, SaveError, saveImportedFacts } from "./save.ts";
+import { keepWhatFits, planSave, SaveError, saveImportedFacts } from "./save.ts";
 
 const NOW = new Date(2026, 9, 10, 12);
 let aboutMe = "";
@@ -179,6 +179,48 @@ describe("save", () => {
     expect(listSharedNotes()).toHaveLength(SHARED_NOTES_MAX_FILES - 1);
     // one new subject fits
     expect(await saveImportedFacts("chatgpt", facts.slice(0, 2), deps)).toMatchObject({ subjects: 2, entries: 2 });
+  });
+
+  it("keeps what fits with one action: the newest facts of a note that is too large, the newest subjects when there are too many, and unticks the rest", async () => {
+    // a note too large: 300 facts of about 300 bytes, dated over 300 days
+    const day = (index: number) => new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
+    const big = Array.from({ length: 300 }, (_, index) => candidate(`Fact ${index} ${"z".repeat(260)}`, { subject: "Big", date: day(index) }));
+    const small = candidate("Fits by itself", { subject: "Small" });
+    const unticked = candidate("Was never ticked", { subject: "Big", keep: false });
+    const fitted = keepWhatFits("paste", [...big, small, unticked], deps);
+    expect(planSave("paste", fitted.candidates, deps).problems).toEqual([]);
+    // nothing is removed from the list, only unticked; what was unticked stays so
+    expect(fitted.candidates).toHaveLength(302);
+    expect(fitted.candidates.at(-1)).toMatchObject({ text: "Was never ticked", keep: false });
+    expect(fitted.candidates.find((entry) => entry.text === "Fits by itself")!.keep).toBe(true);
+    const kept = fitted.candidates.filter((entry) => entry.subject === "Big" && entry.keep);
+    expect(fitted.unticked).toBe(300 - kept.length);
+    expect(kept.length).toBeGreaterThan(100);
+    // newest first: every fact kept is newer than every fact unticked
+    const oldestKept = kept.map((entry) => entry.date).sort()[0]!;
+    expect(big.filter((entry) => entry.date < oldestKept).every((entry) => !fitted.candidates.find((other) => other.id === entry.id)!.keep)).toBe(true);
+    expect(kept.some((entry) => entry.text.startsWith("Fact 299 "))).toBe(true);
+    // one more fact would not fit
+    const oneMore = fitted.candidates.map((entry) => (entry.text.startsWith(`Fact ${299 - kept.length} `) ? { ...entry, keep: true } : entry));
+    expect(planSave("paste", oneMore, deps).problems).toHaveLength(1);
+    // and it saves
+    expect(await saveImportedFacts("paste", fitted.candidates, deps)).toMatchObject({ subjects: 2, entries: kept.length + 1 });
+
+    // too many new notes: room for two, three asked for; the subjects with the newest facts stay
+    rmSync(sharedNotesDir(), { recursive: true, force: true });
+    mkdirSync(sharedNotesDir(), { recursive: true });
+    for (let index = 0; index < SHARED_NOTES_MAX_FILES - 2; index += 1) writeFileSync(join(sharedNotesDir(), `note-${index}.md`), `- Fact ${index}\n`);
+    const facts = [
+      candidate("Oldest subject", { subject: "Alpha", date: "2024-01-01" }), candidate("Newest subject", { subject: "Beta", date: "2026-01-01" }),
+      candidate("Middle subject", { subject: "Gamma", date: "2025-01-01" }), candidate("Goes in a note that is there", { subject: "note-0", date: "2020-01-01" }),
+    ];
+    expect(planSave("chatgpt", facts, deps).problems).toEqual([{ kind: "files", needed: 3, room: 2 }]);
+    const roomy = keepWhatFits("chatgpt", facts, deps);
+    expect(roomy.candidates.map((entry) => entry.keep)).toEqual([false, true, true, true]);
+    expect(roomy.unticked).toBe(1);
+    expect(planSave("chatgpt", roomy.candidates, deps).problems).toEqual([]);
+    // nothing to do when everything fits
+    expect(keepWhatFits("chatgpt", roomy.candidates, deps)).toEqual({ candidates: roomy.candidates, unticked: 0 });
   });
 
   it("folds the rarest subjects into a general one, so an import brings a bounded number of notes", () => {

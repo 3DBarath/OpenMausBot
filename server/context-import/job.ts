@@ -55,7 +55,7 @@ import { conversationText, packBatches, pastePieces, type PreparedConversation }
 import { freshCandidates, importPrompt, parseImportCandidates, type DropTally } from "./extract.ts";
 import { appendImportRecord, importedHashes } from "./records.ts";
 import { applyContradictions, capCore, consolidationChunks, contradictionEntries, foldSubjects, patchCandidates, ReviewError } from "./review.ts";
-import { planSave, SaveError, saveImportedFacts } from "./save.ts";
+import { keepWhatFits, planSave, SaveError, saveImportedFacts } from "./save.ts";
 import { CALL_GAP_MS, clampSlice, conversationHash, estimateSlice, MAX_CANDIDATES, parseConversation, proposeSlice, scanExport, scanPaste, selectSlice, type ScanRow } from "./scan.ts";
 import { screenLines, screenMessages, screenTitle } from "./screen.ts";
 import { readExport } from "./zip-source.ts";
@@ -801,6 +801,8 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
         if (error instanceof ReviewError) throw new ImportError(error.message, error.status);
         throw error;
       }
+      // the one action for a selection past a cap: the newest that fit stay ticked (save.ts)
+      if (patch.keepWhatFits) mine.candidates = keepWhatFits(mine.origin, mine.candidates, { aboutMe: deps.aboutMe, now }).candidates;
       persist();
       return viewOf(mine);
     },

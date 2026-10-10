@@ -51,6 +51,9 @@ export interface ContextImportActions {
   resumeSkipping(): void;
   cancel(): void;
   change(change: CandidateChange): void;
+  changeMany(changes: CandidateChange[]): void;
+  /** Untick whatever of the ticked facts does not fit, keeping the newest. */
+  keepWhatFits(): void;
   renameSubject(from: string, to: string): void;
   save(): void;
   close(): void;
@@ -172,7 +175,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
         {scan.alreadyRead > 0 && <li>{t("contextImport.scan.alreadyRead", { count: number(scan.alreadyRead) })}</li>}
         {scan.skipped.conversations + scan.skipped.oversized > 0 && <li>{t("contextImport.scan.skipped", { count: number(scan.skipped.conversations + scan.skipped.oversized) })}</li>}
         {scan.skipped.entries.map((entry) => <li key={entry}>{t("contextImport.scan.refused", { entry })}</li>)}
-        {scan.skipped.secrets > 0 && <li>{t("contextImport.scan.secrets", { count: number(scan.skipped.secrets) })}</li>}
+        {scan.skipped.secrets > 0 && <li>{t("contextImport.scan.secretsCut", { count: number(scan.skipped.secrets) })}</li>}
         {scan.skipped.overLimit > 0 && <li>{t("contextImport.scan.overLimit", { count: number(scan.skipped.overLimit) })}</li>}
         {scan.truncated && <li>{t("contextImport.scan.truncated")}</li>}
       </ul>
@@ -259,7 +262,8 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
     {job!.unreadAtLimit !== undefined && <p className="mt-2 text-[12.5px] leading-relaxed text-ink">{t("contextImport.review.atLimit", { count: number(job!.unreadAtLimit) })}</p>}
     {job!.progress && job!.progress.skipped > 0 && <p className="mt-2 text-[12.5px] text-ink-secondary">{t("contextImport.progress.skipped", { count: job!.progress.skipped })}</p>}
     {dropped(job!.progress)}
-    <div className="mt-3"><ContextImportReview candidates={candidates} busy={draft.busy} onChange={actions.change} onRenameSubject={actions.renameSubject} /></div>
+    {candidates.length > 0 && <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.review.checkSecrets")}</p>}
+    <div className="mt-3"><ContextImportReview candidates={candidates} busy={draft.busy} onChange={actions.change} onChangeMany={actions.changeMany} onRenameSubject={actions.renameSubject} /></div>
     {fit.length > 0 && <div role="alert" className="mt-3 rounded-lg border border-danger/40 p-3 text-[12.5px] leading-relaxed text-ink">
       <p className="font-medium">{t("contextImport.review.fitTitle")}</p>
       <ul className="mt-1 flex flex-col gap-1">
@@ -267,6 +271,10 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
           ? <li key="files">{t("contextImport.review.fitFiles", { needed: number(problem.needed), room: number(problem.room) })}</li>
           : <li key={problem.subject}>{t("contextImport.review.fitBytes", { subject: problem.subject, over: number(problem.over) })}</li>)}
       </ul>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button type="button" className="ui-button" disabled={draft.busy} onClick={actions.keepWhatFits}>{t("contextImport.review.keepWhatFits")}</button>
+        <span className="text-[12px] text-ink-secondary">{t("contextImport.review.keepWhatFitsHint")}</span>
+      </div>
     </div>}
     {expires}
     {error}
@@ -395,6 +403,8 @@ export function ContextImportDialog({ onClose, onSaved }: { onClose: () => void;
         .catch(failed);
     },
     change: (change) => void patch({ changes: [change] }),
+    changeMany: (changes) => { if (changes.length) void patch({ changes }); },
+    keepWhatFits: () => void patch({ keepWhatFits: true }),
     renameSubject: (from, to) => void patch({ renameSubject: { from, to } }),
     save: () => {
       edit({ busy: true, error: "" });

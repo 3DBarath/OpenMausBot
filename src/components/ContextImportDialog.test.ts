@@ -145,7 +145,7 @@ describe("the import dialog, step by step", () => {
 
   it("says what the screen left out, what an import costs at most, and how long an unfinished one is kept", () => {
     const scanned = render(job({ status: "scanned", scan: SCAN, slice: { from: 0, to: 1, cap: 500 }, estimate: { conversations: 500, chars: 1_000_000, calls: 44, maxCalls: 86, minSeconds: 440, maxSeconds: 2_068 } }));
-    expect(scanned.words).toContain("Messages left out because they held a password, a card number or an identity or bank number: 7. No AI model is shown them.");
+    expect(scanned.words).toContain("Messages that held a password, a card number or an identity or bank number: 7. That part was cut out before any AI model read them.");
     expect(scanned.words).toContain("At most 86 calls, if every part has to be read twice.");
     expect(scanned.words).toContain("An import you leave unfinished is deleted, with the export, after 14 days.");
     expect(render(job({ status: "created" })).words).toContain("The upload has to arrive within 5 minutes.");
@@ -173,6 +173,29 @@ describe("the import dialog, step by step", () => {
     expect(render(job({ status: "review", candidates: [fact("The person is vegetarian")], progress })).html).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
     // a fact the model called sensitive without naming a category says so
     expect(render(job({ status: "review", candidates: [fact("Reads tarot", { sensitive: "other", keep: false })] })).words).toContain("Sensitive");
+  });
+
+  it("lets a selection that does not fit be put right in a few clicks, and asks for a last look for secrets", () => {
+    const candidates = [
+      fact("The person is vegetarian", { kind: "core" }),
+      fact("The person loves Irani cafes"),
+      fact("The person ships on Fridays", { subject: "Work" }),
+      fact("The person takes medication for asthma", { subject: "Health", sensitive: "health", keep: false }),
+    ];
+    const { html, words } = render(job({ status: "review", candidates, fit: [{ kind: "bytes", subject: "Work", over: 12 }] }));
+    // one action for the whole selection
+    expect(words).toContain("Keep what fits and untick the rest");
+    expect(words).toContain("The newest facts stay ticked. Unticked facts stay in this list and are not saved.");
+    // a tick and an untick for each group
+    expect(html.match(/>Tick all</g)).toHaveLength(4);
+    expect(html.match(/>Untick all</g)).toHaveLength(4);
+    // each fact filed under a subject can be moved to another one, or to a new one, by name
+    expect(html.match(/aria-label="Subject for this fact"/g)).toHaveLength(3);
+    expect(html).toMatch(/<datalist id="context-import-subjects">.*<option value="Food"><\/option>.*<option value="Work"><\/option>/s);
+    // a last look, because the screen does not catch everything
+    expect(words).toContain("Before you save, look through these for passwords, PINs and codes.");
+    // without a problem there is no such action
+    expect(render(job({ status: "review", candidates })).words).not.toContain("Keep what fits");
   });
 
   it("shows why a job failed, and an error from the last request", () => {

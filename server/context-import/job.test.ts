@@ -654,9 +654,12 @@ describe("limits that hold for any input", () => {
     expect(listImportRecords()).toEqual([]);
     expect(job.view(id)).toMatchObject({ status: "review" });
     expect(existsSync(join(DIR, "tmp", `${id}.upload`))).toBe(true);
-    // unticking what does not fit: it saves, and every conversation read is recorded
-    job.patch(id, { changes: review.candidates!.slice(0, over).map((candidate) => ({ id: candidate.id, keep: false })) });
-    expect(job.view(id).fit).toBeUndefined();
+    // one action keeps what fits and unticks the rest; nothing leaves the list
+    const fitted = job.patch(id, { keepWhatFits: true });
+    expect(fitted.fit).toBeUndefined();
+    expect(fitted.candidates).toHaveLength(320);
+    expect(fitted.candidates!.filter((candidate) => candidate.keep)).toHaveLength(320 - over);
+    // it saves, and every conversation read is recorded
     expect(await job.save(id)).toMatchObject({ subjects: 1, entries: 320 - over, full: [] });
     expect(listImportRecords()[0]!.hashes).toHaveLength(24);
   });

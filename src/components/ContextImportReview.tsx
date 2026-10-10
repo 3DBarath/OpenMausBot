@@ -5,13 +5,20 @@ import { CORE_MAX, type CandidateChange, type ImportCandidate } from "../../shar
 const FIELD = "w-full min-w-0 rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70";
 const QUIET = "rounded-md px-2 py-1 text-[12px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50";
 
+const SUBJECTS_LIST = "context-import-subjects";
+
 /** Step 5 of an import: every proposed fact, grouped by where it would go.
  * Nothing here saves anything: a change is sent to the job, which keeps the
- * review across a restart. No state of its own. */
-export function ContextImportReview({ candidates, busy, onChange, onRenameSubject }: {
+ * review across a restart. No state of its own. A whole group can be ticked
+ * or unticked at once, and any one fact can be moved to another subject, an
+ * existing one or a new one, by its name: enough to bring a selection that
+ * does not fit back under a limit by hand. */
+export function ContextImportReview({ candidates, busy, onChange, onChangeMany, onRenameSubject }: {
   candidates: readonly ImportCandidate[];
   busy: boolean;
   onChange: (change: CandidateChange) => void;
+  /** Several facts at once, in one request. */
+  onChangeMany: (changes: CandidateChange[]) => void;
   onRenameSubject: (from: string, to: string) => void;
 }) {
   const groups = reviewGroups(candidates);
@@ -35,18 +42,33 @@ export function ContextImportReview({ candidates, busy, onChange, onRenameSubjec
           {candidate.kind === "core"
             ? <button type="button" disabled={busy} className={QUIET} onClick={() => onChange({ id: candidate.id, kind: "subject" })}>{t("contextImport.review.moveToSubject", { subject: candidate.subject })}</button>
             : <button type="button" disabled={busy || coreFull} className={QUIET} onClick={() => onChange({ id: candidate.id, kind: "core" })}>{t("contextImport.review.moveToCore")}</button>}
+          {candidate.kind === "subject" && <label className="flex items-center gap-1">{t("contextImport.review.factSubject")}
+            {/* keyed by the subject so a move the server made shows as the server holds it */}
+            <input key={candidate.subject} defaultValue={candidate.subject} list={SUBJECTS_LIST} maxLength={40} disabled={busy} aria-label={t("contextImport.review.factSubjectAria")}
+              onBlur={(event) => { const subject = event.target.value.trim(); if (subject && subject.toLowerCase() !== candidate.subject.toLowerCase()) onChange({ id: candidate.id, subject }); }}
+              className="w-36 rounded-md border border-hairline/40 bg-inset px-1.5 py-0.5 text-[12px] text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70" />
+          </label>}
         </div>
       </div>
     </li>
   );
 
-  const section = (group: ReviewGroup) => (
-    <section key={group.key} className="rounded-xl border border-hairline/40 p-3">
+  const section = (group: ReviewGroup) => {
+    const all = [...group.facts, ...group.sensitive];
+    const tick = (keep: boolean) => onChangeMany(all.filter((candidate) => candidate.keep !== keep).map((candidate) => ({ id: candidate.id, keep })));
+    const name = group.core ? t("contextImport.review.core") : group.title;
+    return <section key={group.key} className="rounded-xl border border-hairline/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
       {group.core
         ? <h3 className="text-[14px] font-semibold text-ink">{t("contextImport.review.core")}</h3>
         : <input key={group.title} defaultValue={group.title} maxLength={40} disabled={busy} aria-label={t("contextImport.review.subjectAria")}
             onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== group.title) onRenameSubject(group.title, event.target.value); }}
             className={`${FIELD} max-w-[260px] font-semibold`} />}
+        <span className="flex items-center gap-1">
+          <button type="button" disabled={busy || all.every((candidate) => candidate.keep)} className={QUIET} aria-label={t("contextImport.review.tickAllAria", { subject: name })} onClick={() => tick(true)}>{t("contextImport.review.tickAll")}</button>
+          <button type="button" disabled={busy || all.every((candidate) => !candidate.keep)} className={QUIET} aria-label={t("contextImport.review.untickAllAria", { subject: name })} onClick={() => tick(false)}>{t("contextImport.review.untickAll")}</button>
+        </span>
+      </div>
       <p className="mt-1 text-[12px] text-ink-secondary">{group.core ? t("contextImport.review.coreHint", { max: CORE_MAX }) : t("contextImport.review.subjectHint")}</p>
       {group.facts.length > 0 && <ul className="mt-2 flex flex-col gap-2.5">{group.facts.map(fact)}</ul>}
       {group.sensitive.length > 0 && <>
@@ -54,8 +76,12 @@ export function ContextImportReview({ candidates, busy, onChange, onRenameSubjec
         <p className="mt-0.5 text-[12px] text-ink-secondary">{t("contextImport.review.sensitiveHint")}</p>
         <ul className="mt-2 flex flex-col gap-2.5">{group.sensitive.map(fact)}</ul>
       </>}
-    </section>
-  );
+    </section>;
+  };
 
-  return <div className="flex flex-col gap-3">{groups.map(section)}</div>;
+  return <div className="flex flex-col gap-3">
+    {/* the subjects there are, offered wherever a fact's subject is typed */}
+    <datalist id={SUBJECTS_LIST}>{groups.filter((group) => !group.core).map((group) => <option key={group.key} value={group.title} />)}</datalist>
+    {groups.map(section)}
+  </div>;
 }
