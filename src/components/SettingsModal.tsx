@@ -43,6 +43,7 @@ import { WorkspacesSection, workspacesAvailable } from "./WorkspacesSection";
 import { SkinPicker } from "./SkinPicker";
 import { FONT_IDS, applyFont, readFont, type FontId } from "@/lib/fonts";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
+import { McpCallTimeoutSettings } from "./McpCallTimeoutSettings";
 import { AboutMeSettings } from "./AboutMeSettings";
 import { ThreadConcurrencySettings } from "./ThreadConcurrencySettings";
 import { AutomaticRecoverySettings } from "./AutomaticRecoverySettings";
@@ -54,10 +55,11 @@ import { cn } from "@/lib/cn";
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
 import { setNotificationSounds, useNotificationSounds } from "@/lib/notification-preferences";
 import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
-import { setShowThreads, useShowThreads } from "@/lib/thread-preferences";
+import { setShowThreads, useShowThreadsChoice } from "@/lib/thread-preferences";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
 import { parseSidebarDensity, setSidebarDensity, SIDEBAR_DENSITIES, useSidebarDensity, type SidebarDensity } from "@/lib/sidebar-preferences";
 import { setShowRunCard, useShowRunCard } from "@/lib/run-card-preferences";
+import { parseSendKey, SEND_KEYS, sendKeyLabel, setSendKey, useSendKey } from "@/lib/send-key";
 import { effectiveLanguage, setLanguageChoice, useLanguageChoice } from "@/lib/language-preference";
 
 // `labelKey`, not a label: t() reads the active pack when it is called, so a
@@ -82,7 +84,7 @@ export const SECTIONS: Array<{
   keywords: string[];
 }> = [
   { id: "general", group: "you", labelKey: "settings.section.general", icon: User, keywords: ["profile", "name", "email", "about me", "about", "suggestions", "suggested", "memory", "analytics", "updates", "effort", "new bots", "reasoning", "threads", "parallel", "concurrency", "cleanup", "retention", "event log", "event-log", "log size", "automatic recovery", "backup model", "fallback", "routines", "conversation", "schedule"] },
-  { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top"] },
+  { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top", "send", "enter", "return", "shift+enter", "ctrl+enter", "cmd+enter", "⌘+enter", "new line", "keyboard", "ime", "japanese"] },
   { id: "companion", group: "you", labelKey: "settings.section.companion", icon: TabletSmartphone, keywords: ["companion", "device", "phone", "desktop", "client", "host", "pair", "pairing", "mobile", "https", "secure", "tailscale", "wifi", "remote", "advanced", "domain", "dns", "self-hosted", "server", "caddy"] },
   { id: "engines", group: "ai", labelKey: "settings.section.engines", icon: Terminal, keywords: ["models", "model providers", "engines", "claude", "codex", "grok", "providers", "cli", "sign in", "subscription"] },
   { id: "connections", group: "ai", labelKey: "settings.section.connections", icon: KeyRound, keywords: ["keys", "api", "api key", "api keys", "connections", "composio", "box", "xai", "mistral", "cerebras", "vps", "router", "openrouter", "base url", "openai", "anthropic", "groq", "opencode", "provider"] },
@@ -460,6 +462,24 @@ function FontRow() {
   );
 }
 
+function SendKeyRow() {
+  const sendKey = useSendKey();
+  return (
+    <SettingRow title={t("settings.sendKey.title")} subtitle={t("settings.sendKey.subtitle", { key: sendKeyLabel("mod-enter") })}>
+      <select
+        value={sendKey}
+        aria-label={t("settings.sendKey.title")}
+        onChange={(event) => setSendKey(parseSendKey(event.target.value))}
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
+      >
+        {SEND_KEYS.map((mode) => (
+          <option key={mode} value={mode}>{sendKeyLabel(mode)}</option>
+        ))}
+      </select>
+    </SettingRow>
+  );
+}
+
 function AdvancedModeRow() {
   const enabled = useAdvancedMode();
   return (
@@ -474,7 +494,7 @@ function AdvancedModeRow() {
 }
 
 function ShowThreadsRow() {
-  const enabled = useShowThreads();
+  const enabled = useShowThreadsChoice();
   return (
     <SettingRow title={t("settings.threadDisplay.title")} subtitle={t("settings.threadDisplay.subtitle")}>
       <Switch
@@ -838,7 +858,10 @@ export function SettingsModal() {
 
   const sectionIndex = currentPage?.sections.indexOf(section) ?? 0;
   useEffect(() => {
-    if (!advanced && scrollRef.current) revealSettingsBlock(scrollRef.current, section, sectionIndex);
+    // Advanced mode gives every section its own page, so a new one starts at
+    // the top instead of at the last page's scroll offset (MOCA-292: "Change
+    // key" landed on API keys scrolled past the key it was opened for).
+    if (scrollRef.current) revealSettingsBlock(scrollRef.current, section, advanced ? 0 : sectionIndex);
   }, [advanced, section, sectionIndex]);
 
   useEffect(() => {
@@ -902,7 +925,7 @@ export function SettingsModal() {
       case "cloudAccount":
         return (window.ogb?.cloudAccount || (window.ogb?.cloudPlan && state.config?.cloudHome === true)) && !remoteActive
           ? <CloudAccountSettings linkRequest={state.appSettingsCloudLink} cloudHome={state.config?.cloudHome === true}
-            onConnectPhone={() => dispatch(phonePairingSettingsAction())} />
+            onConnectPhone={() => dispatch(phonePairingSettingsAction())} onAddCloud={() => dispatch({ type: "openCloudAdd", source: "app_settings" })} />
           : null;
       case "general":
         return (
@@ -922,6 +945,9 @@ export function SettingsModal() {
             </div>
             <Card title={t("settings.roomTurns.title")} subtitle={t("settings.roomTurns.subtitle")}>
               <RoomTurnTimeoutSettings />
+            </Card>
+            <Card title={t("settings.mcpCalls.title")} subtitle={t("settings.mcpCalls.subtitle")}>
+              <McpCallTimeoutSettings />
             </Card>
             <ThreadConcurrencySettings />
             {!remoteActive && <RoutinesInConversationRow />}
@@ -944,8 +970,11 @@ export function SettingsModal() {
               {/* A paired remote client has no General page; keep the switch reachable. */}
               {remoteActive && <AdvancedModeRow />}
               <FontRow />
+              <SendKeyRow />
               <SidebarDensityRow />
-              <ShowThreadsRow />
+              {/* Simple mode keeps one conversation per bot, so the switch
+                  only means something in Advanced. */}
+              {advanced && <ShowThreadsRow />}
               <PinnedCirclesRow />
               <UniversalPinsRow />
               <NotificationSoundsRow />

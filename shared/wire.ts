@@ -8,6 +8,7 @@
  * server/store.ts; the wire projection is typed so a new server field
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
+import type { DataBroadcast } from "./data-surface.ts";
 import type { ApprovalMode } from "./approval-mode.ts";
 import type { ToolScope } from "./tool-scope.ts";
 import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
@@ -149,12 +150,21 @@ export interface WireTask {
    * "until then" and reads treat an expired value as absent, so no timer or
    * migration is ever needed. Absent = not snoozed. */
   snoozedUntil?: number;
-  /** Defaults are copied when a task is created. */
+  /** The model this thread's turns run on: its own when a person picked one
+   * in this thread, else its bot's (followsBotModel). The server stores none
+   * for a thread that follows its bot, and always sends the effective one. */
   modelSelection?: ModelSelection;
+  /** true: the thread runs on its bot's model and moves with it; false: a
+   * person picked this thread's model. Derived at projection, never stored;
+   * absent from servers older than this field. */
+  followsBotModel?: boolean;
   approvalMode?: ApprovalMode;
   autoApprove?: boolean;
   alwaysAllow?: string[];
   unread?: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   /** true after an edit/branch-switch rewound the visible conversation. */
   rewound?: boolean;
   pinnedMessageId?: string;
@@ -273,7 +283,8 @@ export interface WireBot {
   avatarFocusY?: number;
   /** True when any task has unread output. */
   unread: boolean;
-  /** Default for new tasks; navigating tasks never changes this value. */
+  /** The bot's model: every thread without a model of its own runs on it
+   * and moves with it. Navigating tasks never changes this value. */
   modelSelection: ModelSelection;
   /** where the bot works ("Works on"). Unset = auto. */
   computer?: Surface | "off";
@@ -501,6 +512,13 @@ export interface WireMessage {
   comm?: { groupId: string; threadId?: string; withBotId: string; withName: string; withColor: string };
   /** thread chips: "Opened thread #Title on @X". */
   threadRef?: { botId: string; threadId: string; title: string };
+  /** A published Data result, linked to its bot's main viewer. */
+  dataResult?: { botId: string; cardId: string; title: string; kind: "table" | "chart" | "text"; sql?: string };
+  /** user messages: the Data result the person was viewing when they sent
+   * this (shared/data-context.ts). Its own field, so `text` stays exactly
+   * what they typed; the server puts the hint in front of the text it
+   * sends the model for this turn and for every retry of it. */
+  dataContext?: { cardId: string; draftSql?: string };
   /** user messages waiting in the steer-queue while the bot is mid-turn. */
   queued?: boolean;
   /** steer-queue entry this drained user line came from. */
@@ -544,6 +562,12 @@ export interface OptionCardData {
   commandAllowlist?: CommandAllowlistCandidate;
   /** Local actions never share remembered grants with cloud/tool approvals. */
   approvalScope?: "local-computer";
+  /** The bot's change applied without a person (a change to the bot itself,
+   * or Full access): clients show a one-line receipt with Undo instead of
+   * the approval box. */
+  autoApplied?: boolean;
+  /** A person undid that change. */
+  undone?: boolean;
   /** A durable chat-created routine proposal. */
   routineRequest?: RoutineRequestCardData;
   /** A durable profile-change proposal (propose_profile). */
@@ -645,6 +669,9 @@ export interface GroupTask {
   pinnedMessageId?: string;
   /** The person pinned this channel thread above the update-ordered list. */
   pinned?: boolean;
+  /** This conversation's own turn ceiling, in whole minutes. Absent uses
+   * the global group turn limit. Direct chats do not use this ceiling. */
+  turnTimeoutMinutes?: number;
   /** Epoch ms of the newest message, or createdAt when the thread has none. */
   updatedAt?: number;
   /** The first message already drove a title attempt for this thread, so a
@@ -668,6 +695,9 @@ export interface WireGroup {
   /** The room's shared instructions. */
   bulletin: string;
   unread: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   createdAt: number;
   /** true for auto-created bot-bot channels. */
   dm?: boolean;
@@ -695,6 +725,9 @@ export interface WireGroup {
   /** True while any member (or hand-off) is mid-turn. Computed at
    * projection time, never persisted. */
   working: boolean;
+  /** A direct-message channel's turn ceiling. Null on the wire means the
+   * global group limit. Channel conversations store theirs on each task. */
+  turnTimeoutMinutes?: number | null;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────
@@ -758,6 +791,9 @@ export type ServerFrame =
    * computer (absent: a Local VM). */
   | { kind: "computer"; botId: string; state: "provisioning" | "waking"; place?: "cloud" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
+  /** A bot's data sheet changed (a card added, updated, failed, removed; a
+   * table loaded). Whole sheet each time: see shared/data-surface.ts. */
+  | DataBroadcast
   | { kind: "bot.deleted"; botId: string }
   | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
   /** The config status object spread flat into the frame; its full typing

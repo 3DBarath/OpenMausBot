@@ -16,7 +16,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { writeFileAtomic } from "./atomic.ts";
 import { escapeAttribute, splitTranscriptAttachments } from "../src/lib/composer-attachments.ts";
 import { WORKSPACE_BACKUP_CLIENT_KEYS } from "../shared/workspace-backup-client.ts";
-import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
+import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
 import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary } from "../shared/workspace-backup.ts";
 
 export type { WorkspaceBackupSummary, WorkspaceBackupPrivateMetadata } from "../shared/workspace-backup.ts";
@@ -323,7 +323,12 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
     // remains held. The native snapshot includes any committed WAL records.
     if (existsSync(sourceDb)) {
       if (lstatSync(sourceDb).isSymbolicLink()) throw new Error("The message database must not be a symbolic link.");
-      const db = new DatabaseSync(sourceDb, { readOnly: true });
+      // Another connection may still open this database meanwhile: a copy's
+      // status poll counts its chats (cloud-move.ts workspaceContents). Its
+      // open (WAL recovery) and close (checkpoint) keep a new reader out for a
+      // moment, and without a busy timeout the first backup step fails at once
+      // ("database is locked", or Node's "not an error"). Wait that moment out.
+      const db = new DatabaseSync(sourceDb, { readOnly: true, timeout: 5_000 });
       // Node 26's native backup completion can wait for unrelated event-loop
       // activity after an async scrypt. A scoped pulse prevents an idle server
       // from waiting indefinitely; it owns no data and always stops here.
@@ -337,7 +342,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
       for (const name of readdirSync(directory).sort()) {
         if (!prefix && excluded(name)) continue;
         const path = prefix ? `${prefix}/${name}` : name;
-        if (excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path)) continue;
+        if (excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path) || liveDataEnginePath(path)) continue;
         // Do not silently skip noncanonical source spellings: reject them so
         // a case-sensitive host cannot export auth paths active on Windows/Mac.
         if (forbiddenArchivePath(path)) throw new Error("A workspace filename conflicts with a protected authentication or runtime path.");
@@ -959,5 +964,5 @@ export function removeWorkspaceBackupJob(dataDir: string, id: string): void {
  * rules as the export walk (cloud-move.ts sizes a move with it). Symbolic
  * links are the caller's to skip. */
 export function omittedFromWorkspaceBackup(path: string): boolean {
-  return excluded(path.split("/")[0]) || excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path);
+  return excluded(path.split("/")[0]) || excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path) || liveDataEnginePath(path);
 }

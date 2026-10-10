@@ -15,10 +15,11 @@ ipcRenderer.on("package:install", (_event, url) => {
 });
 
 // Main can finish loading the document before React subscribes. Retain only
-// the fixed actions (Organisation, the openmausbot://cloud link, and plain
-// Settings → OMB Cloud from the lending menu-bar item), never a destination
-// supplied by a renderer.
-const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings"]);
+// the fixed actions (Organisation, the openmausbot://cloud link, plain
+// Settings → OpenMausBot Cloud from the lending menu-bar item, and the Add a
+// Cloud dialog from the server menu, plain or reached through Show me how),
+// never a destination supplied by a renderer.
+const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings", "cloud-add", "cloud-add-howto"]);
 let pendingSettingsAction = null;
 const appSettingsListeners = new Set();
 ipcRenderer.on("app:open-settings", (_event, section) => {
@@ -58,7 +59,7 @@ const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(upda
 // Only main can request a fresh snapshot; there is no renderer-callable method.
 const COMPANY_BACKUP_CLIENT_KEYS = [
   "omb-drafts", "omb-draft-attachments", "omb-draft-send-ids", "omb-draft-channel-modes",
-  "omb-skin", "omb-show-threads", "omb-show-run-card", "openmausbot.sidebarDensity",
+  "omb-skin", "omb-show-threads", "omb-show-run-card", "omb-send-key", "openmausbot.sidebarDensity",
   "openmausbot.sidebarCollapsedSections.v1", "openmausbot.sidebarSectionOrder.v1",
   "omb-analytics-opt-out", "openmausbot.remote-voice.v1",
 ];
@@ -88,7 +89,8 @@ const bridge = {
   // Electron. No direct switching, saved-list reads, host files or secrets.
   workspaces: {
     state: () => ipcRenderer.invoke("workspaces:state"),
-    menu: () => ipcRenderer.invoke("workspaces:menu"),
+    // `from: "howto"` only says the Show me how tip opened it; nothing else passes.
+    menu: (options) => ipcRenderer.invoke("workspaces:menu", ...(options?.from === "howto" ? ["howto"] : [])),
   },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {
@@ -205,6 +207,9 @@ const bridge = {
   /** Copies an engine install command and opens a blank terminal. Resolves
    * false if no terminal could be launched; the clipboard still has it. */
   openInstallTerminal: (command) => ipcRenderer.invoke("engine:open-terminal", command),
+  /** Writes plain text to the system clipboard; the copy button's fallback
+   * when the web Clipboard API is rejected. Resolves false on failure. */
+  copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   /** Open a web link in the default browser. Unlike renderer window.open,
    * this remains reliable after an asynchronous API request. */
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
@@ -270,6 +275,9 @@ const bridge = {
       const message = String(error?.message ?? error);
       throw new Error(message.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),
+  /** Point the file manager at a file a bot linked outside its workspace,
+   * without opening it. Resolves "shown", "missing" or "invalid". */
+  revealInFolder: (filePath) => ipcRenderer.invoke("desktop:reveal-file", filePath),
   /** Store a provider credential with OS-backed encryption. */
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
 
@@ -318,6 +326,10 @@ const bridge = {
     refresh: () => ipcRenderer.invoke("cloud-account:refresh"),
     signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
     openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
+    // What this person may buy now; no arguments.
+    offer: () => ipcRenderer.invoke("cloud-account:offer"),
+    // A checkout for one of the offer's plans, opened by main in the browser; main checks both.
+    checkout: (plan, source) => ipcRenderer.invoke("cloud-account:checkout", String(plan), String(source)),
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
     connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
     onState: cb => {
@@ -360,13 +372,16 @@ const bridge = {
   } : undefined,
   /** The plan, read only, in Settings on the person's own Cloud: its name and
    * whether it is active, Manage (the Plan page in the browser) and
-   * back to this computer. No arguments; a remote page acts only on a click. */
+   * back to this computer. No arguments; a remote page acts only on a click.
+   * Also the free trial's popup, on this computer's page and the Cloud's:
+   * noticeSeen says the notice due now was shown (main knows which). */
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),
     manage: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Plan page.")),
     useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
+    noticeSeen: () => ipcRenderer.invoke("cloud-plan:notice-seen"),
   } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),

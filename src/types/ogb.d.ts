@@ -138,7 +138,8 @@ const __APP_VERSION__: string;
       };
       workspaces?: {
         state: () => Promise<{ local: boolean; name: string; origin?: string }>;
-        menu: () => Promise<void>;
+        /** The native server menu; resolves when it closes. `from: "howto"`: the Show me how tip opened it. */
+        menu: (options?: { from?: "howto" }) => Promise<void>;
       };
       /** Saved servers and the active one (desktop Server menu). Present on
        * the local server's UI; a remote server's page sees a reduced bridge. */
@@ -240,6 +241,8 @@ const __APP_VERSION__: string;
       /** Copies an engine install command and opens a blank terminal. False
        * when no terminal could be launched; the clipboard still has it. */
       openInstallTerminal?(command: string): Promise<boolean>;
+      /** Writes plain text to the system clipboard; false on failure. Absent on older builds. */
+      copyText?(text: string): Promise<boolean>;
       /** Opens an http(s) link in the user's default browser. */
       openExternal?(url: string): Promise<boolean>;
       /** Recolor the native window chrome for a skin; absent on older builds. */
@@ -259,7 +262,7 @@ const __APP_VERSION__: string;
        * app Settings. Local-shell only: remote server pages never receive
        * the channel, and the bridge is absent in the browser. "cloud" is the
        * openmausbot://cloud link (Settings → OMB Cloud, opened by the link). */
-      onOpenAppSettings?(cb: (section?: "organization" | "cloud" | "cloud-settings") => void): () => void;
+      onOpenAppSettings?(cb: (section?: "organization" | "cloud" | "cloud-settings" | "cloud-add" | "cloud-add-howto") => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by OpenMausBot. */
@@ -298,6 +301,9 @@ const __APP_VERSION__: string;
        * it there and reveals it. Resolves the chosen path, or null if the
        * user cancelled the dialog. */
       saveFile?(filePath: string): Promise<string | null>;
+      /** Points this computer's file manager at a file a bot linked outside
+       * its workspace, without opening or reading it. Local app only. */
+      revealInFolder?(filePath: string): Promise<"shown" | "missing" | "invalid">;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
         name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey",
@@ -344,6 +350,8 @@ export interface UpdaterState {
     | "handed-off"
     | "error";
   version?: string;
+  /** the release's notes as published (HTML or Markdown), when the feed has them */
+  releaseNotes?: string;
   percent?: number;
   message?: string;
   /** native work may still be running; recovery requires an app restart */

@@ -1,4 +1,5 @@
 import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
+import type { ConnectorCardData } from "../../shared/wire";
 
 export const PINNED_SECTION_ID = "builtin:pinned";
 export const CHANNELS_SECTION_ID = "builtin:channels";
@@ -6,6 +7,7 @@ export const BOT_CHATS_SECTION_ID = "builtin:bot-chats";
 export const BOTS_SECTION_ID = "builtin:bots";
 export const ATTENTION_SECTION_ID = "builtin:attention";
 export const PINNED_THREADS_SECTION_ID = "builtin:pinned-threads";
+export const TOOLS_SECTION_ID = "builtin:tools";
 
 const USER_SECTION_PREFIX = "section:";
 
@@ -65,6 +67,23 @@ export function sidebarGoalRunPreview(run: GroupGoalRunCardData): string {
   const summary = detail || goal;
   const label = GOAL_RUN_PREVIEW_LABEL[run.status];
   return summary ? `${label}: ${summary}` : label;
+}
+
+/** The catalog keys a connection card's preview reads its state from. */
+export type SidebarConnectorPreviewKey = "connectors.card.connected" | "connectors.card.waiting" | "connectors.card.connectSecurely";
+
+/** A connection card previews as the app and where it stands, in the
+ * reader's language, never as the English line the computer writes for
+ * phones that cannot draw the card yet. */
+export function sidebarConnectorPreview(
+  connector: Pick<ConnectorCardData, "label" | "status" | "dismissed">,
+  say: (key: SidebarConnectorPreviewKey) => string,
+): string {
+  if (connector.dismissed) return connector.label;
+  const key: SidebarConnectorPreviewKey = connector.status === "connected"
+    ? "connectors.card.connected"
+    : connector.status === "authorizing" ? "connectors.card.waiting" : "connectors.card.connectSecurely";
+  return `${connector.label} · ${say(key)}`;
 }
 
 export function sidebarLayoutInteractive(density: SidebarDensityMode, query: string): boolean {

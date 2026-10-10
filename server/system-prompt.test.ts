@@ -222,7 +222,8 @@ describe("shared sentences", () => {
   it("configuration prompts follow actual applied or pending results without elevating another bot", () => {
     expect(PROFILE_PROMPT).toContain("propose_profile");
     for (const prompt of [PROFILE_PROMPT, ROUTINE_PROMPT, LEARN_PROMPT]) {
-      expect(prompt).toContain("with granted Full Access it may report applied immediately");
+      expect(prompt).toContain("a change to your own routines, skills, profile or model applies immediately");
+      expect(prompt).toContain("A change for another bot may wait for the person");
       expect(prompt).toContain("continue the requested work without asking for another confirmation");
       expect(prompt).toContain("If it reports a pending review, end the turn and wait");
       expect(prompt).toContain("Never claim success before an applied result");
@@ -281,7 +282,7 @@ describe("cloudHomePrompt", () => {
 
   it("points to a lent Mac only when the turn has the shared-computer tools", () => {
     expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer");
-    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this Mac under Settings → OpenMausBot Cloud in the desktop app on that Mac");
+    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this Mac under Settings → MausBot Cloud in the desktop app on that Mac");
     expect(cloudHomePrompt(false)).not.toMatch(/shared_computer|list_shared_computers/);
     expect(cloudHomePrompt(false)).toContain("You cannot see or use their Mac or PC, its screen or its files from here.");
   });
