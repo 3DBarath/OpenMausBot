@@ -173,6 +173,15 @@ recording controls are intentionally not added to the live browser chrome.
 - Typed text with a line break runs only when the read resolved the
   selector to a text field that will itself take the focus: the engine
   types at the current focus otherwise.
+- The hold is a guard with stated limits, tuned to pass ordinary browsing:
+  a plain link is never a commitment by its text; a form with a multi-line
+  field and a harmless label, a sign-in form, and "Apply" where nothing is
+  attached are not sends; Enter in a multi-line field is a new line unless
+  the field is a message composer. `server/browser-commit-ordinary.test.ts`
+  is the table of ordinary operations and the outcome each must have, run
+  through the real reader and gate. A request-level check on payments is
+  planned as separate work; until then a payment behind a neutral label on
+  a page with no card signal is not held.
 - The page script reads elements through the accessors on their prototype
   chain, because a form control named `tagName` or `elements` shadows the
   form's own property of that name.

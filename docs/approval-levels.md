@@ -123,6 +123,16 @@ Both raise the same card with **Allow** and **Deny**: "Send on your behalf?",
 or "Spend money?". Both follow the bot's **Sending on your behalf** setting
 under Permissions.
 
+**The browser hold is a guard, not a guarantee.** It reads the page the way
+a careful person would, from the outside: what a button is called, what form
+it is in, whether there are card fields around it. That stops a bot from
+sending or paying on an ordinary page without asking, and it is tuned to
+stay out of the way of ordinary browsing: links, filters, sign-ins, notes.
+It does not see what a page sends over the network, so a page built to
+commit on something that looks harmless gets past it. The [limits](#limits)
+below say where, in plain words. A check on the payment request itself, at
+the network, is planned as separate work.
+
 | Setting | Sends | Money in the browser |
 | --- | --- | --- |
 | **Ask every time** (default) | Every send waits for your answer. | Always asks. |
@@ -138,13 +148,14 @@ it refuses the call or asks. It never lets it through unseen.
 
 | What the bot does | Held as |
 | --- | --- |
-| Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
-| Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
+| Clicks a button or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, forward, tweet, notify, accept invitation, list item | Send |
+| Clicks "Apply" where something is being submitted: the form or region has a file to attach or a multi-line field, or the label says an application goes out ("Apply now", "Easy Apply", "Apply for this job") | Send |
+| Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer, deposit, withdraw, top up, add funds, upgrade, start free trial, renew, get tickets, sell, trade, place bet, sign transaction, charge; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
 | Clicks one whose label pairs a word for committing or sending (place, complete, confirm, finish, make, authorize, process, or any Send word) with what money is spent on (order, purchase, payment, money, booking, reservation, donation, checkout): "Place your order", "Confirm booking", "Make a payment", "Send money", "Submit order" | Money |
 | Clicks, or presses Enter or Space on, any button, link or menu item inside a card region (below), whatever it says; submits a form there; changes a list or tick box there that has a change handler | Money |
-| Presses Space on a focused button, link or menu item | The same as a click on it |
-| Presses Enter in a message or comment box | Send |
-| Submits a form that has a multi-line text field, whatever its button says | Send |
+| Presses Space on a focused button or menu item | The same as a click on it |
+| Presses Enter in a message composer (below) | Send |
+| Submits a form that has a multi-line text field, unless its button has one of the harmless labels (below) | Send |
 | Reloads the page after one of the above went through | The same as that one |
 
 Labels match whole words in any letter case, in English: "Post reply"
@@ -153,13 +164,44 @@ send on a page in another language. Money wins when both match, and a money
 word lifts a send to money ("Submit payment"), so it asks even under a daily
 allowance. A money word that only names a thing holds nothing: "Order
 history", "Payment methods", "Purchase history", "Check out our new
-arrivals". "Confirm" alone holds nothing. "Book a demo" is held as money,
-because "book" is on the list.
+arrivals". "Book a demo" is held as money, because "book" is on the list.
+"Confirm", "Continue", "Complete", "Approve", "Authorize" and "Agree &
+Continue" are on no list: alone they hold nothing, and inside a card region
+they are money like everything else there.
 
-A click that only puts the cursor in a text box, or ticks a checkbox with no
-handler, is never held. **Search is never a send or a payment**: a search
-field, anything inside a search region, or a form whose only text field is a
-search field, whatever is typed in it.
+What passes, so that ordinary browsing is not interrupted:
+
+- **A plain link.** A link that loads another page is never held for what it
+  says: "Share prices", "Blog post", "Buy tickets", "Subscribe" open a page.
+  A link that acts as a button is judged as a button: one whose address is
+  `#`, a place on the same page or `javascript:`, one with a button or menu
+  item role, or one with a click handler written on it. Inside a card region
+  a link is money like any other control.
+- **A harmless label on a form with a multi-line field.** A profile with an
+  "About you" box, a note, a settings page. When the button's whole label is
+  one of: save, save changes, update, next, continue, back, cancel, close,
+  done, ok, search, filter, sort, reset, clear, add, edit, preview, upload,
+  sign in, log in, sign up, create account, register, the form is not taken
+  for a send. A label with a send or money word in it ("Save and send") is
+  still held.
+- **A sign-in.** A form, or a dialog or region with no form, that has a
+  password field and no multi-line field is never a send, whatever its
+  button says ("Submit", "Send code"). Money rules still apply to it.
+- **"Apply" on a filter or a coupon**, where no file is attached and there
+  is no multi-line field.
+- **Enter in a multi-line field that is not a message composer**: it is a
+  new line. The field is a composer when its keyboard hint says send
+  (`enterkeyhint="send"`); or when it is the only text field in its form or
+  region and either a control there has a Send label or its own label or
+  placeholder says message, reply, comment or chat. In a composer Enter is
+  held, as before. Enter with another key held (`Control+Enter`) is never a
+  new line and is held in any multi-line field. So is Enter in any
+  multi-line field inside a card region: nothing is relaxed there.
+- A click that only puts the cursor in a text box, or ticks a checkbox with
+  no handler.
+- **Search is never a send or a payment**: a search field, anything inside a
+  search region, or a form whose only text field is a search field, whatever
+  is typed in it.
 
 **A card region** is a form that holds a card signal. For a control with no
 form it is the nearest dialog, section, article, main area or other landmark
@@ -239,12 +281,15 @@ line break. The engine types at whatever has the focus when its selector's
 element cannot take it, or when it cannot resolve the selector at all. So
 text with a line break runs only when the server has resolved the selector
 to a text field that will itself take the text, and Enter there commits
-nothing. Into anything else (a paragraph, a button, an image, a selector
-such as `text=…` or `label=…`) it is refused, and the bot is told to fill
-the field and then press Enter or click the button.
+nothing. Several lines run into a multi-line field that is not a composer:
+a notes box takes them as lines. Into anything else (a composer, a
+paragraph, a button, an image, a selector such as `text=…` or `label=…`,
+several lines into a one-line field) it is refused, and the bot is told to
+fill the field and then press Enter or click the button.
 
-**Selectors.** The server reads the same element the engine would act on.
-Where two elements share one box, the one a click at its centre lands on is
+**Selectors.** The server reads the same element the engine would act on,
+and for a click by ref it also judges the name the last snapshot gave that
+ref. Where two elements share one box, the one a click at its centre lands on is
 judged; where that cannot be told, all of them are, and the card shows the
 most serious. A selector with stray white space around it is tidied, and the
 tidied one is what is sent. A selector over 2,000 characters, or one that
@@ -372,9 +417,9 @@ The bot is told to use the click and fill tools, which the rules above
 cover. A line break typed with `agent_browser_type` is a real Enter key
 press; it is refused where it would send or submit, and wherever the server
 cannot be sure which element it lands on (see "Typed text with a line
-break" above). Typed text with a tab before the line break, or with anything
-after it, is refused wherever it is typed: a tab moves the focus, so the
-server cannot tell where that Enter would land.
+break" above). Typed text with a tab and a line break is refused wherever it
+is typed: a tab moves the focus, so the server cannot tell where that Enter
+would land.
 
 This is a guard against a bot acting through a script by habit. **It is not a
 wall**: it reads the script's text, so a script written to hide what it does
@@ -383,46 +428,91 @@ past it.
 
 ### Limits
 
-- The word lists are English. Other languages rely on the two form rules.
-- Under **Allow a daily amount**, the shared count goes up for every browser
-  press the rules read as a send, and some of those send nothing: Enter that
-  only adds a line in a notes box, or a "Reply" button that only opens a box
-  to type in. The daily number is used up sooner than the sends alone would.
-- Inside an embedded frame from another site, such as a payment or comment
-  widget, a click is judged by the name the last snapshot gave the element,
-  and as money when the frame is recognised as a payment or card frame. A
-  payment frame whose title, name and address say nothing of payment is not
-  recognised. The card shows no fields and no picture, and the approval is
-  bound to that name and the address, not to the element itself. Enter and
-  Space there are refused, not judged: the bot has to click the frame's
-  button instead. The same holds for a closed part of the page, and for a
-  focused custom element that does not say what it is: the refusal there
-  can be a false alarm.
+The hold is a guard against a bot over-acting on ordinary pages. It is not a
+guarantee that nothing is ever sent or paid without a card. What it does not
+catch:
+
+**Payments**
+
+- **A payment behind a button that says nothing of money, on a page with no
+  card field.** "Confirm", "Continue", "Complete", "Approve" or "Authorize"
+  on a one-click checkout that charges a saved card passes: there is no card
+  field, no payment frame and no money word to go by. This is the largest
+  gap. A check on the payment request itself is planned as separate work.
 - A card region with no autofill hints and only one sign (a field called
-  "Card number" and nothing called a security code or an expiry, with no card
-  number typed in yet) is not read as one. A library or membership card form
-  that also asks for an expiry date is.
+  "Card number" and nothing called a security code or an expiry, with no
+  card number typed in yet) is not read as one. A library or membership card
+  form that also asks for an expiry date is.
 - A button with no form is judged by the nearest region around it. One that
   sits in a different section from the card fields it pays with is judged by
-  its label alone. On a page with no regions at all, every button outside a
-  form counts as inside the page's card region when the page holds a card
-  signal, so an unrelated button there asks too.
+  its label alone. The other way round, on a page with no regions at all,
+  every button outside a form counts as inside the page's card region when
+  the page holds a card signal, so an unrelated button there asks too.
+- A payment frame from another site whose title, name and address say
+  nothing of payment is not recognised as one: a button inside it is judged
+  by its name.
+- The word lists are English. A "Pagar" button outside a card region passes.
+
+**Sends**
+
+- **A link that commits when it is opened.** A plain link is never held, and
+  opening an address never is: a one-click unsubscribe, or a "Send" link
+  that sends by loading a page, goes through.
+- **A form with a multi-line field and a harmless label.** A site that sends
+  a message on "Done", "Next" or "OK" is not held. Neither is anything on a
+  form with a password field and no multi-line field, or an "Apply" with no
+  file and no multi-line field (a one-click job application).
+- **Enter in a box the rules do not take for a composer.** A chat box that
+  shares its region with another text field and has no keyboard hint, or
+  whose name is not in English and has no Send button beside it, sends on
+  Enter without asking. A one-line box outside any form that sends on Enter
+  is not recognised either.
+- Other languages rely on the multi-line form rule and the composer rule;
+  a send button in another language on a form with no multi-line field
+  passes.
+
+**What it cannot see**
+
+- A page script, a listener added with `addEventListener`, or a field that
+  submits as it is filled. A list or checkbox is held only for a handler
+  written on the element.
+- Inside an embedded frame from another site, such as a payment or comment
+  widget, a click is judged by the name the last snapshot gave the element,
+  and as money when the frame is recognised as a payment or card frame. The
+  card shows no fields and no picture, and the approval is bound to that
+  name and the address, not to the element itself. Enter and Space there are
+  refused, not judged: the bot has to click the frame's button instead. The
+  same holds for a closed part of the page, and for a focused custom element
+  that does not say what it is: the refusal there can be a false alarm.
 - A typed space is not judged: the engine inserts it as text, with no key
   press. Only a Space key press is.
-- A one-line box outside any form that sends on Enter is not recognised.
-- A number that changes in the text around the button (a price, a count)
-  voids an approval like any other change. On a page where that keeps
-  happening, two cards are void before the third one stops minding the text
-  around the button.
 - A secret in a field that nothing marks as one (no type, no autofill hint,
   no telling name, not a card number) is shown like any other value. A frame
   from another site that holds one, and does not name a payment or a
   sign-in, is in the picture.
-- A list or checkbox that submits its form from a listener added in script
-  (`addEventListener`), not from a handler written on the element, is not
-  recognised. Neither is a field that submits as it is filled.
-- Opening an address is never held. A site that acts on a plain link (a
-  one-click unsubscribe) acts when the bot opens it.
+- After OpenMausBot restarts while a browser stays open, a reload in that
+  browser is no longer held: what was sent before the restart is not
+  remembered.
+
+**Where it asks more than it needs to**
+
+- Under **Allow a daily amount**, the shared count goes up for every browser
+  press the rules read as a send, and some of those send nothing: a "Reply"
+  button that only opens a box to type in. The daily number is used up
+  sooner than the sends alone would.
+- Inside a card region every button asks, a quantity stepper and a "Terms"
+  link included.
+- A button that says "Upgrade", "Sell", "Trade" or "Book" asks even where it
+  only opens the next page.
+- A number that changes in the text around the button (a price, a count)
+  voids an approval like any other change. On a page where that keeps
+  happening, two cards are void before the third one stops minding the text
+  around the button.
+- After any send or payment in a browser, every reload there asks until the
+  browser is closed.
+
+**Elsewhere**
+
 - Below Full access some engines show their own tool card for a browser
   click first, then this one. This is the one with the evidence.
 - None of this applies to web work a bot does on a computer (a cloud

@@ -70,6 +70,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | R9 | With the focus inside a closed shadow root that holds a card form, Enter and Space are refused. |
 | R11 | On a page with 6,000 filled fields a click that commits nothing runs with no card inside 1.5 seconds. A Send there lists only its own section's field. |
 | R12 | A search box holding a card number submits with no card. An IMEI lookup (a number that passes the Luhn check) does too. |
+| T7 | Ordinary operations, each with the outcome it must have. Pass with no card: links that say "Blog post", "Buy tickets" and "Share prices" (each opens its page), "Save changes" on a profile with an "About you" box, "Apply" on filters, "Submit" on a sign-in, "Continue" on a sign-up, Enter in a notes box, several lines typed into it, and "Confirm" alone. Held as a send: a `#` link that says "Send", Enter in a chat composer, "Comment" on a one-field form, "Send" in a mail form, "Apply" on a form with a file to attach. Held as money: "Pay now", "Upgrade", and "Continue" in a card form. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
@@ -81,17 +82,28 @@ Focused automated coverage:
 
 ```sh
 pnpm exec vitest run shared/browser-commit.test.ts server/browser-commit-page.test.ts \
-  server/browser-commit-gate.test.ts server/browser-commit-hold.e2e.test.ts \
+  server/browser-commit-gate.test.ts server/browser-commit-ordinary.test.ts server/browser-commit-hold.e2e.test.ts \
   server/browser-commit-shots.test.ts server/browser-commit-shots-startup.test.ts \
   server/browser-runtime.test.ts server/browser-engine.test.ts server/harness-mcp-proxy.test.ts \
   server/activity.test.ts src/lib/approval-summary.test.ts src/components/ApprovalCard.test.ts
 ```
+
+`server/browser-commit-ordinary.test.ts` is a table of more than 160 ordinary
+operations (forty of them links whose text has a word from the lists) and
+the outcome each must have: passes, held as a send, held as money, or
+refused. Each row runs through the real page read and the real gate against
+a page in happy-dom, by ref, the way a bot clicks. Add a row there before
+changing a rule or a word list.
 
 `server/browser-commit-hold.e2e.test.ts` runs the same route, respond route,
 decision log and attachment store against an inert browser executable, so it
 runs anywhere. It does not prove the page read: only the script above reads a
 real page. Run the script on Windows before a Windows release; the engine
 pinned there is older than the one these reads were checked on.
+
+The hold is a guard against a bot over-acting on ordinary pages, not a
+guarantee: [its limits](../approval-levels.md#limits) are part of what it
+is. This recipe proves the rules on local pages built for them.
 
 What this does not prove: the card in the desktop UI (covered by
 `src/components/ApprovalCard.test.ts`, not by a renderer run), the hand-back
