@@ -2545,12 +2545,41 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       return { state: "available", version, ...auth, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "subscription" };
     };
 
+    /** What print mode offers for a one-shot that must leave nothing behind
+     * and must not be able to act (TextGenerationOptions.isolated): no saved
+     * session, no built-in tool, no MCP server from the person's own
+     * settings. An unknown flag is a hard argument error, and the versions
+     * that first took the first and the last have not been checked against
+     * the published binaries (CLAUDE_FLAG_FLOORS), so the CLI's own option
+     * listing decides, as it does for --autocompact: reading it calls no
+     * model. Read once; read again after a read that failed. */
+    let isolatedArgs: Promise<string[]> | undefined;
+    const isolatedOneShotArgs = (): Promise<string[]> => (isolatedArgs ??= new Promise<string[]>((resolve) => {
+      execCli(config.cli, ["--help"], { timeout: 8000, env: environment(config.managedModels?.[0] ?? "claude-haiku-4-5") }, (err, stdout) => {
+        if (err || !stdout) {
+          isolatedArgs = undefined;
+          resolve([]);
+          return;
+        }
+        const has = (flag: string) => new RegExp(`^\\s*${flag}\\b`, "m").test(stdout);
+        resolve([
+          ...(has("--no-session-persistence") ? ["--no-session-persistence"] : []),
+          ...(has("--strict-mcp-config") ? ["--strict-mcp-config"] : []),
+          // last: the option takes a list, and "" is the empty one
+          ...(has("--tools") ? ["--tools", ""] : []),
+        ]);
+      });
+    }));
+
     /** One-shot Claude call with the prompt on stdin, never argv. Approval
      * summaries can contain paths, commands, or secrets, so the generic
-     * `claude -p "prompt"` shape is not safe for review. No tools or MCP
-     * servers are mounted in this isolated process. */
-    const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"]): Promise<string> =>
-      new Promise((resolve, reject) => {
+     * `claude -p "prompt"` shape is not safe for review. The harness mounts
+     * no tools or MCP servers of its own in this process; with
+     * `options.isolated` the CLI's own are switched off too and no session
+     * of the call is kept (isolatedOneShotArgs). */
+    const generateReview = async (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], options: Pick<TextGenerationOptions, "isolated" | "timeoutMs"> = {}): Promise<string> => {
+      const isolation = options.isolated ? await isolatedOneShotArgs() : [];
+      return new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
@@ -2558,7 +2587,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
         const child = spawnCli(
           config.cli,
-          ["-p", "--model", model, "--output-format", onUsage ? "json" : "text"],
+          ["-p", "--model", model, "--output-format", onUsage ? "json" : "text", ...isolation],
           {
             stdio: ["pipe", "pipe", "pipe"],
             env: environment(model),
@@ -2582,7 +2611,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const timer = setTimeout(() => {
           killCliTree(child);
           finish(new Error("Claude review timed out"));
-        }, 60_000);
+        }, options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 60_000);
         timer.unref?.();
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
@@ -2633,6 +2662,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.stdin.end(prompt);
         }
       });
+    };
 
     return {
       instanceId,
@@ -2704,8 +2734,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return () => listeners.delete(listener);
         },
       },
-      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage),
-      reviewPermission: generateReview,
+      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, { isolated: options?.isolated, timeoutMs: options?.timeoutMs }),
+      reviewPermission: (prompt, signal) => generateReview(prompt, signal),
       dispose: async () => {
         try {
           await login.dispose();

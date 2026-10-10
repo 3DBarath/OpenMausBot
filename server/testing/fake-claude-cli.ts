@@ -298,8 +298,12 @@ if (argv[0] === "--help") {
   // version below the 2.1.122 floor.
   const [maj = 0, min = 0, pat = 0] = (process.env.FAKE_CLAUDE_VERSION ?? "2.1.232").split(".").map(Number);
   const has = process.env.FAKE_CLAUDE_AUTOCOMPACT !== "0" && (maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 122))));
+  // The print-mode options an isolated one-shot uses are listed too, unless
+  // the fake stands in for a CLI without them: FAKE_CLAUDE_ISOLATION=0.
+  const isolation = process.env.FAKE_CLAUDE_ISOLATION === "0" ? "" :
+    "  --no-session-persistence  Disable session persistence (only works with --print)\n  --strict-mcp-config  Only use MCP servers from --mcp-config\n  --tools <tools...>  Specify the list of available tools from the built-in set\n";
   process.stdout.write(
-    `Usage: claude [options]\n\nOptions:\n  --model <model>  Model\n${has ? "  --autocompact <tokens>  Compaction window\n" : ""}  -h, --help  Display help\n`,
+    `Usage: claude [options]\n\nOptions:\n  --model <model>  Model\n${has ? "  --autocompact <tokens>  Compaction window\n" : ""}${isolation}  -h, --help  Display help\n`,
   );
   process.exit(0);
 }

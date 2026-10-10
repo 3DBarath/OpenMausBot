@@ -43,7 +43,8 @@ export const MAX_PENDING_THREADS = 50;
 export const TOPIC_MAX_BYTES = 64 * 1024;
 
 export interface UpkeepEngine {
-  generateText?: (prompt: string, options?: { signal?: AbortSignal }) => Promise<string>;
+  /** `timeoutMs` and `isolated` are an import's (TextGenerationOptions); upkeep passes neither. */
+  generateText?: (prompt: string, options?: { signal?: AbortSignal; timeoutMs?: number; isolated?: boolean }) => Promise<string>;
 }
 
 export interface UpkeepBot {

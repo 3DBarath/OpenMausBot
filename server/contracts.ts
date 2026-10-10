@@ -534,6 +534,14 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** How long the call may take, where the engine keeps its own limit.
+   * Absent: the engine's default. */
+  timeoutMs?: number;
+  /** The prompt carries text that must leave nothing behind and must not be
+   * able to act: the engine keeps no session of this call and gives it no
+   * tools, where it has a way to (a context import's calls). Absent: as the
+   * engine has always made the call. */
+  isolated?: boolean;
 }
 
 export interface ProviderInstance {

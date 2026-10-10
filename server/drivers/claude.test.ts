@@ -3489,6 +3489,45 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
+  it("keeps no session and gives no tools to an isolated one-shot, where the CLI offers that, and leaves every other one-shot as it was", async () => {
+    await create();
+    const dump = join(scratch, "isolated-one-shot.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText?.("read this export", { isolated: true })).resolves.toBe("fake generated text");
+    const isolated = JSON.parse(readFileSync(dump, "utf8"));
+    expect(isolated.prompt).toBe("read this export");
+    expect(isolated.argv).toContain("--no-session-persistence");
+    // `--tools ""`: no built-in tool at all
+    expect(isolated.argv[isolated.argv.indexOf("--tools") + 1]).toBe("");
+    expect(isolated.argv).toContain("--strict-mcp-config");
+    expect(isolated.argv).not.toContain("read this export");
+
+    await expect(instance.generateText?.("summarize safely")).resolves.toBe("fake generated text");
+    const ordinary = JSON.parse(readFileSync(dump, "utf8"));
+    expect(ordinary.argv).toEqual(["-p", "--model", ordinary.argv[2], "--output-format", "text"]);
+  });
+
+  it("makes an isolated one-shot without the flags on a CLI that does not have them", async () => {
+    process.env.FAKE_CLAUDE_ISOLATION = "0";
+    try {
+      await create();
+      const dump = join(scratch, "old-cli-one-shot.json");
+      process.env.FAKE_CLAUDE_DUMP = dump;
+      await expect(instance.generateText?.("read this export", { isolated: true })).resolves.toBe("fake generated text");
+      expect(JSON.parse(readFileSync(dump, "utf8")).argv).toEqual(["-p", "--model", expect.any(String), "--output-format", "text"]);
+    } finally {
+      delete process.env.FAKE_CLAUDE_ISOLATION;
+    }
+  });
+
+  it("gives a one-shot the time its caller asks for", async () => {
+    await create();
+    process.env.FAKE_CLAUDE_TEXT_HANG = "1";
+    const started = Date.now();
+    await expect(instance.generateText?.("summarize safely", { timeoutMs: 150 })).rejects.toThrow(/timed out/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("declares safe same-provider permission review", async () => {
     await create();
     const dump = join(scratch, "permission-review.json");
