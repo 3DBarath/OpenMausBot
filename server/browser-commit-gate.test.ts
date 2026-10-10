@@ -11,7 +11,7 @@ import { removeTempDir } from "./testing/cleanup.ts";
 
 import type { OutboundPolicy } from "../shared/outbound.ts";
 import type { OptionCardData } from "../shared/wire.ts";
-import type { PageBlind, PageTarget } from "./browser-commit-page.ts";
+import type { PageBlind, PageDetail, PageEvidence, PageTarget } from "./browser-commit-page.ts";
 import type { DecisionRow } from "./decision-log.ts";
 
 const scratch: string[] = [];
@@ -21,8 +21,15 @@ afterEach(async () => {
   for (const dir of scratch.splice(0)) await removeTempDir(dir);
 });
 
-const element = (extra: Partial<PageTarget> = {}): PageTarget => ({
-  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], identity: "", context: "", secrets: false, frames: false, ...extra,
+/** One scripted element: what the first read says of it, and what the
+ * second would. The fixture answers each read with its own half. */
+type Scripted = Omit<PageTarget, "also"> & Partial<PageEvidence> & { secrets?: boolean; also?: Scripted[] };
+const element = (extra: Partial<Scripted> = {}): Scripted => ({
+  label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
+  button: true, changes: false, typable: true, frames: false, payFrame: false, ...extra,
+});
+const evidenceOf = (target: Scripted): PageEvidence => ({
+  fields: target.fields ?? [], others: target.others ?? 0, bound: target.bound ?? "", identity: target.identity ?? "", context: target.context ?? "", around: target.around ?? "",
 });
 const SEND = element({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = element({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -43,11 +50,15 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
   const rows: Array<Omit<DecisionRow, "at">> = [];
   const refs = new Map<string, BrowserRef>();
   const state = {
-    target: SEND as PageTarget | PageBlind,
+    target: SEND as Scripted | PageBlind,
     url: "https://mail.example.com/compose?draft=1#body" as string | null,
     policy: options.policy as OutboundPolicy | undefined,
     active: true,
     reads: [] as Array<{ selector: string | null; enter: boolean }>,
+    /** The second reads: the evidence for a card. */
+    details: [] as Array<{ selector: string | null; enter: boolean }>,
+    /** What the second read answers, when not what the first one saw. */
+    evidence: undefined as PageDetail | PageBlind | undefined,
     /** Throws to make one of the gate's own writes fail: "post", "patch", "log:card-shown"… */
     fail: undefined as ((step: string) => void) | undefined,
     /** Runs as each read of the page starts, with how many there have been. */
@@ -77,7 +88,13 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     botId: "bot-1", botName: "Pepper", threadId: "thread-1", session: "s", params,
     page: {
       url: async () => state.url,
-      target: async (selector, enter) => { state.reads.push({ selector, enter }); state.onRead?.(state.reads.length); return state.target; },
+      target: async (selector, enter) => { state.reads.push({ selector, enter }); state.onRead?.(state.reads.length); return state.target as PageTarget | PageBlind; },
+      evidence: async (selector, enter) => {
+        state.details.push({ selector, enter });
+        if (state.evidence) return state.evidence;
+        const target = state.target;
+        return typeof target === "string" ? target : { parts: [target, ...(target.also ?? [])].map(evidenceOf), secrets: [target, ...(target.also ?? [])].some((each) => each.secrets === true) };
+      },
     },
     shot: async () => { state.shots += 1; return "/data/attachments/shot.jpg"; },
     admit: () => {},
@@ -312,7 +329,7 @@ describe("the answer", () => {
   it.each([
     ["the address", (f: ReturnType<typeof fixture>) => { f.state.url = "https://mail.example.com/compose?draft=2"; }],
     ["the label", (f: ReturnType<typeof fixture>) => { f.state.target = { ...SEND, label: "Send to all" }; }],
-    ["a password's length", (f: ReturnType<typeof fixture>) => { f.state.target = { ...SEND, fields: [...SEND.fields, { name: "Password", type: "password", length: 9 }] }; }],
+    ["a password's length", (f: ReturnType<typeof fixture>) => { f.state.target = { ...SEND, fields: [...SEND.fields!, { name: "Password", type: "password", length: 9 }] }; }],
   ])("re-asks when %s changed", async (_what, change) => {
     const f = fixture();
     const held = f.call(click());
@@ -387,15 +404,26 @@ describe("what an approval is bound to", () => {
     expect(f.state.dispatched).toEqual([]);
   });
 
-  it("masks a credential in the text around the button, on the card and in the log", async () => {
+  // The text around the button goes by the rules a value does. It cannot be
+  // shown in part, so when anything in it would be masked it is left off the
+  // card, and the page, which shows it, is not pictured.
+  it("leaves the text around the button off the card and the log when it holds a credential, and takes no picture", async () => {
     const f = fixture();
     f.state.target = { ...BUY, context: "Use token=abcd1234efgh5678 to finish Buy now" };
     const held = f.call(click("#buy"));
     const card = await f.pending();
-    expect(card.subtitle).toContain("Where: Use token=«redacted 16 chars» to finish Buy now");
-    expect(JSON.stringify([card, f.rows])).not.toContain("abcd1234efgh5678");
+    expect(card.subtitle).toBe("mail.example.com · Buy now");
+    expect(card.browserCommit).toMatchObject({ noShot: true });
+    expect(card.browserCommit).not.toHaveProperty("context");
+    expect(f.state.shots).toBe(0);
+    expect(JSON.stringify([card, f.rows])).not.toMatch(/abcd1234efgh5678|token=/);
+    // It is still part of what was approved.
+    f.state.target = { ...BUY, context: "Use token=zzzz9999yyyy8888 to finish Buy now" };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(card.requestId);
     await f.answer("deny");
     await held;
+    expect(f.state.dispatched).toEqual([]);
   });
 
   const many = (count: number) => Array.from({ length: count }, (_, index) => ({ name: `Field ${index + 1}`, type: "text", value: `value ${index + 1}` }));
@@ -1172,14 +1200,16 @@ describe("the picture on the card", () => {
     await held;
   });
 
-  it("masks a card number written inside other text, on the card and in the log", async () => {
+  it("masks a card number written inside a value, and leaves text around the button that holds one off the card with no picture", async () => {
     const f = fixture();
     f.state.target = { ...SEND, context: "Paying with 4242 4242 4242 4242 Send", fields: [
       { name: "Message", type: "textarea", value: "Charge my card 5555-5555-5555-4444 please, order 1234567890123456" },
     ] };
     const held = f.call(click());
     const card = await f.pending();
-    expect(card.subtitle).toBe("mail.example.com · Send\nWhere: Paying with «card number» Send\nMessage: Charge my card «card number» please, order 1234567890123456");
+    expect(card.subtitle).toBe("mail.example.com · Send\nMessage: Charge my card «card number» please, order 1234567890123456");
+    expect(card.browserCommit).toMatchObject({ noShot: true });
+    expect(f.state.shots).toBe(0);
     expect(JSON.stringify([card, f.rows])).not.toMatch(/4242 4242|5555-5555/);
     await f.answer("deny");
     await held;
@@ -1219,6 +1249,367 @@ describe("what is shown and kept", () => {
     expect(JSON.stringify(f.rows)).not.toContain("abcd1234efgh5678");
     await f.answer("deny");
     await held;
+  });
+});
+
+describe("round three: text typed with a line break", () => {
+  const typed = (selector: string, value = "On my way\n") => ({ name: "agent_browser_type", arguments: { selector, text: value } });
+  const NOTE = element({ label: "Quick note", role: "textbox", box: "single" });
+
+  // The engine types at whatever has the focus when its selector's element
+  // cannot take it (agent-browser 0.37.0: typed at a paragraph or an image,
+  // the Enter submitted the form the focus was in).
+  it.each([
+    ["a paragraph", element({ label: "Read this first", role: "generic", button: false, typable: false })],
+    ["a button", element({ label: "Help", typable: false })],
+    ["a field that cannot take the focus", { ...NOTE, typable: false }],
+    ["two elements in one box, one of them no text field", { ...NOTE, also: [element({ label: "Wrapper", role: "generic", button: false, typable: false })] }],
+  ])("refuses it at %s, whatever that would otherwise be", async (_what, target) => {
+    const f = fixture();
+    f.state.target = target;
+    const result = await f.call(typed("#target")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill, then press Enter or click the button/);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  // A selector the engine cannot resolve is typed at the focus all the same.
+  it.each(["text=Send", "placeholder=Search", "label=Message", "role=textbox", "@e99", "#nothing-here"])("refuses it at %s when the read finds no such element", async (selector) => {
+    const f = fixture();
+    f.state.target = "missing";
+    const result = await f.call(typed(selector)) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("types it into a text field that will itself take it, when Enter there is no commitment", async () => {
+    const f = fixture();
+    f.state.target = NOTE;
+    await expect(f.call(typed("#note"))).resolves.toBe(CLICKED);
+    // The same call with no line break is never read at all.
+    f.state.target = "missing";
+    await expect(f.call(typed("text=Send", "On my way"))).resolves.toBe(CLICKED);
+    expect(f.state.reads).toHaveLength(1);
+  });
+
+  it("refuses it where Enter would commit, without reading the page a second time", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Write a message", role: "textbox", box: "multiline", multiline: true });
+    const result = await f.call(typed("#composer")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill, then press Enter or click the button/);
+    expect(f.state.details).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+});
+
+describe("round three: a card region", () => {
+  const press = (key: string) => ({ name: "agent_browser_press", arguments: { key } });
+  const CONTINUE = element({ label: "Continue", card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
+
+  it("holds a button there as money whatever it says and whatever it submits", async () => {
+    const f = fixture();
+    f.state.target = CONTINUE;
+    const held = f.call(click("#next"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { class: "money", label: "Continue" } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it.each(["Enter", "Space", " ", "Shift+Space"])("holds %s on a focused button there as money", async (key) => {
+    const f = fixture();
+    f.state.target = CONTINUE;
+    const held = f.call(press(key));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { class: "money" } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("holds a list or a tick box with a change handler there, and lets one with none through", async () => {
+    const f = fixture();
+    const select = { name: "agent_browser_select", arguments: { selector: "#plan", value: "yearly" } };
+    f.state.target = element({ label: "Plan", role: "combobox", button: false, card: true, changes: true });
+    const held = f.call(select);
+    expect(await f.pending()).toMatchObject({ title: "Spend money?" });
+    await f.answer("deny");
+    await held;
+    f.state.target = element({ label: "Plan", role: "combobox", button: false, card: true });
+    await expect(f.call(select)).resolves.toBe(CLICKED);
+  });
+
+  it("lets a click on something there that is no control through", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Your card is charged when the order ships.", role: "generic", button: false, card: true });
+    await expect(f.call(click("#note"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+  });
+});
+
+describe("round three: Space", () => {
+  const press = (key: string) => ({ name: "agent_browser_press", arguments: { key } });
+
+  // Space on a focused button clicks it (agent-browser 0.37.0, under each of these names).
+  it.each(["Space", "space", "SPACE", " ", "Shift+Space", "Space+Shift", "Control+ ", "Alt+Space"])("judges %j as an activation of the focused element", async (key) => {
+    const f = fixture();
+    const held = f.call(press(key));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", tool: "agent_browser_press", browserCommit: { class: "send", label: "Send" } });
+    // The focus is read as a click there is, not as Enter.
+    expect(f.state.reads).toEqual([{ selector: null, enter: false }]);
+    await f.answer("allow");
+    await expect(held).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toEqual([press(key)]);
+  });
+
+  it("lets it through where it activates nothing that commits", async () => {
+    const f = fixture();
+    f.state.target = element();
+    await expect(f.call(press("Space"))).resolves.toBe(CLICKED);
+    // In a message box it is a character.
+    f.state.target = element({ label: "Write a message", role: "textbox", box: "multiline", multiline: true, button: false });
+    await expect(f.call(press("Space"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it.each([
+    ["a frame it cannot read", "framed" as const, /did not press Space: the focus is inside a frame it cannot read/],
+    ["a closed part of the page", "sealed" as const, /did not press Space: the focus is inside a closed part of the page it cannot read/],
+  ])("refuses it with the focus inside %s", async (_what, blind, message) => {
+    const f = fixture();
+    f.state.target = blind;
+    const result = await f.call(press("Space")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(message);
+    expect(text(result)).toMatch(/Click the button for this step instead, by its @ref/);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("voids the approval when the focus has moved by the time of the answer", async () => {
+    const f = fixture();
+    const held = f.call(press("Space"));
+    const first = await f.pending();
+    f.state.target = { ...SEND, identity: "html:0/body:1/form:0/button:1#cccccccccccccccc" };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+});
+
+describe("round three: a closed part of the page", () => {
+  it.each(["Enter", "Return", "Shift+Enter", "Control+Enter"])("refuses %s with the focus inside it, and says to click the button instead", async (key) => {
+    const f = fixture();
+    f.state.target = "sealed";
+    const result = await f.call({ name: "agent_browser_press", arguments: { key } }) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/did not press Enter: the focus is inside a closed part of the page it cannot read/);
+    expect(text(result)).toMatch(/Click the button for this step instead, by its @ref/);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+});
+
+describe("round three: a click inside a payment frame the read cannot look into", () => {
+  it("holds a button there as money, whatever the snapshot calls it", async () => {
+    const f = fixture();
+    f.state.target = "hidden-pay";
+    f.refs.set("e9", { role: "button", name: "Continue" });
+    const held = f.call(click("@e9"));
+    const card = await f.pending();
+    expect(card).toMatchObject({ title: "Spend money?", browserCommit: { class: "money", label: "Continue", noShot: true } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("lets a click into a field there through, and refuses one the snapshot never named", async () => {
+    const f = fixture();
+    f.state.target = "hidden-pay";
+    f.refs.set("e4", { role: "textbox", name: "Card number" });
+    await expect(f.call(click("@e4"))).resolves.toBe(CLICKED);
+    const result = await f.call(click("@e31")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(f.state.dispatched).toHaveLength(1);
+  });
+
+  it("judges a button in a frame that is no payment frame by its name, as before", async () => {
+    const f = fixture();
+    f.state.target = "hidden";
+    f.refs.set("e9", { role: "button", name: "Continue" });
+    await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
+  });
+
+  // The engine measures an element inside a frame from the frame's own
+  // corner, so the element read in its box may be another one, out here.
+  it("holds a button the read matched to something else on a page with a payment frame", async () => {
+    const f = fixture();
+    const EMAIL = element({ label: "Email", role: "textbox", box: "single", button: false, frames: true, payFrame: true });
+    f.state.target = EMAIL;
+    f.refs.set("e9", { role: "button", name: "Continue" });
+    const held = f.call(click("@e9"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { label: "Continue" } });
+    await f.answer("deny");
+    await held;
+    // When the names agree the element read is the one, and it is judged as it was read.
+    f.state.target = element({ label: "Continue", frames: true, payFrame: true });
+    await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
+    // On a page with no payment frame a name that differs says nothing by itself.
+    f.state.target = { ...EMAIL, payFrame: false };
+    await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
+  });
+});
+
+describe("round three: what is read, and when", () => {
+  it("reads nothing more of the page for a click that is no commitment", async () => {
+    const f = fixture();
+    f.state.target = element();
+    await expect(f.call(click("#details"))).resolves.toBe(CLICKED);
+    expect(f.state.reads).toHaveLength(1);
+    expect(f.state.details).toEqual([]);
+  });
+
+  it("reads the evidence once for the card and once more after the answer", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    expect(f.state.details).toEqual([{ selector: "@e4", enter: false }]);
+    await f.answer("allow");
+    await held;
+    expect(f.state.details).toHaveLength(2);
+    expect(f.state.reads).toHaveLength(2);
+  });
+
+  it("clicks nothing when the evidence cannot be read, or is not about the elements that were judged", async () => {
+    for (const evidence of ["unreadable" as const, { parts: [], secrets: false }]) {
+      const f = fixture();
+      f.state.evidence = evidence;
+      const result = await f.call(click()) as { isError: boolean };
+      expect(result.isError).toBe(true);
+      expect(text(result)).toMatch(/could not read the page to check it first/);
+      expect(f.state.dispatched).toEqual([]);
+      expect(f.cards.size).toBe(0);
+    }
+  });
+});
+
+describe("round three: what the approval covers beyond what the card lists", () => {
+  it.each([
+    ["a control the card does not list", { bound: "bbbbbbbbbbbbbbbb" }],
+    ["the text around the button, when the card could not carry it", { around: "cccccccccccccccc" }],
+    ["how many other filled fields the page has", { others: 4 }],
+  ])("is void when %s changed", async (_what, change) => {
+    const f = fixture();
+    f.state.target = { ...SEND, bound: "aaaaaaaaaaaaaaaa", around: "aaaaaaaaaaaaaaaa", others: 3 };
+    const held = f.call(click());
+    const first = await f.pending();
+    f.state.target = { ...f.state.target, ...change };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("says how many filled fields elsewhere on the page it covers, and lists none of them", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, fields: [], others: 3 };
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(card.subtitle).toBe("mail.example.com · Send\n3 other filled fields on this page are covered by this approval, not listed");
+    expect(card.browserCommit).toMatchObject({ fields: [], others: 3 });
+    await f.answer("deny");
+    await held;
+    const one = fixture();
+    one.state.target = { ...SEND, others: 1 };
+    const waiting = one.call(click());
+    expect((await one.pending()).subtitle).toBe("mail.example.com · Send\nMessage: Hello there\n1 other filled field on this page is covered by this approval, not listed");
+    await one.answer("deny");
+    await waiting;
+  });
+
+  it("does not void an approval because a relative time or a clock around the button moved on", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, context: "Invoice 7 · updated 3s ago · 12:04 Send" };
+    const held = f.call(click());
+    await f.pending();
+    f.state.target = { ...SEND, context: "Invoice 7 · updated 1m ago · 12:05 Send" };
+    await f.answer("allow");
+    await expect(held).resolves.toBe(CLICKED);
+  });
+
+  it("still voids it when a number that is no time changed: a price is part of what was approved", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, context: "Laptop $10.00 Send" };
+    const held = f.call(click());
+    const first = await f.pending();
+    f.state.target = { ...SEND, context: "Laptop $99.00 Send" };
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+});
+
+describe("round three: a page that keeps changing under an approval", () => {
+  const AT = "html:0/body:1/div:0/button:0";
+  const shifting = (turn: number, extra: Partial<Parameters<typeof element>[0]> = {}) => ({
+    ...SEND, identity: `${AT}#${String(turn).padStart(16, "0")}`, context: `Row ${["alpha", "bravo", "charlie", "delta", "echo"][turn]} Send`, around: `around-${turn}`, ...extra,
+  });
+
+  it("says so on the third card, and binds that one to the element's place, its label and the fields only", async () => {
+    const f = fixture();
+    f.state.target = shifting(0);
+    const held = f.call(click());
+    const first = await f.pending();
+    expect(first.browserCommit).not.toHaveProperty("changing");
+    f.state.target = shifting(1);
+    await f.answer("allow");
+    const second = await f.pending();
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(second.browserCommit).not.toHaveProperty("changing");
+    f.state.target = shifting(2);
+    await f.answer("allow");
+    const third = await f.pending();
+    expect(third.requestId).not.toBe(second.requestId);
+    expect(third.browserCommit).toMatchObject({ changing: true });
+    expect(third.subtitle).toMatch(/keeps changing/);
+    expect(f.state.dispatched).toEqual([]);
+    // The page changes again in the same way: this approval holds.
+    f.state.target = shifting(3);
+    await f.answer("allow");
+    await expect(held).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toHaveLength(1);
+    expect([...f.cards.values()].map((card) => card.answered)).toEqual(["unavailable", "unavailable", "allow"]);
+  });
+
+  it.each([
+    ["a field", { fields: [{ name: "Message", type: "textarea", value: "Something else" }] }],
+    ["a control the card does not list", { bound: "bbbbbbbbbbbbbbbb" }],
+    ["the label", { label: "Send to all" }],
+    ["where the element is", { identity: "html:0/body:1/div:4/button:0#0000000000000003" }],
+  ])("still voids that third approval when %s changed", async (_what, change) => {
+    const f = fixture();
+    f.state.target = shifting(0);
+    const held = f.call(click());
+    await f.pending();
+    f.state.target = shifting(1);
+    await f.answer("allow");
+    await vi.waitFor(() => expect(f.cards.size).toBe(2));
+    f.state.target = shifting(2);
+    await f.answer("allow");
+    await vi.waitFor(() => expect(f.cards.size).toBe(3));
+    const third = await f.pending();
+    f.state.target = shifting(3, change);
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(third.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
   });
 });
 

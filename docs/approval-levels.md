@@ -131,8 +131,8 @@ under Permissions.
 ### What counts in the browser
 
 Fixed rules in the server decide, not the bot and not a model. A click, an
-Enter key press, ticking or unticking a box, choosing from a list, and a
-reload can count. Filling a field, scrolling, opening a page and every kind
+Enter or Space key press, ticking or unticking a box, choosing from a list,
+and a reload can count. Filling a field, scrolling, opening a page and every kind
 of reading never ask. When the server cannot tell what a call would act on,
 it refuses the call or asks. It never lets it through unseen.
 
@@ -141,7 +141,8 @@ it refuses the call or asks. It never lets it through unseen.
 | Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
 | Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
 | Clicks one whose label pairs a word for committing or sending (place, complete, confirm, finish, make, authorize, process, or any Send word) with what money is spent on (order, purchase, payment, money, booking, reservation, donation, checkout): "Place your order", "Confirm booking", "Make a payment", "Send money", "Submit order" | Money |
-| Submits a card form | Money |
+| Clicks, or presses Enter or Space on, any button, link or menu item inside a card region (below), whatever it says; submits a form there; changes a list or tick box there that has a change handler | Money |
+| Presses Space on a focused button, link or menu item | The same as a click on it |
 | Presses Enter in a message or comment box | Send |
 | Submits a form that has a multi-line text field, whatever its button says | Send |
 | Reloads the page after one of the above went through | The same as that one |
@@ -155,17 +156,35 @@ history", "Payment methods", "Purchase history", "Check out our new
 arrivals". "Confirm" alone holds nothing. "Book a demo" is held as money,
 because "book" is on the list.
 
-A click that only puts the cursor in a text box, or ticks a checkbox, is
-never held. **Search is never a send**: a search field, anything inside a
-search region, or a form whose only text field is a search field.
+A click that only puts the cursor in a text box, or ticks a checkbox with no
+handler, is never held. **Search is never a send or a payment**: a search
+field, anything inside a search region, or a form whose only text field is a
+search field, whatever is typed in it.
 
-What counts as a card form: one with a field marked for autofill as part of a
-card (`cc-number` and the rest); or one with two signs by name, a field called
-a card number and another called a security code (CVC, CVV) or an expiry
-date; or one where any field holds a value that is itself a card number (13
-to 19 digits that pass the Luhn check). The name is read from the field's
-name, id, label and placeholder. One sign alone is not a card form: a library
-card number with a PIN, or a gift card code, is left as it is.
+**A card region** is a form that holds a card signal. For a control with no
+form it is the nearest dialog, section, article, main area or other landmark
+around the control that holds one, or the whole page when there is no such
+region around it. A header, footer, navigation bar or sidebar is a region of
+its own, so its links are not part of a card form elsewhere on the page. The
+card signals are:
+
+- a field marked for autofill as part of a card (`cc-number` and the rest);
+- two signs by name on two visible fields: one called a card number and
+  another called a security code (CVC, CVV) or an expiry date, in English,
+  Spanish, French, German or Portuguese. The name is read from the field's
+  name, id, label and placeholder;
+- a value that is a card number: 13 to 19 digits that pass the Luhn check
+  and start the way a card scheme's numbers do, or that pass the check
+  beside one of the name signs. A number that only passes the check (an
+  IMEI, a tracking number) is not one;
+- a frame the read recognises as a payment or card frame by its title, name
+  or address, or a frame of the page's own site that holds any of the above.
+
+One name sign alone is not a card region: a library card number with a PIN,
+or a gift card code, is left as it is. Inside a card region the label does
+not matter: "Continue", "Next" and "Confirm" are money there, on a button of
+any type, a link, a menu item, an element with a button role, or a plain
+element that shows a pointer cursor.
 
 What counts as submitting a form:
 
@@ -177,13 +196,26 @@ What counts as submitting a form:
   other key held (`Control+Enter`, `Enter+Alt`, in either order) is still
   Enter. Shift+Enter is a new line only in a multi-line box, and only as
   Shift and Enter alone.
-- **Enter inside a frame.** A frame of the page's own site is read like the
-  page, and Enter in it is judged the same way. A frame from another site,
-  which is how most shops take a card, cannot be read. Enter with the focus
-  inside one is refused, in any chord, and so is text typed there with a
-  line break: the bot is told to click the frame's button by its ref from a
-  snapshot, which is judged. A click or typed text aimed at the frame
-  element itself is refused too, because it lands on whatever is inside.
+- **Space** on a focused button, link or menu item, under every name the
+  engine takes for it (`Space`, a typed `" "`, `Shift+Space` and the rest).
+  It is judged as a click on whatever has the focus. In a text box it is a
+  character.
+- **Inside a frame.** A frame of the page's own site is read like the page:
+  a click on an element in it, and Enter or Space with the focus in it, are
+  judged the same way, with the frame's own form and fields. `<object>` and
+  `<embed>` are frames too. A frame from another site, which is how most
+  shops take a card, cannot be read. Enter or Space with the focus inside
+  one is refused, in any chord, and so is text typed there with a line
+  break: the bot is told to click the frame's button by its ref from a
+  snapshot. That click is money when the frame is a payment or card frame
+  and the element is a button, link or menu item, whatever it is called;
+  in any other frame it is judged by its name. A click or typed text aimed
+  at the frame element itself is refused, because it lands on whatever is
+  inside.
+- **Inside a closed part of the page.** Some components keep their inside
+  closed to scripts (a closed shadow root). Enter or Space with the focus in
+  one is refused the same way, and so is either key with the focus on an
+  element that cannot say what it is.
 - Ticking a box or choosing from a list (`agent_browser_check`,
   `agent_browser_uncheck`, `agent_browser_select`) when that control, or its
   form, carries a handler written on the element (`onchange="…submit()"`)
@@ -202,6 +234,15 @@ Closing the browser ends it. So does restarting OpenMausBot while the
 browser stays open, because the flag is kept in memory only: no state of a
 browser session is saved across a restart to keep it in.
 
+**Typed text with a line break.** `agent_browser_type` presses Enter for a
+line break. The engine types at whatever has the focus when its selector's
+element cannot take it, or when it cannot resolve the selector at all. So
+text with a line break runs only when the server has resolved the selector
+to a text field that will itself take the text, and Enter there commits
+nothing. Into anything else (a paragraph, a button, an image, a selector
+such as `text=…` or `label=…`) it is refused, and the bot is told to fill
+the field and then press Enter or click the button.
+
 **Selectors.** The server reads the same element the engine would act on.
 Where two elements share one box, the one a click at its centre lands on is
 judged; where that cannot be told, all of them are, and the card shows the
@@ -209,20 +250,31 @@ most serious. A selector with stray white space around it is tidied, and the
 tidied one is what is sent. A selector over 2,000 characters, or one that
 starts with a dash, is refused: the bot is told to use a ref from a snapshot.
 An element the engine finds but the server cannot describe (it is inside a
-frame, or has no area) is judged by the name the last snapshot gave it, and
-refused when it has none.
+frame from another site, or has no area) is judged by the name the last
+snapshot gave it, as money when the page has a payment frame it could be in,
+and refused when it has no name.
+
+**Two reads.** The server first reads only the element and its form or
+region, enough to decide. A click that is no commitment goes on at once,
+however large the page. Only for a commitment does it read the fields, the
+text around the button and the rest of what the approval is bound to.
 
 ### What the card shows
 
 The site, the button's label, the text of the row, list item, card or dialog
 the button is in (so you can tell which "Buy now" it is), and the form's
 visible fields as they are right now. On a page with no form, the filled
-fields of the dialog or region around the button stand in for the form's, or
-those of the whole page when there is no such region. The card shows the
-first twelve fields and the first 200 characters of each. It says when a
-value was shortened, with its full length, and how many fields it left out.
-Text that looks like a credential is masked, and so is a card number written
-inside other text.
+fields of the dialog or region around the button stand in for the form's.
+Fields elsewhere on the page are never listed. When the button has no form
+and no region with a field of its own, the card says how many other filled
+fields the page has, and the approval covers them all the same. The card
+shows the first twelve fields and the first 200 characters of each. It says
+when a value was shortened, with its full length, and how many fields it
+left out. Text in a value that looks like a credential is masked, and so is
+a card number written inside other text. The text around the button cannot
+be shown in part: when it names a secret (a password, a code, a key) or
+holds a card number or a credential, it is left off the card, and no picture
+is taken.
 
 **Values the card never carries.** Some values are counted inside the page
 and never leave it: the card, the notification and both logs say only how
@@ -234,13 +286,22 @@ the length and nothing else. These are:
   password, a one-time code, or anything of a card (`cc-number`, `cc-csc`,
   `cc-exp`, `cc-name` and the rest);
 - a one-line field whose name, id, label or placeholder says it is a card
-  number, a security code (CVC, CVV), a one-time or verification code, a
-  PIN, a password or a passcode. A password shown as plain text is still one;
+  number, a security code (CVC, CVV), a code of any kind (one-time,
+  verification, backup, or just "Code"), a PIN, a password or a passcode, a
+  security answer, a key, a secret or a token, a recovery or backup phrase,
+  or a national, tax or bank identifier (a social security or national
+  insurance number, a passport number, a tax number, an IBAN, an account or
+  routing number, a DNI, NIF, CPF and the like), in English or by its common
+  Spanish, French, German or Portuguese name. A password shown as plain text
+  is still one;
+- a box of many lines whose name says it is a key, a secret, a token or a
+  recovery phrase;
 - any value that is 13 to 19 digits and passes the card-number check (Luhn),
   whatever the field is called.
 
-A multi-line message is never hidden for its label, because it is what you
-are asked to approve. "PIN code" and "Pincode" are read as a postal code.
+Any other multi-line message is never hidden for its label, because it is
+what you are asked to approve. "PIN code", "Pincode", "Postal code" and
+"Promo code" are shown: they are not secrets.
 
 **The picture.** While the card is open it also shows a screenshot the
 server takes itself, removed once the card is answered. No screenshot is
@@ -251,13 +312,28 @@ masks. The card says so. A screenshot left by a server that stopped while a
 card was open is deleted the next time the server starts.
 
 **An approval covers what you were shown, and everything that goes with it.**
-It is bound to the address, to the element itself (where it sits in the page
-and its own markup), to the text around it, and to every field at full
-length, including the fields and the text the card had no room for. When you
-answer, the bot's selector is resolved again. If it now points at another
-element, or any of the rest changed, nothing is clicked, the card says the
-page changed, and a new card is raised for the page as it is. If the bot's
-request has gone away by then, nothing is clicked either.
+It is bound to the address, to the element itself (where it sits in the page,
+and the attributes that say what it does), to the text around it, and to
+every control of the form or region: each field at full length, the fields
+and the text the card had no room for, hidden fields and fields that are not
+displayed, which boxes are ticked and what each list has chosen, and the
+text inside a frame of the page's own site (a rich-text editor keeps its
+message there). When the region around a button with no form has no control
+of its own, it is bound to every control on the page. When you answer, the
+bot's selector is resolved again. If it now points at another element, or
+any of the rest changed, nothing is clicked, the card says the page changed,
+and a new card is raised for the page as it is. If the bot's request has
+gone away by then, nothing is clicked either.
+
+Some changes are not changes. An element's style, classes and state
+attributes are not part of what it is, so a button a page keeps restyling is
+still that button. In the text around it, relative times ("3s ago", "just
+now", "in 5 minutes") and clocks are evened out before comparing; any other
+number, a price included, is compared as it is. **A page that keeps changing
+by itself:** when two approvals in a row are void, the third card says the
+page keeps changing, and that approval is bound to the address, the
+element's place in the page, its label, and every control as above, but not
+to the text around it or the element's attributes.
 
 The bot's call waits up to nine minutes, the same as a connected-app send, or
 up to the configured MCP call timeout when that is shorter. Then the card
@@ -294,10 +370,11 @@ refused, not held, when its text:
 
 The bot is told to use the click and fill tools, which the rules above
 cover. A line break typed with `agent_browser_type` is a real Enter key
-press; it is refused the same way where it would send or submit. Typed text
-with a tab before the line break, or with anything after it, is refused
-wherever it is typed: a tab moves the focus, so the server cannot tell where
-that Enter would land.
+press; it is refused where it would send or submit, and wherever the server
+cannot be sure which element it lands on (see "Typed text with a line
+break" above). Typed text with a tab before the line break, or with anything
+after it, is refused wherever it is typed: a tab moves the focus, so the
+server cannot tell where that Enter would land.
 
 This is a guard against a bot acting through a script by habit. **It is not a
 wall**: it reads the script's text, so a script written to hide what it does
@@ -311,20 +388,32 @@ past it.
   press the rules read as a send, and some of those send nothing: Enter that
   only adds a line in a notes box, or a "Reply" button that only opens a box
   to type in. The daily number is used up sooner than the sends alone would.
-- Space on a focused button clicks it, and is not checked.
 - Inside an embedded frame from another site, such as a payment or comment
-  widget, a click is judged by the name the last snapshot gave the element.
-  The card shows no fields and no picture, and the approval is bound to that
-  name and the address, not to the element itself. Enter there is refused,
-  not judged: the bot has to click the frame's button instead. Space on a
-  focused button inside a frame is not checked, as anywhere else.
-- A card form with no autofill hints and only one sign (a field called "Card
-  number" and nothing called a security code or an expiry, with no card
-  number typed in yet) is not read as a card form. A library or membership
-  card form that also asks for an expiry date is.
+  widget, a click is judged by the name the last snapshot gave the element,
+  and as money when the frame is recognised as a payment or card frame. A
+  payment frame whose title, name and address say nothing of payment is not
+  recognised. The card shows no fields and no picture, and the approval is
+  bound to that name and the address, not to the element itself. Enter and
+  Space there are refused, not judged: the bot has to click the frame's
+  button instead. The same holds for a closed part of the page, and for a
+  focused custom element that does not say what it is: the refusal there
+  can be a false alarm.
+- A card region with no autofill hints and only one sign (a field called
+  "Card number" and nothing called a security code or an expiry, with no card
+  number typed in yet) is not read as one. A library or membership card form
+  that also asks for an expiry date is.
+- A button with no form is judged by the nearest region around it. One that
+  sits in a different section from the card fields it pays with is judged by
+  its label alone. On a page with no regions at all, every button outside a
+  form counts as inside the page's card region when the page holds a card
+  signal, so an unrelated button there asks too.
+- A typed space is not judged: the engine inserts it as text, with no key
+  press. Only a Space key press is.
 - A one-line box outside any form that sends on Enter is not recognised.
-- A page whose text around the button keeps changing by itself (a countdown
-  in the same row) voids every approval: each Allow raises a new card.
+- A number that changes in the text around the button (a price, a count)
+  voids an approval like any other change. On a page where that keeps
+  happening, two cards are void before the third one stops minding the text
+  around the button.
 - A secret in a field that nothing marks as one (no type, no autofill hint,
   no telling name, not a card number) is shown like any other value. A frame
   from another site that holds one, and does not name a payment or a

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { browserPageReader, pageReadScript, parsePageTarget, type EngineQuery } from "./browser-commit-page.ts";
+import { browserPageReader, pageReadScript, parsePageDetail, parsePageTarget, type EngineQuery } from "./browser-commit-page.ts";
 import { classifyCommit, type CommitTarget } from "../shared/browser-commit.ts";
 
 /** The server's types carry no DOM. This is all of happy-dom the test touches. */
@@ -24,8 +24,22 @@ const PAGE = `
   <label id="news"><input id="news-box" type="checkbox"> Subscribe to the newsletter</label>
   <a id="share" href="#share">Share</a>`;
 
-/** Run the fixed script the way the engine's eval does: as one expression. */
-const run = (input: Parameters<typeof pageReadScript>[0]) => new Function(`return ${pageReadScript(input)}`)() as Record<string, unknown>;
+/** Run one of the two fixed scripts the way the engine's eval does: as one expression. */
+type Asked = Omit<Parameters<typeof pageReadScript>[0], "detail">;
+const script = (input: Parameters<typeof pageReadScript>[0]) => new Function(`return ${pageReadScript(input)}`)() as Record<string, unknown>;
+/** The first read: what the call would act on. */
+const light = (input: Asked) => script({ ...input, detail: false });
+/** The second read: the evidence, one part for each element described. */
+const detail = (input: Asked) => script({ ...input, detail: true }) as { found: boolean; parts?: Array<Record<string, unknown>>; secrets?: boolean };
+/** Both reads as one description: each element with its own evidence. */
+const run = (input: Asked) => {
+  const target = light(input);
+  if (target.found !== true) return target;
+  const evidence = detail(input);
+  const [first, ...rest] = evidence.parts ?? [];
+  const also = (target.also as Array<Record<string, unknown>> | undefined)?.map((each, index) => ({ ...each, ...rest[index] }));
+  return { ...target, ...first, secrets: evidence.secrets, ...(also ? { also } : {}) } as Record<string, unknown>;
+};
 /** happy-dom lays nothing out, so the element the engine "measured" gets a
  * box of its own. The read asks the prototype, never the element (a page
  * can shadow an element's own properties), so the stand-in sits there too. */
@@ -58,9 +72,11 @@ describe("the fixed page read", () => {
     expect(click("send")).toEqual({
       // The page has a password field and a card field elsewhere on it.
       found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true, frames: false,
-      fields: [{ name: "Message", type: "textarea", value: "Hello there" }],
+      button: true, changes: false, typable: false, payFrame: false,
+      fields: [{ name: "Message", type: "textarea", value: "Hello there" }], others: 0,
       // The form's own fields say what it is; there is nothing around it to add.
       identity: expect.stringMatching(/^html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/), context: "",
+      bound: expect.stringMatching(/^[0-9a-f]{16}$/), around: expect.stringMatching(/^[0-9a-f]{16}$/),
     });
   });
 
@@ -89,41 +105,44 @@ describe("the fixed page read", () => {
   });
 
   it("describes controls outside any form by their own label and role", () => {
-    expect(click("icon")).toMatchObject({ found: true, label: "Send message", role: "button", submits: false, multiline: false, card: false, search: false });
+    // With no form and no region around it, the page is its region, and this page has a card form.
+    expect(click("icon")).toMatchObject({ found: true, label: "Send message", role: "button", submits: false, multiline: false, card: true, search: false });
+    expect(clickIn(PAGE.replace(/<form id="pay-form">.*?<\/form>/s, ""), "icon")).toMatchObject({ label: "Send message", card: false });
     expect(click("share")).toMatchObject({ label: "Share", role: "link", submits: false });
     expect(click("news")).toMatchObject({ label: "Subscribe to the newsletter", role: "checkbox" });
   });
 
   it("says a click into a text box lands in a text box", () => {
     expect(click("msg")).toMatchObject({ label: "Message", role: "textbox", box: "multiline", submits: false });
-    expect(click("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, card: false, search: false });
+    expect(click("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, button: false, search: false });
   });
 
-  // The test page has no dialog or region, so "around it" is the page.
-  const AROUND = [
-    { name: "Message", type: "textarea", value: "Hello there" },
-    { name: "Username", type: "text", value: "omkar" },
-    { name: "Password", type: "password", length: 14 },
-    { name: "Search", type: "search", value: "shoes" },
-    { name: "Card number", type: "card", length: 16 },
-    { name: "Expiry", type: "card", length: 5 },
-  ];
-
-  it("shows a box outside any form first, then every other filled field around it", () => {
-    expect(click("composer").fields).toEqual([{ name: "Write a message", type: "contenteditable", value: "draft text" }, ...AROUND]);
+  // The test page has no dialog or region, so "around it" is the page: its
+  // six other filled fields (a message, a username, a password, a search, a
+  // card number and an expiry) are the rest of the page. They are counted,
+  // and bound, and never listed.
+  it("shows a box outside any form, and counts the filled fields elsewhere on the page instead of listing them", () => {
+    expect(click("composer")).toMatchObject({ fields: [{ name: "Write a message", type: "contenteditable", value: "draft text" }], others: 6 });
   });
 
-  it("shows the filled fields around a button that has no form", () => {
-    expect(click("icon").fields).toEqual([...AROUND, { name: "Write a message", type: "contenteditable", value: "draft text" }]);
+  it("lists nothing for a button with no form and no region, and counts every filled field on the page", () => {
+    const read = click("icon");
+    expect(read).toMatchObject({ fields: [], others: 7 });
+    expect(JSON.stringify(read)).not.toMatch(/omkar|shoes|Hello there|draft text/);
+    // What it counts it is bound to: a change to any of them is a change.
+    page.body.innerHTML = PAGE.replace('value="omkar"', 'value="someone-else"');
+    expect(run({ box: boxOf("icon"), enter: false }).bound).not.toBe(read.bound);
+    page.body.innerHTML = PAGE;
+    expect(run({ box: boxOf("icon"), enter: false }).bound).toBe(read.bound);
   });
 
   it("answers found: false for a box no element has", () => {
     page.body.innerHTML = PAGE;
-    expect(run({ box: { x: 900, y: 900, width: 5, height: 5 }, enter: false })).toEqual({ found: false });
+    expect(run({ box: { x: 900, y: 900, width: 5, height: 5 }, enter: false })).toEqual({ found: false, frames: false, payFrame: false });
   });
 
   it("reads Enter in a message box as typed there", () => {
-    expect(focus("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, search: false, card: false });
+    expect(focus("composer")).toMatchObject({ label: "Write a message", role: "textbox", box: "multiline", submits: false, multiline: true, search: false, button: false });
     expect(focus("msg")).toMatchObject({ label: "Message", box: "multiline", submits: false });
   });
 
@@ -332,15 +351,16 @@ describe("a button with no form around it", () => {
     ]);
   });
 
-  it("falls back to the whole page when there is no dialog or region", () => {
-    const read = clickIn(DM.replace('role="dialog"', ""), "send");
-    expect(read.fields).toEqual([
-      { name: "Search", type: "search", value: "invoices" },
-      { name: "To", type: "text", value: "ada@example.com" },
-      { name: "Message body", type: "contenteditable", value: "Lunch at one?" },
-    ]);
+  it("counts the fields of the whole page when there is no dialog or region, and is bound to each of them", () => {
+    const plain = DM.replace('role="dialog"', "").replace("<nav>", "<div>").replace("</nav>", "</div>");
+    const read = clickIn(plain, "send");
+    // Search, To and the message body: filled and shown. Not the empty Cc, the hidden token or the field not displayed.
+    expect(read).toMatchObject({ fields: [], others: 3 });
     // What is around a button never decides what the button is.
     expect(read).toMatchObject({ submits: false, multiline: false, search: false });
+    for (const [from, to] of [["invoices", "receipts"], ["ada@example.com", "eve@example.com"], ["Lunch at one?", "Lunch at two?"], ['value="token"', 'value="other"'], ['value="stale"', 'value="fresh"']]) {
+      expect(clickIn(plain.replace(from!, to!), "send").bound).not.toBe(read.bound);
+    }
   });
 
   it("does the same for Enter in a box there, with the box itself first", () => {
@@ -417,11 +437,12 @@ describe("a page that must not be pictured", () => {
   });
 
   it("looks inside a frame it can read, and takes a payment or sign-in frame it cannot read to hold one", () => {
-    // A <span> stands in for the frame, so happy-dom loads nothing: the read
-    // knows a frame by its tag name and its contentDocument, which it asks
-    // the prototype for.
+    // An <object> stands in for the frame: happy-dom loads nothing for one,
+    // and to the read it is a frame like any other. It says "IFRAME" here,
+    // and what is inside it is whatever sits behind its contentDocument,
+    // which the read asks the prototype for.
     const framed = (attrs: string, inner: string | null) => {
-      page.body.innerHTML = `${SEND}<span id="frame" ${attrs}></span>`;
+      page.body.innerHTML = `${SEND}<object id="frame" ${attrs}></object>`;
       const frame = page.getElementById("frame")!;
       const proto = Object.getPrototypeOf(frame) as object;
       const tagName = Object.getOwnPropertyDescriptor(dom.Element!.prototype, "tagName")!.get!;
@@ -440,31 +461,31 @@ describe("a page that must not be pictured", () => {
 });
 
 describe("a frame", () => {
-  /** A <span> stands in for the frame, as above: the read knows a frame by
-   * its tag name and its contentDocument. `inner` is the frame's own page,
-   * or null for a frame from another site, which nothing here can read. */
-  const withFrame = <T,>(html: string, inner: { html: string; focus?: string } | null, body: (frame: PageElement) => T): T => {
+  /** An <object> stands in for the frame, as above, under the tag name
+   * given. `inner` is the frame's own page, or null for a frame from
+   * another site, which nothing here can read. */
+  type Doc = { getElementById(id: string): object | null };
+  const withFrame = <T,>(html: string, inner: { html: string; focus?: string } | null, body: (frame: PageElement, inside: Doc | null) => T, tag = "IFRAME"): T => {
     page.body.innerHTML = html;
     const frame = page.getElementById("frame")!;
     const proto = Object.getPrototypeOf(frame) as object;
     const tagName = Object.getOwnPropertyDescriptor(dom.Element!.prototype, "tagName")!.get!;
-    type Doc = { getElementById(id: string): unknown };
     const doc = inner === null ? null : new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): Doc } }).DOMParser().parseFromString(inner.html, "text/html");
     const focused = doc && inner?.focus ? doc.getElementById(inner.focus) : null;
     const docProto = Object.getPrototypeOf(page) as object;
     const active = (() => { for (let at: object | null = docProto; at; at = Object.getPrototypeOf(at)) { const found = Object.getOwnPropertyDescriptor(at, "activeElement"); if (found) return found.get!; } throw new Error("no activeElement"); })();
-    return patched(proto, "tagName", { get(this: object) { return this === frame ? "IFRAME" : tagName.call(this); } }, () =>
+    return patched(proto, "tagName", { get(this: object) { return this === frame ? tag : tagName.call(this); } }, () =>
       patched(proto, "contentDocument", { get(this: object) { return this === frame ? doc : null; } }, () =>
-        patched(docProto, "activeElement", { get(this: object) { return this === doc ? focused : active.call(this); } }, () => body(frame))));
+        patched(docProto, "activeElement", { get(this: object) { return this === doc ? focused : active.call(this); } }, () => body(frame, doc))));
   };
-  const SHOP = `<input id="before" aria-label="Email" value="a@b.c"><span id="frame" tabindex="0" title="Secure payment"></span><button id="help" type="button">Help</button>`;
+  const SHOP = `<input id="before" aria-label="Email" value="a@b.c"><object id="frame" tabindex="0" title="Secure payment"></object><button id="help" type="button">Help</button>`;
   const PAY = `<body><form id="pay"><input id="card" aria-label="Card number" autocomplete="cc-number" value="4242424242424242"><button id="go">Pay</button></form><input id="lone" aria-label="Coupon"></body>`;
 
   // Enter in a payment frame's card field pays (agent-browser 0.37.0, a frame
   // from another origin). The page's own script cannot look into that frame,
   // so it must not answer as if the frame element were the target.
   it("says framed, not a description of the frame element, when the focus is inside a frame it cannot read", () => {
-    expect(withFrame(SHOP, null, (frame) => { frame.focus(); return run({ box: null, enter: true }); })).toEqual({ found: false, framed: true });
+    expect(withFrame(SHOP, null, (frame) => { frame.focus(); return run({ box: null, enter: true }); })).toEqual({ found: false, framed: true, frames: true, payFrame: true });
   });
 
   it("reads Enter inside a frame it can read as it would anywhere: the form's submit, the card field, the frame it is in", () => {
@@ -489,18 +510,19 @@ describe("a frame", () => {
   // A click on the frame element lands on whatever is inside it at that
   // point, and text typed "into" it goes to whatever has the focus inside.
   it.each([["a click", false], ["typed text", true]])("says framed when the selector of %s is the frame itself, readable or not", (_what, enter) => {
+    // A frame called "Secure payment" that cannot be read is taken for a payment frame.
     for (const inner of [null, { html: PAY }]) {
-      expect(withFrame(SHOP, inner, () => run({ box: boxOf("frame"), enter }))).toEqual({ found: false, framed: true });
+      expect(withFrame(SHOP, inner, () => run({ box: boxOf("frame"), enter }))).toEqual({ found: false, framed: true, frames: true, payFrame: inner === null });
     }
   });
 
   it("says framed when a click on a wrapper would land on the frame inside it", () => {
-    const html = `<div id="wrap"><span id="frame" tabindex="0" title="Secure payment"></span></div>`;
+    const html = `<div id="wrap"><object id="frame" tabindex="0" title="Secure payment"></object></div>`;
     const read = withFrame(html, null, (frame) => {
       const box = boxOf("wrap", { x: 10, y: 10, width: 300, height: 200 });
       return patched(Object.getPrototypeOf(page) as object, "elementFromPoint", { value: () => frame }, () => run({ box, enter: false }));
     });
-    expect(read).toEqual({ found: false, framed: true });
+    expect(read).toEqual({ found: false, framed: true, frames: true, payFrame: true });
   });
 
   it("says whether the page has a frame at all, so a caller knows a box can be a frame's own", () => {
@@ -568,13 +590,406 @@ describe("a long form", () => {
   });
 });
 
+describe("round three: a frame the read can look into, clicked", () => {
+  const SHOP = `<input id="before" aria-label="Email" value="a@b.c"><object id="frame" tabindex="0" title="Billing"></object><button id="help" type="button">Help</button>`;
+  const PAY = `<body><form id="pay"><input id="card" aria-label="Card number" autocomplete="cc-number" value="4242424242424242"><button id="go">Continue</button></form></body>`;
+  const tagName = Object.getOwnPropertyDescriptor(dom.Element!.prototype, "tagName")!.get!;
+  type Doc = { getElementById(id: string): object | null };
+  const inFrame = <T,>(html: string, inner: string | null, body: (inside: Doc | null) => T, tag = "IFRAME"): T => {
+    page.body.innerHTML = html;
+    const frame = page.getElementById("frame")!;
+    const proto = Object.getPrototypeOf(frame) as object;
+    const doc = inner === null ? null : new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): Doc } }).DOMParser().parseFromString(inner, "text/html");
+    return patched(proto, "tagName", { get(this: object) { return this === frame ? tag : tagName.call(this); } }, () =>
+      patched(proto, "contentDocument", { get(this: object) { return this === frame ? doc : null; } }, () => body(doc)));
+  };
+  const INSIDE = { x: 8, y: 30, width: 61, height: 21 };
+
+  // The engine measures an element inside a frame from the frame's own
+  // corner (agent-browser 0.37.0), so its box is looked for in there too.
+  it("describes the element inside the frame: its form, its card fields, and which frame", () => {
+    const read = inFrame(SHOP, PAY, (inside) => { boxes.set(inside!.getElementById("go")!, INSIDE); return run({ box: INSIDE, enter: false }); });
+    expect(read).toMatchObject({ found: true, label: "Continue", role: "button", submits: true, card: true, frames: true });
+    expect(read.fields).toEqual([{ name: "Card number", type: "card", length: 16 }]);
+    expect(read.identity).toMatch(/\/iframe:\d+#[0-9a-f]{16}>html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/);
+  });
+
+  it("describes both when an element out here has the same box as one in there", () => {
+    const read = inFrame(SHOP, PAY, (inside) => { boxes.set(inside!.getElementById("go")!, INSIDE); boxOf("help", INSIDE); return run({ box: INSIDE, enter: false }); }) as { label: string; also?: Array<{ label: string; card: boolean }> };
+    expect([read.label, ...(read.also ?? []).map((other) => other.label)].sort()).toEqual(["Continue", "Help"]);
+  });
+
+  it("says nothing was seen, and that the page has a payment frame, for a box that is only inside a frame it cannot read", () => {
+    const pay = SHOP.replace('title="Billing"', 'title="Secure card payment"');
+    expect(inFrame(pay, null, () => light({ box: INSIDE, enter: false }))).toEqual({ found: false, frames: true, payFrame: true });
+    expect(inFrame(SHOP, null, () => light({ box: INSIDE, enter: false }))).toEqual({ found: false, frames: true, payFrame: false });
+  });
+
+  it.each(["IFRAME", "FRAME", "OBJECT", "EMBED"])("treats %s as a frame: the focus inside one it cannot read is framed, a box inside one it can is found", (tag) => {
+    expect(inFrame(SHOP, null, () => { page.getElementById("frame")!.focus(); return light({ box: null, enter: true }); }, tag)).toMatchObject({ found: false, framed: true });
+    expect(inFrame(SHOP, PAY, (inside) => { boxes.set(inside!.getElementById("go")!, INSIDE); return light({ box: INSIDE, enter: false }); }, tag)).toMatchObject({ found: true, label: "Continue", card: true });
+  });
+});
+
+describe("round three: text typed with a line break", () => {
+  // The engine focuses the selector's element and types. When that element
+  // cannot take the focus the keys go to whatever has it (agent-browser
+  // 0.37.0: typed at a paragraph, the Enter submitted the form in focus).
+  const HTML = `<form id="f"><label id="label" for="to">To</label><input id="to"><textarea id="body" aria-label="Message"></textarea><input id="off" aria-label="Off" disabled>
+    <select id="plan" aria-label="Plan"><option>Free</option></select><button id="send">Send</button></form>
+    <p id="para">Read this first</p><img id="logo" alt="Logo"><div id="edit" contenteditable="true" aria-label="Note"><p id="line">one</p></div>`;
+  const typed = (id: string) => { page.body.innerHTML = HTML; return light({ box: boxOf(id), enter: true }); };
+
+  it.each(["to", "body", "edit"])("says #%s is a text field that will itself take the text", (id) => {
+    expect(typed(id)).toMatchObject({ found: true, typable: true });
+  });
+
+  it.each(["send", "para", "logo", "label", "off", "plan", "line"])("says #%s is not", (id) => {
+    expect(typed(id)).toMatchObject({ found: true, typable: false });
+  });
+
+  it("says so only of a selector's element read for typing", () => {
+    page.body.innerHTML = HTML;
+    expect(light({ box: boxOf("to"), enter: false })).toMatchObject({ found: true, typable: false });
+    page.getElementById("to")!.focus();
+    expect(light({ box: null, enter: true })).toMatchObject({ found: true, typable: false });
+  });
+});
+
+describe("round three: a card region", () => {
+  const CARD = `<input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc">`;
+  const classed = (read: Record<string, unknown>, via: "click" | "enter" = "click") => classifyCommit({ via, ...(read as unknown as Omit<CommitTarget, "via">) });
+
+  it.each([
+    ["a button that submits nothing", `<button id="go" type="button">Continue</button>`],
+    ["an input button", `<input id="go" type="button" value="Next">`],
+    ["a div with the button role", `<div id="go" role="button" tabindex="0">Next</div>`],
+    ["a link", `<a id="go" href="#next">Next step</a>`],
+    ["a menu item", `<div id="go" role="menuitem" tabindex="0">Confirm</div>`],
+    ["a plain element with a pointer for a cursor, made focusable", `<div id="go" tabindex="0" style="cursor: pointer">Continue</div>`],
+  ])("calls %s in a card form money, by click, Enter and Space, whatever it says", (_what, control) => {
+    const html = `<form id="f">${CARD}${control}</form>`;
+    const read = clickIn(html, "go");
+    expect(read).toMatchObject({ card: true, button: true });
+    expect(classed(read)).toBe("money");
+    // With the focus on it: Enter, and Space (read as a click at the focus).
+    expect(classed(focusIn(html, "go"), "enter")).toBe("money");
+    page.body.innerHTML = html;
+    page.getElementById("go")!.focus();
+    expect(classed(light({ box: null, enter: false }))).toBe("money");
+    // The same control beside fields that are no card form is nothing.
+    expect(classed(clickIn(`<form id="f"><input aria-label="Name">${control}</form>`, "go"))).toBeNull();
+  });
+
+  it.each([
+    ["a list", `<select id="go" aria-label="Plan" onchange="choose(this.value)"><option>Monthly</option></select>`, `<select id="go" aria-label="Plan"><option>Monthly</option></select>`],
+    ["a tick box", `<input id="go" type="checkbox" aria-label="Save this card" oninput="save(this.checked)">`, `<input id="go" type="checkbox" aria-label="Save this card">`],
+  ])("calls %s with a change handler in a card form money, and one with none nothing", (_what, handled, bare) => {
+    const read = clickIn(`<form id="f">${CARD}${handled}<button>Pay</button></form>`, "go");
+    expect(read).toMatchObject({ card: true, changes: true, button: false });
+    expect(classed(read)).toBe("money");
+    const quiet = clickIn(`<form id="f">${CARD}${bare}<button>Pay</button></form>`, "go");
+    expect(quiet).toMatchObject({ card: true, changes: false });
+    expect(classed(quiet)).toBeNull();
+  });
+
+  it("calls a plain element money there only when it shows a pointer: text is not a button", () => {
+    const html = (style: string) => `<form id="f">${CARD}<div id="go" ${style}>Continue</div><p id="note">Your card is charged when the order ships.</p></form>`;
+    expect(classed(clickIn(html('style="cursor: pointer"'), "go"))).toBe("money");
+    expect(clickIn(html(""), "go")).toMatchObject({ card: true, button: false });
+    expect(classed(clickIn(html(""), "go"))).toBeNull();
+    expect(classed(clickIn(html(""), "note"))).toBeNull();
+  });
+
+  it("still lets a click into one of its text fields through", () => {
+    const read = clickIn(`<form id="f"><input id="num" aria-label="Card number" autocomplete="cc-number"><button type="button">Continue</button></form>`, "num");
+    expect(read).toMatchObject({ card: true, button: false, box: "single" });
+    expect(classed(read)).toBeNull();
+  });
+
+  const BUTTON = `<div id="go" role="button" tabindex="0">Continue</div>`;
+  it.each([
+    ["the dialog around it", `<div role="dialog">${CARD}${BUTTON}</div>`, true],
+    ["the section around it", `<section>${CARD}<div>${BUTTON}</div></section>`, true],
+    ["the page, when it has no region around it", `<div>${CARD}</div><div>${BUTTON}</div>`, true],
+    ["a navigation bar beside the card fields", `<main>${CARD}</main><nav>${BUTTON}</nav>`, false],
+    ["a footer beside the card fields", `<section>${CARD}</section><footer>${BUTTON}</footer>`, false],
+    ["its own form, which has no card signal, beside a card form", `<form>${CARD}</form><form><input aria-label="Email">${BUTTON}</form>`, false],
+  ])("with no form of its own, takes %s for its region", (_what, html, card) => {
+    const read = clickIn(html, "go");
+    expect(read).toMatchObject({ card });
+    expect(classed(read)).toBe(card ? "money" : null);
+  });
+
+  it("counts a frame it recognises as a payment or card frame, and a frame it can read that holds card fields", () => {
+    const framed = (attrs: string, inner: string | null) => {
+      page.body.innerHTML = `<form id="f"><input aria-label="Email"><object id="frame" ${attrs}></object><button id="go" type="button">Continue</button></form>`;
+      const frame = page.getElementById("frame")!;
+      const proto = Object.getPrototypeOf(frame) as object;
+      const doc = inner === null ? null : new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): unknown } }).DOMParser().parseFromString(inner, "text/html");
+      return patched(proto, "contentDocument", { get(this: object) { return this === frame ? doc : null; } }, () => light({ box: boxOf("go"), enter: false }).card);
+    };
+    expect(framed('title="Secure card number input frame" src="https://js.stripe.com/v3/elements-inner-card.html"', null)).toBe(true);
+    expect(framed('title="Zahlung"', null)).toBe(true);
+    expect(framed('title="Video player" src="https://videos.example/embed/7"', null)).toBe(false);
+    expect(framed('title="Secure card number input frame" style="display:none"', null)).toBe(false);
+    expect(framed('title="Billing"', `<body>${CARD}</body>`)).toBe(true);
+    expect(framed('title="Billing"', `<body><input aria-label="Comment"></body>`)).toBe(false);
+  });
+});
+
+describe("round three: a number that passes the checksum", () => {
+  const classOf = (html: string) => classifyCommit({ via: "click", ...(clickIn(html, "go") as unknown as Omit<CommitTarget, "via">) });
+  const form = (fields: string, button = "Check") => `<form id="f">${fields}<button id="go">${button}</button></form>`;
+
+  it.each([
+    ["an IMEI", form(`<input aria-label="IMEI" value="356938035643809">`)],
+    ["a fifteen-digit serial number", form(`<input aria-label="Serial number" value="490154203237518">`)],
+    ["a tracking number", form(`<input aria-label="Tracking number" value="79927398713008">`, "Track")],
+    ["a SIM's number", form(`<input aria-label="ICCID" value="8910042348144559361">`)],
+  ])("is not a card number in %s lookup", (_what, html) => {
+    expect(classOf(html)).toBeNull();
+  });
+
+  it.each([
+    ["with a card scheme's first digits", form(`<input aria-label="Reference" value="4242 4242 4242 4242">`)],
+    ["with another scheme's first digits and length", form(`<input aria-label="Reference" value="378282246310005">`)],
+    ["beside a second card signal in the same form", form(`<input aria-label="Number" value="356938035643809"><input aria-label="CVC">`)],
+  ])("is a card number %s", (_what, html) => {
+    expect(classOf(html)).toBe("money");
+  });
+
+  it("never makes a search form money, whatever is typed in it", () => {
+    expect(classOf(`<form id="f" role="search"><input type="search" aria-label="Search" value="4242424242424242"><button id="go">Search</button></form>`)).toBeNull();
+    expect(classOf(`<form id="f"><input type="search" aria-label="Find an order" value="4242 4242 4242 4242"><button id="go">Go</button></form>`)).toBeNull();
+  });
+});
+
+describe("round three: a closed part of the page", () => {
+  const docProto = Object.getPrototypeOf(page) as object;
+  /** In a browser the focus inside a closed shadow root shows as its host. */
+  const focusedOn = (html: string, id: string, enter = true) => {
+    page.body.innerHTML = html;
+    const host = page.getElementById(id)!;
+    return patched(docProto, "activeElement", { get: () => host }, () => light({ box: null, enter }));
+  };
+
+  it.each([
+    ["a custom element with no root it can open", `<closed-pay id="host"></closed-pay>`],
+    ["an element that cannot take the focus by itself", `<div id="host">Card details</div>`],
+    ["a custom element that can take the focus but says nothing of what it is", `<pay-box id="host" tabindex="0"></pay-box>`],
+  ])("says sealed when the focus is on %s", (_what, html) => {
+    expect(focusedOn(html, "host")).toEqual({ found: false, framed: true, sealed: true, frames: false, payFrame: false });
+    expect(focusedOn(html, "host", false)).toMatchObject({ found: false, sealed: true });
+  });
+
+  it.each([
+    ["a button", `<button id="host" type="button">More</button>`, "More"],
+    ["a custom element that says it is a button", `<fancy-button id="host" role="button" tabindex="0" aria-label="More"></fancy-button>`, "More"],
+    ["an element made focusable", `<div id="host" tabindex="0" aria-label="Panel"></div>`, "Panel"],
+  ])("describes the focus on %s as it is", (_what, html, label) => {
+    expect(focusedOn(html, "host")).toMatchObject({ found: true, label });
+  });
+});
+
+describe("round three: what an approval is bound to", () => {
+  const FORM = `<form id="f"><input aria-label="To" value="ada@example.com"><input type="hidden" name="amount" value="10">
+    <input name="memo" aria-label="Memo" value="rent" style="display:none"><label><input id="tick" type="checkbox" name="urgent"> Urgent</label>
+    <label><input type="radio" name="speed" value="slow" checked> Slow</label><label><input id="fast" type="radio" name="speed" value="fast"> Fast</label>
+    <select name="account" aria-label="From"><option value="a" selected>Savings</option><option value="b">Current</option></select>
+    <textarea aria-label="Message">Hello</textarea><button id="send">Send</button></form>`;
+  const bound = (html: string) => clickIn(html, "send").bound;
+
+  it("is the same for the same page, and another for another salt", () => {
+    expect(bound(FORM)).toBe(bound(FORM));
+    page.body.innerHTML = FORM;
+    const salted = (salt: string) => detail({ box: boxOf("send"), enter: false, salt }).parts![0]!.bound;
+    expect(salted("aaaa")).toBe(salted("aaaa"));
+    expect(salted("aaaa")).not.toBe(salted("bbbb"));
+  });
+
+  it.each([
+    ["a hidden field", 'name="amount" value="10"', 'name="amount" value="1000"'],
+    ["a field that is not displayed", 'value="rent"', 'value="everything"'],
+    ["a tick box", 'name="urgent"', 'name="urgent" checked'],
+    ["which radio button is chosen", 'value="fast"', 'value="fast" checked'],
+    ["a list's choice", 'value="b"', 'value="b" selected'],
+    ["a shown field", "ada@example.com", "eve@example.com"],
+    ["the message", ">Hello<", ">Hello, and goodbye<"],
+  ])("covers %s of the form", (_what, from, to) => {
+    expect(FORM).toContain(from);
+    expect(bound(FORM.replace(from, to))).not.toBe(bound(FORM));
+  });
+
+  it("covers every control of the region around a button with no form, shown or not", () => {
+    const region = (extra: string) => `<section><input aria-label="Note" value="See you soon">${extra}<div id="send" role="button" tabindex="0">Send</div></section><input aria-label="Elsewhere" value="x">`;
+    const first = clickIn(region(`<input type="hidden" name="to" value="ada">`), "send");
+    expect(first).toMatchObject({ fields: [{ name: "Note", type: "text", value: "See you soon" }], others: 0 });
+    expect(clickIn(region(`<input type="hidden" name="to" value="eve">`), "send").bound).not.toBe(first.bound);
+    expect(clickIn(region(`<input type="hidden" name="to" value="ada">`).replace('value="x"', 'value="y"'), "send").bound).toBe(first.bound);
+  });
+
+  it("covers every control on the page when the region has none of its own", () => {
+    const html = (to: string) => `<input type="hidden" name="to" value="${to}"><input aria-label="Amount" value="10"><section><div id="send" role="button" tabindex="0">Send</div></section>`;
+    const first = clickIn(html("ada"), "send");
+    expect(first).toMatchObject({ fields: [], others: 1 });
+    expect(clickIn(html("eve"), "send").bound).not.toBe(first.bound);
+  });
+
+  it("covers the text in a frame it can read: a rich-text editor keeps its message there", () => {
+    const editor = (words: string) => {
+      page.body.innerHTML = `<form id="f"><object id="frame" title="Rich text area"></object><button id="send">Send</button></form>`;
+      const frame = page.getElementById("frame")!;
+      const doc = new (globalThis as unknown as { DOMParser: new () => { parseFromString(html: string, type: string): unknown } }).DOMParser().parseFromString(`<body contenteditable="true"><p>${words}</p></body>`, "text/html");
+      return patched(Object.getPrototypeOf(frame) as object, "contentDocument", { get(this: object) { return this === frame ? doc : null; } }, () => run({ box: boxOf("send"), enter: false }).bound);
+    };
+    expect(editor("Lunch at one?")).toBe(editor("Lunch at one?"));
+    expect(editor("Lunch at two?")).not.toBe(editor("Lunch at one?"));
+  });
+});
+
+describe("round three: names that hide a value", () => {
+  const read = (fields: string) => clickIn(`<form id="f">${fields}<button id="go">Save</button></form>`, "go");
+  const field = (label: string, value: string, attrs = "") => `<input aria-label="${label}" value="${value}" ${attrs}>`;
+
+  it.each([
+    ["a code", "Code", "731942", "code"],
+    ["a verification code", "Verification code", "731942", "code"],
+    ["a backup code", "Backup code", "8842-1190", "code"],
+    ["a confirmation code, in German", "Bestätigungscode", "731942", "code"],
+    ["a code, in Spanish", "Código", "731942", "code"],
+    ["a security answer", "Security answer", "Fluffy the cat", "secret"],
+    ["an answer, in French", "Réponse", "Minou", "secret"],
+    ["an answer, in German", "Antwort", "Mieze", "secret"],
+    ["a secret key", "Secret key", "sk_live_abcdefg12345", "secret"],
+    ["an API key", "API key", "abcd-1234", "secret"],
+    ["a key, in Spanish", "Clave", "abcd-1234", "secret"],
+    ["a key, in Portuguese", "Chave", "abcd-1234", "secret"],
+    ["a recovery phrase", "Recovery phrase", "apple brave candle", "secret"],
+    ["a backup phrase", "Backup phrase", "apple brave candle", "secret"],
+    ["a social security number", "Social security number", "078-05-1120", "id"],
+    ["a national insurance number", "National Insurance number", "QQ123456C", "id"],
+    ["a tax number", "Tax number", "12/345/67890", "id"],
+    ["a tax number, in German", "Steuernummer", "12/345/67890", "id"],
+    ["an IBAN", "IBAN", "DE89370400440532013000", "id"],
+    ["an account number", "Account number", "00123456", "id"],
+    ["a DNI", "DNI", "12345678Z", "id"],
+    ["a CPF", "CPF", "123.456.789-09", "id"],
+    ["a passport number", "Passport number", "X1234567", "id"],
+    ["a password, in Spanish", "Contraseña", "mi-secreto-123", "password"],
+    ["a password, in French", "Mot de passe", "mon-secret-123", "password"],
+    ["a password, in German", "Kennwort", "mein-geheimnis", "password"],
+    ["a password, in Portuguese", "Senha", "meu-segredo", "password"],
+    ["a card number, in Spanish", "Número de tarjeta", "4242 42", "card"],
+    ["a card number, in French", "Numéro de carte", "4242 42", "card"],
+    ["a card number, in German", "Kartennummer", "4242 42", "card"],
+  ])("reads only the length of %s", (_what, label, value, type) => {
+    const got = read(field(label, value));
+    expect(got.fields).toEqual([{ name: label, type, length: value.length }]);
+    expect(JSON.stringify(got)).not.toContain(value);
+    expect(got.secrets).toBe(true);
+  });
+
+  it.each([
+    ["a postal code", "Postal code", "413102"],
+    ["a postal code, in French", "Code postal", "75001"],
+    ["a promo code", "Promo code", "SAVE10"],
+    ["a country code", "Country code", "+91"],
+    ["a keyword", "Keywords", "browser, guard"],
+    ["a city", "City", "Baramati"],
+  ])("still shows %s", (_what, label, value) => {
+    expect(read(field(label, value)).fields).toEqual([{ name: label, type: "text", value }]);
+  });
+
+  it("hides a box of many lines only when its name is a key or a phrase", () => {
+    const boxes = read(`<textarea aria-label="Recovery phrase">apple brave candle</textarea><textarea aria-label="Private key">-----BEGIN</textarea><textarea aria-label="Your answer">Use a mutex.</textarea>`);
+    expect(boxes.fields).toEqual([
+      { name: "Recovery phrase", type: "secret", length: 18 },
+      { name: "Private key", type: "secret", length: 10 },
+      { name: "Your answer", type: "textarea", value: "Use a mutex." },
+    ]);
+  });
+
+  it("leaves the text around the button off when it says a secret out loud, and says the page must not be pictured", () => {
+    const row = (said: string) => clickIn(`<div role="row">${said} <button id="go" type="button">Send</button></div>`, "go");
+    expect(row("Invoice 7 is ready")).toMatchObject({ context: "Invoice 7 is ready Send", secrets: false });
+    for (const said of ["Your new password is Tr0ub4dor", "Your recovery code is 5519-2207", "Paying with 4242 4242 4242 4242", "API key sk_live_abcdefg12345"]) {
+      const got = row(said);
+      expect(got).toMatchObject({ context: "", secrets: true });
+      expect(JSON.stringify(got)).not.toContain(said.split(" ").at(-1));
+    }
+    // It is still bound to that text: another secret there is another page.
+    expect(row("Your new password is Tr0ub4dor").around).not.toBe(row("Your new password is hunter2").around);
+  });
+});
+
+describe("round three: an element a page keeps restyling", () => {
+  const ROW = (attrs: string, ago: string) => `<div role="row"><span>${ago}</span> Invoice 7 <button id="pay" type="button" ${attrs}>Pay</button></div>`;
+
+  it("is the same element whatever its style, class or state attributes say", () => {
+    const first = clickIn(ROW("", "3s ago"), "pay").identity;
+    for (const attrs of ['style="opacity: 0.93"', 'class="btn btn-hover"', 'data-state="ready" aria-busy="false"', 'tabindex="0"']) {
+      expect(clickIn(ROW(attrs, "3s ago"), "pay").identity).toBe(first);
+    }
+    // What it does is still what it is.
+    for (const attrs of ['formaction="/pay-all"', 'onclick="payAll()"', 'name="all"', 'aria-label="Pay everything"']) {
+      expect(clickIn(ROW(attrs, "3s ago"), "pay").identity).not.toBe(first);
+    }
+  });
+
+  it("compares the text around it with relative times and clocks evened out, and every other number as it is", () => {
+    const first = clickIn(ROW("", "3s ago"), "pay").around;
+    for (const ago of ["4s ago", "59s ago", "1m ago", "2 minutes ago", "an hour ago", "a few seconds ago", "just now", "12:04", "12:04:59"]) {
+      expect(clickIn(ROW("", ago), "pay").around).toBe(first);
+    }
+    // A number that is no time is part of what was approved.
+    expect(clickIn(ROW("", "3s ago").replace("Invoice 7", "Invoice 9"), "pay").around).not.toBe(first);
+    expect(clickIn(ROW("", "3s ago").replace("Invoice", "Refund"), "pay").around).not.toBe(first);
+    expect(clickIn(ROW("", "overdue"), "pay").around).not.toBe(first);
+    const priced = (price: string) => clickIn(`<div role="row">Laptop ${price} <button id="pay" type="button">Pay</button></div>`, "pay").around;
+    expect(priced("$10.00")).not.toBe(priced("$99.00"));
+  });
+});
+
+describe("round three: a click that is no commitment on a very large page", () => {
+  const BIG = `<button id="details" type="button">Show details</button><section><input aria-label="Note" value="See you soon"><div id="send" role="button" tabindex="0">Send</div></section>
+    ${Array.from({ length: 6_000 }, (_, index) => `<input aria-label="Cell ${index}" value="value ${index}">`).join("")}`;
+  /** An engine over this page: it measures by id and runs the script here. */
+  const engine = (): EngineQuery => async (args) => {
+    if (args[0] === "get" && args[1] === "box") return { ok: true, data: boxOf(args[2]!.slice(1)) };
+    if (args[0] === "get") return { ok: true, data: { url: "https://sheet.example/" } };
+    return { ok: true, data: { result: new Function(`return ${Buffer.from(args[2]!, "base64").toString()}`)() as Record<string, unknown> } };
+  };
+
+  it("is described from the element and its region alone, with no field of the page in the answer", async () => {
+    page.body.innerHTML = BIG;
+    const reader = browserPageReader(engine());
+    const started = performance.now();
+    const target = await reader.target("#details", false);
+    const took = performance.now() - started;
+    expect(target).toMatchObject({ label: "Show details", role: "button", card: false });
+    expect(JSON.stringify(target)).not.toContain("value 17");
+    expect(target).not.toHaveProperty("fields");
+    // A bound on the work, not a benchmark: the old read took the value and the label of every field.
+    expect(took).toBeLessThan(2_500);
+  }, 20_000);
+
+  it("gives the evidence for a commitment there: its region's fields listed, the rest counted and bound", async () => {
+    page.body.innerHTML = BIG;
+    const evidence = await browserPageReader(engine()).evidence("#send", false);
+    expect(evidence).toMatchObject({ parts: [{ fields: [{ name: "Note", type: "text", value: "See you soon" }], others: 0 }] });
+  }, 20_000);
+});
+
 describe("the script as an engine argument", () => {
   // It is base64 on the engine's command line. Windows refuses a command
   // line over 32,767 characters, and a refused read refuses every click.
   it("stays well inside the longest command line Windows will start", () => {
-    const script = pageReadScript({ box: { x: 1234.5678, y: 2345.6789, width: 345.6789, height: 45.6789 }, enter: false });
-    expect(Buffer.from(script).toString("base64").length).toBeLessThan(26_000);
-    expect(script).not.toMatch(/^\s*\/\//m);
+    for (const detail of [false, true]) {
+      const script = pageReadScript({ box: { x: 1234.5678, y: 2345.6789, width: 345.6789, height: 45.6789 }, enter: false, detail, salt: "0123456789abcdef" });
+      expect(Buffer.from(script).toString("base64").length).toBeLessThan(26_000);
+      expect(script).not.toMatch(/^\s*\/\//m);
+    }
   });
 });
 
@@ -582,18 +997,34 @@ describe("parsePageTarget", () => {
   it("accepts only a found target and bounds everything the page wrote", () => {
     expect(parsePageTarget({ found: false })).toBeNull();
     expect(parsePageTarget("found")).toBeNull();
-    expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", fields: [{ name: "n", type: "text", value: "v", length: "3" }, null, "x"] })).toEqual({
+    expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", button: 1, typable: "yes", fields: [{ name: "n", type: "text", value: "v" }] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      fields: [{ name: "n", type: "text", value: "v" }], identity: "", context: "", secrets: false, frames: false,
+      button: false, changes: false, typable: false, frames: false, payFrame: false,
     });
-    expect(parsePageTarget({ found: true, frames: true })).toMatchObject({ frames: true });
-    expect(parsePageTarget({ found: true, secrets: true })).toMatchObject({ secrets: true });
-    expect(parsePageTarget({ found: true, secrets: "no" })).toMatchObject({ secrets: false });
+    expect(parsePageTarget({ found: true, frames: true, payFrame: true, button: true, changes: true, typable: true })).toMatchObject({ frames: true, payFrame: true, button: true, changes: true, typable: true });
+  });
+});
+
+describe("parsePageDetail", () => {
+  const part = { fields: [], others: 0, bound: "0123456789abcdef", identity: "html:0/body:1/button:0#0123456789abcdef", context: "Laptop $18,000 Buy now", around: "fedcba9876543210" };
+
+  it("accepts only a found answer and bounds everything the page wrote", () => {
+    expect(parsePageDetail({ found: false })).toBeNull();
+    expect(parsePageDetail("found")).toBeNull();
+    expect(parsePageDetail({ found: true })).toBeNull();
+    expect(parsePageDetail({ found: true, parts: [null] })).toBeNull();
+    expect(parsePageDetail({ found: true, parts: Array.from({ length: 10 }, () => part) })).toBeNull();
+    expect(parsePageDetail({ found: true, parts: [], secrets: "no" })).toEqual({ parts: [], secrets: false });
+    expect(parsePageDetail({ found: true, secrets: true, parts: [{ fields: [{ name: "n", type: "text", value: "v", length: "3" }, null, "x"], others: -4, bound: 7, identity: "i".repeat(5_000), context: "c".repeat(400), around: "a".repeat(100) }] })).toEqual({
+      secrets: true,
+      parts: [{ fields: [{ name: "n", type: "text", value: "v" }], others: 0, bound: "", identity: "i".repeat(4_000), context: "c".repeat(300), around: "a".repeat(64) }],
+    });
+    expect(parsePageDetail({ found: true, parts: [{ ...part, others: 12 }] })!.parts[0]).toEqual({ ...part, others: 12 });
   });
 
   it("keeps every field and every character of a value: the approval is bound to all of it", () => {
     const fields = Array.from({ length: 400 }, (_, index) => ({ name: `Field ${index}`, type: "text", value: index === 399 ? "x".repeat(250_000) : `value ${index}` }));
-    const parsed = parsePageTarget({ found: true, label: "Send", role: "button", fields, identity: "html:0/body:1/button:0#0123456789abcdef", context: "Laptop $18,000 Buy now" })!;
+    const parsed = parsePageDetail({ found: true, parts: [{ ...part, fields }] })!.parts[0]!;
     expect(parsed.fields).toHaveLength(400);
     expect(parsed.fields[399]!.value).toHaveLength(250_000);
     expect(parsed).toMatchObject({ identity: "html:0/body:1/button:0#0123456789abcdef", context: "Laptop $18,000 Buy now" });
@@ -601,7 +1032,7 @@ describe("parsePageTarget", () => {
 
   it("refuses an answer with more fields than it will bind, rather than bind some of them", () => {
     const fields = Array.from({ length: 5_001 }, (_, index) => ({ name: `Field ${index}`, type: "text", value: "v" }));
-    expect(parsePageTarget({ found: true, label: "Send", role: "button", fields })).toBeNull();
+    expect(parsePageDetail({ found: true, parts: [{ ...part, fields }] })).toBeNull();
   });
 });
 
@@ -638,7 +1069,8 @@ describe("browserPageReader", () => {
     await expect(reader.target("@e4", false)).resolves.toMatchObject({ label: "Send", submits: true });
     expect(calls[0]).toEqual(["get", "box", "@e4"]);
     expect(calls[1]!.slice(0, 2)).toEqual(["eval", "-b"]);
-    expect(Buffer.from(calls[1]![2]!, "base64").toString()).toContain('{"box":{"x":1,"y":2,"width":3,"height":4},"enter":false}');
+    // The first read: the judging script, with this reader's own salt.
+    expect(Buffer.from(calls[1]![2]!, "base64").toString()).toMatch(/\(\{"salt":"[0-9a-f]{16}","box":\{"x":1,"y":2,"width":3,"height":4\},"enter":false,"detail":false\}\)$/);
     await expect(reader.url()).resolves.toBe("https://example.com/a#b");
   });
 
@@ -646,7 +1078,7 @@ describe("browserPageReader", () => {
     const { reader, calls } = engine({ eval: found });
     await expect(reader.target(null, true)).resolves.toMatchObject({ label: "Send" });
     expect(calls).toHaveLength(1);
-    expect(Buffer.from(calls[0]![2]!, "base64").toString()).toContain('{"box":null,"enter":true}');
+    expect(Buffer.from(calls[0]![2]!, "base64").toString()).toMatch(/"box":null,"enter":true,"detail":false\}\)$/);
   });
 
   it("says missing only when the engine itself finds no such element", async () => {

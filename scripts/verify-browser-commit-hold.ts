@@ -40,12 +40,21 @@ const PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAI
 /** A second origin, for a frame the page around it cannot read: a payment
  * frame as a shop embeds one. Its form really posts, to this origin. */
 let framedPaid = 0;
+const FRAME_PAGES: Record<string, string> = {
+  // A whole payment form, as a shop embeds one.
+  "/pay-frame": `<form id="pay" onsubmit="event.preventDefault(); fetch('/framed-paid', { method: 'POST' });">
+    <input id="card" aria-label="Card number" value="4242424242424242"><input id="cvc" aria-label="CVC" value="123"><button>Pay</button></form>`,
+  // One hosted field, as a processor puts each card field in a frame of its own.
+  "/card-number-frame": `<input id="card" aria-label="Card number">`,
+  // A payment frame whose button says nothing about money.
+  "/continue-frame": `<button type="button" onclick="fetch('/framed-paid', { method: 'POST' })">Continue</button>`,
+};
 const frameSite = createServer((req, res) => {
   req.resume();
-  if (new URL(req.url ?? "/", "http://localhost").pathname === "/framed-paid") { framedPaid += 1; res.end("ok"); return; }
+  const path = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (path === "/framed-paid") { framedPaid += 1; res.end("ok"); return; }
   res.setHeader("content-type", "text/html; charset=utf-8");
-  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Payment frame</title><form id="pay" onsubmit="event.preventDefault(); fetch('/framed-paid', { method: 'POST' });">
-    <input id="card" aria-label="Card number" value="4242424242424242"><input id="cvc" aria-label="CVC" value="123"><button>Pay</button></form></html>`);
+  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Payment frame</title>${FRAME_PAGES[path] ?? FRAME_PAGES["/pay-frame"]}</html>`);
 });
 await new Promise<void>((resolve) => frameSite.listen(0, "127.0.0.1", resolve));
 /** Reached as localhost, so it is another site than the page at 127.0.0.1, not only another port. */
@@ -102,6 +111,59 @@ const CASE_PAGES: Record<string, string> = {
     <input aria-label="Code from your phone" autocomplete="one-time-code" value="246810"><input type="text" id="password" aria-label="Sign-in secret" value="correct-horse-battery">
     <input aria-label="Reference" value="5555 5555 5555 4444"><input aria-label="PIN" value="4821"><input aria-label="Name on card" autocomplete="cc-name" value="ADA LOVELACE">
     <input aria-label="City" value="Baramati"><button>Pay</button></form>`),
+  // ── Round three: one page per reviewer scenario R1 to R12 ──
+  "/typed-focus": doc("Typed focus", `<p id="para">Just a paragraph</p><img id="pic" alt="A picture" width="20" height="20" src="${PIXEL}">
+    <form id="pay"><input id="amount" aria-label="Amount" placeholder="Amount" value="5"><button>Pay now</button></form>`),
+  "/card-region": doc("Card region", `<form id="c1"><input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="Expiry" value="12/30"><input aria-label="CVC" value="123">
+    <button id="jsbtn" type="button" onclick="note('continued')">Continue</button> <a id="confirm" href="#" onclick="note('confirmed'); return false">Confirm</a>
+    <div id="next" role="button" tabindex="0" onclick="note('next')">Next</div>
+    <select id="plan" aria-label="Plan" onchange="changePlan(this)"><option>basic</option><option>pro</option></select></form>
+    <form id="hosted"><iframe title="Secure card number input frame" src="${frameOrigin}/card-number-frame" width="300" height="40"></iframe><button>Confirm</button></form>
+    <script>function changePlan(list) { window.note("plan:" + list.value); }</script>`),
+  "/frame-click": doc("Frame click", `<iframe id="inner" title="Billing" src="/inner-continue" width="420" height="60"></iframe>
+    <iframe id="payframe" title="Secure payment" src="${frameOrigin}/continue-frame" width="420" height="60"></iframe>
+    <object id="obj" data="/inner-continue" type="text/html" width="420" height="60"></object>`),
+  "/inner-continue": `<!doctype html><html lang="en"><meta charset="utf-8"><title>Billing frame</title><form id="pay" onsubmit="event.preventDefault()">
+    <input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="CVC" value="123"><button type="button" onclick="parent.note('inner:continued')">Continue</button></form></html>`,
+  // Each part in a section of its own: with no region around it, the Send
+  // button's region would be the page, and the page holds a payment frame.
+  "/space": doc("Space", `<section><input id="first" aria-label="Name" value="Ada"><button id="send" type="button" onclick="note('sent')">Send</button></section>
+    <section><textarea id="notes" aria-label="Notes"></textarea></section><section><iframe title="Secure payment" src="${frameOrigin}/pay-frame" width="420" height="60"></iframe></section>`),
+  "/elsewhere-back": doc("Elsewhere", `<a id="back" href="#" onclick="history.back(); return false">Back to the last page</a>`),
+  "/bind-section": doc("Bind section", `<section><input id="to" aria-label="To" value="ada@example.com"></section>
+    <section><div id="send" role="button" tabindex="0" onclick="note('sent:' + document.getElementById('to').value)">Send</div></section><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("to").value = "mallory@example.com"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/bind-frame": doc("Bind frame", `<form id="post"><iframe id="editor" title="Body" src="/rte" width="300" height="60"></iframe><button>Publish</button></form><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("editor").contentDocument.body.textContent = "Something else entirely"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/rte": `<!doctype html><html lang="en"><meta charset="utf-8"><title>Editor</title><body contenteditable="true">First draft</body></html>`,
+  "/bind-hidden": doc("Bind hidden", `<form id="share"><textarea aria-label="Post">Hello</textarea><input type="hidden" id="visibility" name="visibility" value="private"><button>Share</button></form><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("visibility").value = "public"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/bind-wizard": doc("Bind wizard", `<form id="wizard"><div id="step1" style="display:none"><input id="payee" aria-label="Payee" value="Ada"><input id="amount" aria-label="Amount" value="5"></div>
+    <div id="step2"><p>Review and confirm.</p><button>Transfer</button></div></form><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("payee").value = "Mallory"; document.getElementById("amount").value = "5000"; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/bind-tick": doc("Bind tick", `<label><input id="all" type="checkbox"> Everyone in the company</label> <div id="send" role="button" tabindex="0" onclick="note('sent:' + document.getElementById('all').checked)">Send</div><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("all").checked = true; document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/private-names": doc("Private names", `<form id="account"><input aria-label="Code" value="731942"><input aria-label="Security answer" value="Fluffy the cat"><input aria-label="Social security number" value="078-05-1120">
+    <input name="pass" aria-label="Contraseña" value="mi-secreto-123"><input aria-label="Secret key" value="sk_live_abcdefg12345"><input aria-label="Número de tarjeta" value="4242 42">
+    <input aria-label="Recovery phrase" value="apple brave candle"><input aria-label="Backup code" value="8842-1190"><input aria-label="City" value="Baramati">
+    <p>Your new password is Tr0ub4dor and your recovery code is 5519-2207. <button>Send</button></p></form>`),
+  "/private-page": doc("Private page", `<input aria-label="Full name" value="Ada Lovelace"><input aria-label="Address" value="12 Analytical Row"><input aria-label="Date of birth" value="1815-12-10">
+    <input aria-label="IBAN" value="DE89370400440532013000"><input aria-label="Tax number" value="12/345/67890">
+    <section><input aria-label="Note" value="See you soon"><div id="send" role="button" tabindex="0" onclick="note('sent')">Send</div></section>
+    <form id="memo"><textarea aria-label="Message">The launch plan</textarea><button>Send</button></form>`),
+  "/restyled": doc("Restyled", `<div role="row"><span id="ago">3s ago</span> Invoice 7 <button id="pay" type="button" onclick="note('paid')">Pay</button></div>
+    <script>let seconds = 3; setInterval(() => { seconds += 1; document.getElementById("ago").textContent = seconds + "s ago"; document.getElementById("pay").style.opacity = String(0.9 + (seconds % 5) / 100); }, 250);</script>`),
+  "/shifting": doc("Shifting", `<div role="row"><span id="word">alpha</span> <button id="go" type="button" onclick="note('sent')">Send</button></div>
+    <script>const words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]; let at = 0; setInterval(() => { at += 1; document.getElementById("word").textContent = words[at % words.length]; }, 250);</script>`),
+  "/closed": doc("Closed", `<div><input id="first" aria-label="Name" value="Ada"></div><closed-pay></closed-pay>
+    <script>customElements.define("closed-pay", class extends HTMLElement { constructor() { super(); const root = this.attachShadow({ mode: "closed" });
+      root.innerHTML = '<form><input aria-label="Card number" value="4242424242424242"><button>Pay</button></form>';
+      root.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); window.note("submitted:closed"); }); } });</script>`),
+  "/big-page": doc("Big page", `<button id="details" type="button" onclick="note('details')">Show details</button>
+    <section><input aria-label="Note" value="See you soon"><div id="send" role="button" tabindex="0" onclick="note('sent')">Send</div></section>
+    ${Array.from({ length: 6_000 }, (_, index) => `<input aria-label="Cell ${index}" value="value ${index}">`).join("")}`),
+  "/lookups": doc("Lookups", `<form id="find" role="search"><input type="search" aria-label="Search" value="4242424242424242"><button>Search</button></form>
+    <form id="imei"><input aria-label="IMEI" value="356938035643809"><button>Check</button></form>`),
 };
 let paid = 0;
 const site = createServer((req, res) => {
@@ -284,13 +346,23 @@ try {
     assert.equal(await log(), "", "the denied action still happened");
     return card;
   };
-  /** A call that must run with no card. */
+  /** A call that must run with no card. A card that appears is denied and reported at once. */
   const passes = async (name: string, args: Record<string, unknown> = {}) => {
-    const open = (await cards()).length;
-    const result = await tool(name, args);
-    assert.equal(result.isError, false, `${name}: ${result.text}`);
-    assert.equal((await cards()).length, open, `${name} raised a card`);
-    return result;
+    const known = new Set((await cards()).map((row) => row.card.requestId));
+    let done: Result | undefined;
+    const result = tool(name, args).then((value) => (done = value));
+    for (let attempt = 0; attempt < 300 && !done; attempt += 1) {
+      const card = (await cards()).find((row) => !row.card.answered && !known.has(row.card.requestId))?.card;
+      if (card) {
+        await respond(card, "deny");
+        await result;
+        throw new Error(`${name} raised a card: ${card.title} ${JSON.stringify(card.subtitle).slice(0, 140)}`);
+      }
+      await sleep(50);
+    }
+    const settled = await result;
+    assert.equal(settled.isError, false, `${name}: ${settled.text.replace(/\s+/g, " ").slice(0, 200)}`);
+    return settled;
   };
   /** A call that must be refused outright: no card, nothing on the page. */
   const refused = async (name: string, args: Record<string, unknown>, why: RegExp) => {
@@ -351,7 +423,7 @@ try {
       assert.equal(await log(), "");
       assert.match((await tool("agent_browser_snapshot")).text, /Write a message/);
     } },
-    { id: "A4", title: "reload after a commitment is held until the bot opens another address", run: async () => {
+    { id: "A4", title: "reload after a commitment is held, here and after opening another address and coming back", run: async () => {
       const page = await visit("/pay");
       const before = paid;
       const paying = await ask("agent_browser_click", { selector: refIn(page, 'button "Pay"') });
@@ -362,14 +434,17 @@ try {
       assert.equal(paid, before + 1);
       const again = await ask("agent_browser_reload");
       assert.equal(again.card.title, "Spend money?");
-      assert.match(again.card.subtitle, /Reload/);
-      assert.match(again.card.subtitle, /Pay/);
+      // The card says the site and whether it was a send or a payment, and repeats nothing that was sent.
+      assert.match(again.card.subtitle, /Reload, which can repeat an earlier payment$/);
+      assert.equal(again.card.browserCommit.fields.length, 0);
       await respond(again.card, "deny");
       await again.result;
       await sleep(500);
       assert.equal(paid, before + 1, "the payment was repeated");
       await visit("/elsewhere");
-      await passes("agent_browser_reload");
+      const elsewhere = await ask("agent_browser_reload");
+      await respond(elsewhere.card, "deny");
+      await elsewhere.result;
       await tool("agent_browser_back");
       const back = await ask("agent_browser_reload");
       await respond(back.card, "deny");
@@ -441,6 +516,170 @@ try {
       await passes("agent_browser_click", { selector: refIn(page, 'button "Log in"') });
       assert.equal(await log(), "submitted:library");
       return { subtitle: card.subtitle };
+    } },
+    // ── Round three ──
+    { id: "R1", title: "text typed with a line break runs only into a text field that will itself take it", run: async () => {
+      await visit("/typed-focus");
+      await passes("agent_browser_click", { selector: "#amount" });
+      // The engine types at the focus when its selector cannot take it, or resolves to nothing.
+      for (const selector of ["#para", "#pic", "text=Just a paragraph", "placeholder=Amount", "label=Amount", "role=button", "@x"]) {
+        await refused("agent_browser_type", { selector, text: "1\n" }, /agent_browser_fill/);
+      }
+    } },
+    { id: "R2", title: "inside a card region any button-like control is money, whatever its type or label", run: async () => {
+      await visit("/card-region");
+      await heldThenDenied("agent_browser_click", { selector: "#jsbtn" }, { title: "Spend money?", label: /^Continue$/ });
+      await heldThenDenied("agent_browser_click", { selector: "#confirm" }, { title: "Spend money?", label: /^Confirm$/ });
+      await heldThenDenied("agent_browser_click", { selector: "#next" }, { title: "Spend money?", label: /^Next$/ });
+      await heldThenDenied("agent_browser_select", { selector: "#plan", values: ["pro"] }, { title: "Spend money?" });
+      // Card fields in a processor's frames, inside the shop's own form.
+      await heldThenDenied("agent_browser_click", { selector: "#hosted button" }, { title: "Spend money?", label: /^Confirm$/ });
+    } },
+    { id: "R3", title: "a click by ref inside a frame is read in the frame, or is money in a payment frame it cannot read", run: async () => {
+      const page = await visit("/frame-click");
+      const before = framedPaid;
+      const inner = await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"', 0) }, { title: "Spend money?", label: /^Continue$/ });
+      assert.match(inner.subtitle, /Card number: 19 characters, not shown/, "the frame's own fields were not read");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"', 1) }, { title: "Spend money?", label: /^Continue$/ });
+      await refused("agent_browser_click", { selector: "#obj" }, /inside a frame/);
+      await sleep(400);
+      assert.equal(framedPaid, before, "a payment inside the frame went through");
+    } },
+    { id: "R4", title: "Space on the focused element is an activation of it", run: async () => {
+      await visit("/space");
+      await passes("agent_browser_click", { selector: "#first" });
+      await passes("agent_browser_press", { key: "Tab" });
+      for (const key of ["Space", " ", "Shift+Space"]) await heldThenDenied("agent_browser_press", { key }, { title: "Send on your behalf?", label: /^Send$/ });
+      // In a text box a space is a space.
+      await passes("agent_browser_click", { selector: "#notes" });
+      await passes("agent_browser_press", { key: "Space" });
+      // Tab from there goes into the payment frame, which cannot be read.
+      await passes("agent_browser_press", { key: "Tab" });
+      const before = framedPaid;
+      await refused("agent_browser_press", { key: "Space" }, /Click the button for this step instead/);
+      assert.equal(framedPaid, before);
+    } },
+    { id: "R5", title: "once something was sent, every reload is held, wherever the page has been since", run: async () => {
+      const page = await visit("/pay");
+      const before = paid;
+      const paying = await ask("agent_browser_click", { selector: refIn(page, 'button "Pay"') });
+      await respond(paying.card, "allow");
+      await paying.result;
+      for (let attempt = 0; attempt < 50 && paid === before; attempt += 1) await sleep(100);
+      // Elsewhere, then back by the page's own link: the posted page is in front again.
+      await visit("/elsewhere-back");
+      await passes("agent_browser_click", { selector: "#back" });
+      await sleep(500);
+      const again = await ask("agent_browser_reload");
+      assert.equal(again.card.title, "Spend money?");
+      await respond(again.card, "deny");
+      await again.result;
+      await sleep(500);
+      assert.equal(paid, before + 1, "the payment was repeated");
+    } },
+    { id: "R6", title: "the approval covers every control of the form or region, shown or not", run: async () => {
+      const seen: Record<string, string> = {};
+      for (const [path, selector] of [["/bind-section", "#send"], ["/bind-frame", "#post button"], ["/bind-hidden", "#share button"], ["/bind-wizard", "#wizard button"], ["/bind-tick", "#send"]] as const) {
+        await visit(path);
+        await passes("agent_browser_click", { selector: "#swap" });
+        let outcome = "voided";
+        try {
+          const first = await ask("agent_browser_click", { selector });
+          await changed();
+          const second = await voided(first);
+          await respond(second, "deny");
+          await first.result;
+        } catch (error) { outcome = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 110) : String(error); }
+        for (const row of await cards()) if (!row.card.answered) await respond(row.card, "deny");
+        seen[path] = outcome;
+      }
+      assert.deepEqual(seen, { "/bind-section": "voided", "/bind-frame": "voided", "/bind-hidden": "voided", "/bind-wizard": "voided", "/bind-tick": "voided" });
+    } },
+    { id: "R7", title: "private values stay off the card: unmarked names, the text around the button, the rest of the page, the reload card", run: async () => {
+      await visit("/private-names");
+      const first = await ask("agent_browser_click", { selector: "#account button" });
+      await respond(first.card, "deny");
+      await first.result;
+      const rows = ((await api("GET", "/api/decisions?limit=300")).body.decisions as any[]).filter((row) => row.requestId === first.card.requestId);
+      const told = `${first.card.subtitle}\n${JSON.stringify(first.card.browserCommit)}\n${JSON.stringify(rows)}`;
+      for (const secret of ["731942", "Fluffy the cat", "078-05-1120", "mi-secreto-123", "sk_live_abcdefg12345", "4242 42", "apple brave candle", "8842-1190", "Tr0ub4dor", "5519-2207"]) {
+        assert.ok(!told.includes(secret), `${secret} is in clear on the card or in the log`);
+      }
+      assert.match(first.card.subtitle, /City: Baramati/);
+      assert.equal(first.card.browserCommit.shot, undefined, "a page saying a password out loud was pictured");
+      // On a page with no form, only the fields of the button's own region are listed.
+      await visit("/private-page");
+      const second = await ask("agent_browser_click", { selector: "#send" });
+      await respond(second.card, "deny");
+      await second.result;
+      assert.match(second.card.subtitle, /Note: See you soon/);
+      for (const personal of ["Ada Lovelace", "12 Analytical Row", "1815-12-10", "DE89370400440532013000", "12/345/67890"]) {
+        assert.ok(!JSON.stringify(second.card).includes(personal), `${personal} was listed from elsewhere on the page`);
+      }
+      // A reload card names the site and the class. It repeats nothing that was sent.
+      const sending = await ask("agent_browser_click", { selector: "#memo button" });
+      await respond(sending.card, "allow");
+      await sending.result;
+      const reload = await ask("agent_browser_reload");
+      await respond(reload.card, "deny");
+      await reload.result;
+      assert.ok(!JSON.stringify(reload.card).includes("The launch plan"), "the reload card repeated what was sent");
+      assert.equal(reload.card.browserCommit.fields.length, 0);
+      return { names: first.card.subtitle, page: second.card.subtitle, reload: reload.card.subtitle };
+    } },
+    { id: "R8", title: "an approval can be used on a page that restyles itself, and after two voids the card says the page keeps changing", run: async () => {
+      await visit("/restyled");
+      const known = (await cards()).length;
+      const paying = await ask("agent_browser_click", { selector: "#pay" });
+      await sleep(900);
+      await respond(paying.card, "allow");
+      const settled = await Promise.race([paying.result, sleep(6_000).then(() => null)]);
+      for (const row of await cards()) if (!row.card.answered) await respond(row.card, "deny");
+      assert.ok(settled, `the approval was never used: ${(await cards()).length - known} cards were raised`);
+      assert.equal(settled.isError, false, settled.text);
+      assert.equal(await log(), "paid");
+      // A row that really changes: two approvals are void, the third is bound to less.
+      await visit("/shifting");
+      const first = await ask("agent_browser_click", { selector: "#go" });
+      await sleep(400);
+      const second = await voided(first);
+      await sleep(400);
+      const third = await voided({ card: second, result: first.result });
+      assert.match(third.subtitle, /keeps changing/);
+      await sleep(400);
+      await respond(third, "allow");
+      const sent = await Promise.race([first.result, sleep(6_000).then(() => null)]);
+      for (const row of await cards()) if (!row.card.answered) await respond(row.card, "deny");
+      assert.ok(sent && !sent.isError, "the third approval was not used");
+      assert.equal(await log(), "sent");
+      return { third: third.subtitle };
+    } },
+    { id: "R9", title: "Enter and Space with the focus inside a closed part of the page are refused", run: async () => {
+      await visit("/closed");
+      await passes("agent_browser_click", { selector: "#first" });
+      await passes("agent_browser_press", { key: "Tab" });
+      await refused("agent_browser_press", { key: "Enter" }, /closed part of the page/);
+      await refused("agent_browser_press", { key: "Space" }, /closed part of the page/);
+    } },
+    { id: "R11", title: "a click that commits nothing is not refused or slowed by 6,000 filled fields", run: async () => {
+      await visit("/big-page");
+      const started = Date.now();
+      await passes("agent_browser_click", { selector: "#details" });
+      const took = Date.now() - started;
+      assert.equal(await log(), "details");
+      assert.ok(took < 1_500, `the click took ${took} ms`);
+      // A commitment on the same page: only its own region's fields are listed.
+      await visit("/big-page");
+      const card = await heldThenDenied("agent_browser_click", { selector: "#send" }, { title: "Send on your behalf?", label: /^Send$/ });
+      assert.match(card.subtitle, /Note: See you soon/);
+      assert.ok(!card.subtitle.includes("Cell 17:"), "fields from the rest of the page were listed");
+      return { tookMs: took, subtitle: card.subtitle };
+    } },
+    { id: "R12", title: "a search is never a commitment, and a checksum alone is not a card number", run: async () => {
+      const page = await visit("/lookups");
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Search"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Check"') });
+      assert.equal(await log(), "submitted:find submitted:imei");
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

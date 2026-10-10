@@ -14,8 +14,12 @@ import { launchVerificationServer, type VerificationServer } from "../scripts/co
 import { removeTempDir } from "./testing/cleanup.ts";
 
 const JPEG = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+/** One scripted element: what the first read says of it, and (fields,
+ * secrets) what the second would. The inert browser answers each read with
+ * its own half. */
 const target = (extra: Record<string, unknown> = {}) => ({
-  found: true, label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false, fields: [], ...extra,
+  found: true, label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
+  button: true, changes: false, typable: true, frames: false, payFrame: false, fields: [], ...extra,
 });
 const SEND = target({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = target({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -69,7 +73,12 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
       `if (args[0] === "screenshot") writeFileSync(args[1], Buffer.from(${JSON.stringify(JPEG)}, "base64"));`,
       'else if (args[0] === "get" && args[1] === "box") answer({ x: 1, y: 2, width: 3, height: 4 });',
       'else if (args[0] === "get" && args[1] === "url") answer({ url: page().url });',
-      'else if (args[0] === "eval") answer({ result: page().target });',
+      // The gate's two reads: what the call would act on, then the evidence for a card.
+      'else if (args[0] === "eval") {',
+      '  const seen = page().target, asked = Buffer.from(args[2], "base64").toString();',
+      '  const { fields = [], secrets = false, identity = "", context = "", ...first } = seen;',
+      '  answer({ result: !/"detail":true\\}\\)$/.test(asked) ? first : { found: true, secrets, parts: [{ fields, others: 0, bound: "", identity, context, around: "" }] } });',
+      "}",
       'else if (args[0] === "set") answer({});',
       'else if (args[0] === "session") answer({ sessions: [] });',
       'else if (args[0] === "mcp") {',

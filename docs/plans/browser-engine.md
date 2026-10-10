@@ -128,31 +128,51 @@ recording controls are intentionally not added to the live browser chrome.
   the page. A restart clears it.
 - `server/browser-commit-gate.ts` sits in the browser MCP route ahead of
   `BrowserRuntime.agentRpc`. For a click, a check, an uncheck, a select, an
-  Enter press, or text typed with a line break, the server reads the target
-  itself (`server/browser-commit-page.ts`): `get box` for the bot's
-  selector, then one fixed script that describes the element in that box
-  and its form, then `get url`. Rules in `shared/browser-commit.ts` decide.
-  A commitment waits on the card and counter that connected-app sends use;
+  Enter or Space press, or text typed with a line break, the server reads
+  the target itself (`server/browser-commit-page.ts`): `get box` for the
+  bot's selector, then a fixed script that describes the element in that box
+  (in the page or in a frame of its own origin) and its form or region.
+  Rules in `shared/browser-commit.ts` decide. Only for a commitment does a
+  second fixed script read the evidence (fields, the text around the
+  element, hashes of what the approval is bound to), then `get url`. Both
+  scripts share one prelude and each must fit one command-line argument. A
+  commitment waits on the card and counter that connected-app sends use;
   the approval is bound to a digest of the address, the element's identity
-  (its path in the document and a hash of its markup), the text around it
-  and every field at full length. A reload
-  after a commitment is held the same way. The gate's header comment lists
-  every browser tool and why it can or cannot commit. User-facing behaviour
-  is in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
+  (its path in the document and a hash of its tag and the attributes that
+  say what it does), the text around it with relative times evened out, the
+  listed fields at full length, and the page's own salted hash of every
+  control of the form or region, hidden ones and frame bodies included.
+  After two voids in a row the next card is bound to less and says so. A
+  reload after a commitment is held the same way, for as long as the
+  session lives; the flag is in memory, because no per-session state
+  survives a restart. The gate's header comment lists every browser tool
+  and why it can or cannot commit. User-facing behaviour is in
+  [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
 - Values a card must not carry (passwords, card fields, codes, PINs, card
   numbers by the Luhn check) are counted in the page and only their length
   is returned. A page that shows one is not screenshotted. Hold screenshots
   are listed in `browser-hold-shots.json` under the data directory and any
   left listed are deleted at server start (`server/browser-commit-shots.ts`).
-- Frames: a frame of the page's own origin is read like the page. A call
-  that would act inside a frame the script cannot read (Enter with the
-  focus in it, a click or typed text aimed at the frame element) is
-  refused. The engine measures an in-frame element from the frame's own
-  corner, so a ref click is judged both as the element read in that box
-  and as the element the snapshot named.
-- A card form is one with a `cc-*` autofill hint, or a card-number field
-  beside a security-code or expiry field by name, or any value that passes
-  the Luhn check.
+- Frames: `<iframe>`, `<frame>`, `<object>` and `<embed>`. One of the
+  page's own origin is read like the page, for clicks and for the focus.
+  A call that would act inside a frame the script cannot read (Enter or
+  Space with the focus in it, a click or typed text aimed at the frame
+  element) is refused, and so is Enter or Space with the focus inside a
+  closed shadow root. The engine measures an in-frame element from the
+  frame's own corner, so a ref click is judged both as the element read in
+  that box and as the element the snapshot named; when the box is found
+  nowhere and the page has a frame recognised as a payment frame, a
+  button-like ref is money.
+- A card region is a form, or for a control with no form the nearest
+  dialog or landmark around it (the page when there is none), that holds a
+  `cc-*` autofill hint, or a card-number field beside a security-code or
+  expiry field by name, or a Luhn-valid value with a card scheme's prefix
+  or beside one of those names, or a payment frame. Any button-like control
+  there is money, by click, Enter or Space. A search form is never either
+  class.
+- Typed text with a line break runs only when the read resolved the
+  selector to a text field that will itself take the focus: the engine
+  types at the current focus otherwise.
 - The page script reads elements through the accessors on their prototype
   chain, because a form control named `tagName` or `elements` shadows the
   form's own property of that name.

@@ -8,8 +8,13 @@
 // card marker, same daily allowance, same respond route.
 //
 // The approval is for what the person was shown. It is bound to a digest of
-// the address, the target and the form's fields; if any of them changed by
-// the time the answer arrives, the approval is void and a new card is raised.
+// the address, the target and every control of its form or region; if any of
+// them changed by the time the answer arrives, the approval is void and a new
+// card is raised.
+//
+// The page is read twice at most. The first read says what the call would
+// act on, from the element and its form or region alone, and most calls end
+// there. Only a commitment gets the second: the evidence for its card.
 //
 // When the gate cannot tell what a call would act on, it refuses or asks. It
 // never sends.
@@ -20,11 +25,11 @@
 //
 // | Tool | What it does to a page | Here |
 // |---|---|---|
-// | click | A real click at the centre of the element's box. On a frame element it lands on whatever is inside the frame there. | Judged. Refused when the target is a frame itself. |
+// | click | A real click at the centre of the element's box. On a frame element it lands on whatever is inside the frame there. | Judged, in the page and in a frame of its own origin. Refused when the target is a frame itself. In a card region any button-like control is money. |
 // | check, uncheck | The same real click, on any element: a Send button too. | Judged as a click. |
 // | select | Sets the value and fires `change`. No click. Commits when the page submits on change. | Judged as a click on the element, and as its form's submit when an inline handler submits. |
-// | press | A real key press at the focus, which may be inside a frame. Enter in any part of a chord submits or sends. | Enter is judged, in any position; with the focus inside a frame the read cannot look into (another site's), it is refused. Limit: Space on a focused button clicks it and is not judged. F5 and Ctrl+R do nothing in the pinned headless browser. |
-// | type | Real key presses: "\n" is Enter and "\t" is Tab. It focuses the element, it does not click it. | Text ending in one line break is judged as Enter there, and refused when "there" is a frame, an element inside one, or (on a page with a frame) a ref the snapshot names differently from the element read. Any other text with a line break is refused: the focus may have moved. |
+// | press | A real key press at the focus, which may be inside a frame or a closed part of the page. Enter in any part of a chord submits or sends. Space, under any of its names, clicks a focused button. | Enter is judged, in any position, and Space as an activation of the focused element. With the focus where the read cannot look (another site's frame, a closed shadow root) both are refused. F5 and Ctrl+R do nothing in the pinned headless browser. |
+// | type | Key presses for "\n" (Enter) and "\t" (Tab); other characters are inserted with no key press, so a typed space activates nothing. It focuses its element when that can take the focus, and otherwise types at whatever has it; a selector it cannot resolve (`text=`, `label=`, `@x`) is typed at the focus too. | Text with a line break runs only when the read resolved the selector to a text field that will itself take it, and is then judged as Enter there. Into anything else, or after a tab, it is refused. |
 // | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
 // | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
 // | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, for as long as the browser lives. |
@@ -41,17 +46,19 @@
 // Opening an address is a GET, and a GET can commit on a site built that way
 // (a one-click unsubscribe link). That is outside what this gate reads.
 //
-// Frames. The page read runs in the page itself. It reads a frame of the
-// page's own origin like the page; it cannot look into another site's. The
-// engine can act in both: the snapshot lists a frame's elements with refs,
-// and the engine measures such an element from the frame's own corner, so
-// its box can be the box of another element outside the frame. A click on
-// a ref is therefore judged both as the element read in that box and as
-// the element the snapshot named; an Enter into a frame that cannot be read
-// is refused.
+// Frames (iframe, frame, object, embed). The page read runs in the page
+// itself. It reads a frame of the page's own origin like the page; it cannot
+// look into another site's. The engine can act in both: the snapshot lists a
+// frame's elements with refs, and the engine measures such an element from
+// the frame's own corner, so its box can be the box of another element
+// outside the frame. A click on a ref is therefore judged both as the
+// element read in that box (in the page and in every frame it can read) and
+// as the element the snapshot named; in a payment frame it cannot read, a
+// button-like ref is money whatever it is called. Enter or Space into a
+// frame that cannot be read is refused.
 import { createHash } from "node:crypto";
 
-import { COMMIT_TITLE, classifyCommit, commitRule, enterPress, scriptAction } from "../shared/browser-commit.ts";
+import { COMMIT_TITLE, classifyCommit, commitRule, enterPress, isButtonRole, scriptAction, spacePress } from "../shared/browser-commit.ts";
 import { DEFAULT_OUTBOUND_POLICY } from "../shared/outbound.ts";
 import { redactSecretsInText } from "../shared/redact.ts";
 import { HELD_NOTE } from "./auto-approve.ts";
@@ -59,7 +66,7 @@ import { HELD_NOTE } from "./auto-approve.ts";
 import type { CommitClass, CommitField, CommitTarget, ScriptAction } from "../shared/browser-commit.ts";
 import type { OutboundPolicy } from "../shared/outbound.ts";
 import type { OptionCardData } from "../shared/wire.ts";
-import type { BrowserPageReader, PageTarget } from "./browser-commit-page.ts";
+import type { BrowserPageReader, PageDetail, PageEvidence, PageTarget } from "./browser-commit-page.ts";
 import type { BrowserRuntime } from "./browser-runtime.ts";
 import type { DecisionRow } from "./decision-log.ts";
 import type { OutboundCounts } from "./outbound-counts.ts";
@@ -95,7 +102,8 @@ const TYPED_ENTER = "OpenMausBot did not type this: a line break typed with agen
 const TYPED_BLIND = "OpenMausBot did not type this: with agent_browser_type a line break presses Enter and a tab moves the focus, so it could not check where Enter would land. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const UNDESCRIBED = "OpenMausBot did not do this: it could not check what this would act on. The element is inside a frame or has no visible area, and the last snapshot gave it no name. Take a new snapshot and use the element's @ref from a new snapshot.";
 const BAD_SELECTOR = "OpenMausBot did not do this: it could not check that selector. Use an @ref from a snapshot, or a shorter selector that does not start with a dash.";
-const ENTER_IN_FRAME = "OpenMausBot did not press Enter: the focus is inside a frame it cannot read, so it could not check what Enter would send or pay for there. Click the button for this step instead, by its @ref from a snapshot.";
+/** Enter or Space with the focus where the read cannot look. */
+const KEY_UNSEEN = (key: string, where: string): string => `OpenMausBot did not press ${key}: the focus is inside ${where} it cannot read, so it could not check what ${key} would send or pay for there. Click the button for this step instead, by its @ref from a snapshot.`;
 const TYPED_IN_FRAME = "OpenMausBot did not type this: a line break typed with agent_browser_type presses Enter, and here that would be inside a frame it cannot read. Enter the text with agent_browser_fill, then click the button for this step by its @ref from a snapshot.";
 const FRAME_CLICK = "OpenMausBot did not do this: it would land inside a frame it cannot read, on whatever is at that point. Take a snapshot and use the @ref of the element inside the frame.";
 
@@ -149,6 +157,8 @@ interface Intent {
   shift: boolean;
   /** Enter arrives inside text typed with agent_browser_type. */
   typed: boolean;
+  /** The key a press is for, as a refusal names it. */
+  key?: "Enter" | "Space";
   /** The call as it will be sent. */
   params: unknown;
 }
@@ -166,7 +176,12 @@ interface Sighting {
   shown: CommitField[];
   /** How many fields the card does not show. */
   more: number;
+  /** Filled fields elsewhere on the page that are bound, not listed. */
+  others: number;
   digest: string;
+  /** A digest of less: the element's place, its label and the fields. What
+   * an approval is bound to once the page has changed under two in a row. */
+  loose: string;
   /** The server may take its own picture of the page for the card. */
   picture: boolean;
   /** A reload that would repeat an earlier commitment, not a new one. */
@@ -178,13 +193,21 @@ interface Sighting {
  * - "undescribed": the engine found an element this read cannot describe,
  *   and the snapshot never named it; or it named another element than the
  *   one the read found.
+ * - "untypable": text with a line break, for a target that is not a text
+ *   field that will itself take it. The engine would type at the focus.
  * - "framed": the call would act inside a frame the read cannot look into.
+ * - "sealed": the focus is inside a closed part of the page.
  * - "unusable": the selector is one the read will not hand to the engine. */
-type Blind = "unreadable" | "undescribed" | "framed" | "unusable";
+type Blind = "unreadable" | "undescribed" | "untypable" | "framed" | "sealed" | "unusable";
 
 /** What the bot is told when its call could not be judged. */
 function blindReason(intent: Intent, blind: Blind): string {
-  if (blind === "framed") return intent.typed ? TYPED_IN_FRAME : intent.via === "enter" ? ENTER_IN_FRAME : FRAME_CLICK;
+  if (blind === "framed" || blind === "sealed") {
+    if (intent.typed) return TYPED_IN_FRAME;
+    if (intent.key) return KEY_UNSEEN(intent.key, blind === "sealed" ? "a closed part of the page" : "a frame");
+    return FRAME_CLICK;
+  }
+  if (blind === "untypable") return TYPED_BLIND;
   if (blind === "undescribed") return intent.typed ? TYPED_BLIND : UNDESCRIBED;
   return blind === "unusable" ? BAD_SELECTOR : UNREADABLE;
 }
@@ -239,7 +262,9 @@ function commitIntent(params: unknown, name: string, args: Record<string, unknow
   if (name === "agent_browser_reload") return reloadHeld ? { via: "reload", selector: null, shift: false, typed: false, params } : null;
   if (name === "agent_browser_press") {
     const enter = enterPress(args.key);
-    return enter ? { via: "enter", selector: null, shift: enter.shift, typed: false, params } : null;
+    if (enter) return { via: "enter", selector: null, shift: enter.shift, typed: false, key: "Enter", params };
+    // Space on a focused button clicks it: an activation of whatever has the focus.
+    return spacePress(args.key) ? { via: "click", selector: null, shift: false, typed: false, key: "Space", params } : null;
   }
   const typed = name === "agent_browser_type";
   if (!CLICKS.has(name) && !typed) return null;
@@ -265,6 +290,14 @@ function place(url: string | null): { address: string; host: string } {
 }
 
 const failed = (result: unknown): boolean => (result as { isError?: unknown } | null)?.isError === true;
+
+/** The text around an element with relative times and clocks evened out,
+ * as the page script does it: a row that says "3s ago", then "4s ago", has
+ * not changed. Any other number is part of what was approved. */
+const steady = (text: string): string => text
+  .replace(/\b(?:(?:\d+|an?|a few) ?(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?|w|weeks?|mo|months?|y|years?|moments?) ago|just now|in \d+ ?(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)|\d\d?:\d\d(?::\d\d)?)\b/gi, "~");
+/** Where an element is, without the hash of what it is. */
+const position = (identity: string): string => identity.replace(/#[0-9a-f]{16}/g, "");
 
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
 
@@ -309,31 +342,36 @@ function fieldLine(field: CommitField): string {
 }
 
 const moreLine = (more: number): string => `and ${more.toLocaleString("en-US")} more field${more === 1 ? "" : "s"}, not shown here`;
+const othersLine = (others: number): string => `${others.toLocaleString("en-US")} other filled field${others === 1 ? "" : "s"} on this page ${others === 1 ? "is" : "are"} covered by this approval, not listed`;
+const CHANGING_LINE = "The page keeps changing by itself: this approval is for the button and the fields, not the text around them.";
 
 /** The card's plain text: host and label first, the way every send card's
  * subtitle starts, then where the element is, then the fields, then how
  * many fields are left out. Enough to decide on for a client that knows
  * nothing else. */
-function subtitle(seen: Pick<Sighting, "host" | "label" | "context" | "shown" | "more">): string {
+function subtitle(seen: Pick<Sighting, "host" | "label" | "context" | "shown" | "more" | "others">, changing = false): string {
   return [
     `${seen.host} · ${seen.label}`,
     ...(seen.context ? [`Where: ${seen.context}`] : []),
     ...seen.shown.map(fieldLine),
     ...(seen.more ? [moreLine(seen.more)] : []),
+    ...(seen.others ? [othersLine(seen.others)] : []),
+    ...(changing ? [CHANGING_LINE] : []),
   ].join("\n");
 }
 
 /** As many of the fields as the card has room for, from the first. What
  * does not fit is counted, so the card can say so, and is never cut off
- * mid-line: the last line always says how many are missing. */
-function fit(seen: Pick<Sighting, "host" | "label" | "context">, fields: CommitField[], unseen = 0): { shown: CommitField[]; more: number } {
+ * mid-line: the last lines always say how many are missing. Room is kept
+ * for the line a third card adds. */
+function fit(seen: Pick<Sighting, "host" | "label" | "context" | "others">, fields: CommitField[]): { shown: CommitField[]; more: number } {
   const shown: CommitField[] = [];
   for (const field of fields) {
-    const more = fields.length - shown.length - 1 + unseen;
-    if (shown.length >= SHOWN_FIELDS || subtitle({ ...seen, shown: [...shown, field], more: Math.max(more, 1) }).length > SUBTITLE_MAX) break;
+    const more = fields.length - shown.length - 1;
+    if (shown.length >= SHOWN_FIELDS || subtitle({ ...seen, shown: [...shown, field], more: Math.max(more, 1) }, true).length > SUBTITLE_MAX) break;
     shown.push(field);
   }
-  return { shown, more: fields.length - shown.length + unseen };
+  return { shown, more: fields.length - shown.length };
 }
 
 export class BrowserCommitGate {
@@ -360,11 +398,12 @@ export class BrowserCommitGate {
     if (intent === "blind") return refusal(TYPED_BLIND);
     call.admit();
     const deadline = Date.now() + this.deps.holdMs;
-    let seen = await this.look(call, intent);
+    const first = await this.look(call, intent);
     // Not knowing is not the same as nothing to hold.
-    if (typeof seen === "string") return refusal(blindReason(intent, seen));
-    if (!seen) return call.dispatch(intent.params);
-    if (intent.typed) return refusal(TYPED_ENTER);
+    if (first === "typed-commit") return refusal(TYPED_ENTER);
+    if (typeof first === "string") return refusal(blindReason(intent, first));
+    if (!first) return call.dispatch(intent.params);
+    let seen: Sighting = first;
 
     const policy = this.deps.policy(call.botId) ?? DEFAULT_OUTBOUND_POLICY;
     const row = { threadId: call.threadId, botId: call.botId, botName: call.botName, tool: name };
@@ -382,10 +421,13 @@ export class BrowserCommitGate {
       }
     }
 
-    for (;;) {
+    // An approval the page changed under is void, and a new card is raised.
+    // On a page that keeps changing by itself that would never end: after
+    // two voids in a row the next card says so and is bound to less.
+    for (let voids = 0; ; voids += 1) {
       const remaining = deadline - Date.now();
       if (remaining <= 0 || !call.active()) return refusal(UNANSWERED);
-      const answer = await this.ask(call, intent, seen, row, remaining);
+      const answer = await this.ask(call, intent, seen, row, remaining, voids >= 2);
       if (answer.next === "refuse") return refusal(answer.why);
       if (answer.next === "send") {
         // The hold is released and the card settled: the call goes out as it was judged.
@@ -404,7 +446,7 @@ export class BrowserCommitGate {
    * outlived a failure would refuse every action in that browser until the
    * server restarted. */
   private async ask(
-    call: CommitCall, intent: Intent, seen: Sighting, row: Pick<DecisionRow, "threadId" | "botId" | "botName" | "tool">, timeoutMs: number,
+    call: CommitCall, intent: Intent, seen: Sighting, row: Pick<DecisionRow, "threadId" | "botId" | "botName" | "tool">, timeoutMs: number, changing: boolean,
   ): Promise<{ next: "send" } | { next: "refuse"; why: string } | { next: "ask"; seen: Sighting }> {
     const tool = row.tool ?? "";
     const held = this.deps.requests.open({ botId: call.botId, threadId: call.threadId, tool, timeoutMs });
@@ -428,8 +470,8 @@ export class BrowserCommitGate {
     };
     try {
       shot = seen.picture ? await call.shot().catch(() => undefined) : undefined;
-      messageId = this.deps.post({ botId: call.botId, threadId: call.threadId, card: this.card(seen, tool, held.requestId, shot) });
-      this.deps.log({ ...row, requestId: held.requestId, summary: this.summary(seen), decision: "card-shown", source: "outbound", rule: commitRule(seen.class) });
+      messageId = this.deps.post({ botId: call.botId, threadId: call.threadId, card: this.card(seen, tool, held.requestId, shot, changing) });
+      this.deps.log({ ...row, requestId: held.requestId, summary: this.summary(seen, changing), decision: "card-shown", source: "outbound", rule: commitRule(seen.class) });
 
       const answer = await this.answerOrGone(held.answer, call);
       if (call.active()) this.deps.resume(call.botId, call.threadId);
@@ -453,7 +495,8 @@ export class BrowserCommitGate {
         return { next: "refuse", why: STILL_HELD };
       }
       const now = await this.look(call, intent).catch(() => "unreadable" as const);
-      if (now && typeof now !== "string" && now.digest === seen.digest) {
+      // A card that said the page keeps changing is bound to less.
+      if (now && typeof now !== "string" && (changing ? now.loose === seen.loose : now.digest === seen.digest)) {
         // The answer was Allow, but the bot's request may have closed while
         // the person had the browser or the page was read again. Then
         // nobody is waiting for this click, and it is not made.
@@ -468,7 +511,7 @@ export class BrowserCommitGate {
       if (typeof now === "string") {
         settle(unavailable);
         close("unreadable");
-        return { next: "refuse", why: blindReason(intent, now) };
+        return { next: "refuse", why: now === "typed-commit" ? TYPED_ENTER : blindReason(intent, now) };
       }
       settle(unavailable, true);
       close("page-changed");
@@ -516,97 +559,130 @@ export class BrowserCommitGate {
    * (or the engine has no such element and will say so itself); a Blind
    * reason when that could not be told. Throws what the runtime gate throws
    * when a person has the browser. */
-  private async look(call: CommitCall, intent: Intent): Promise<Sighting | null | Blind> {
+  private async look(call: CommitCall, intent: Intent): Promise<Sighting | null | Blind | "typed-commit"> {
     if (intent.via === "reload") {
       const sent = this.sent.get(call.session);
       if (!sent) return null;
       const { address, host } = place(await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read"));
       const digest = createHash("sha256").update(JSON.stringify([address, "reload", sent.id])).digest("hex");
       // No fields and no picture: what was sent is not this call's to show.
-      return { class: sent.class, host, label: `Reload, which can repeat an earlier ${sent.class === "money" ? "payment" : "send"}`, context: "", shown: [], more: 0, digest, picture: false, repeat: true };
+      return { class: sent.class, host, label: `Reload, which can repeat an earlier ${sent.class === "money" ? "payment" : "send"}`, context: "", shown: [], more: 0, others: 0, digest, loose: digest, picture: false, repeat: true };
     }
-    const [found, url] = await this.deps.runtime.withAgentAction(
-      call.session,
-      () => Promise.all([call.page.target(intent.selector, intent.via === "enter"), call.page.url()]),
-      "read",
-    );
-    // Only "missing" says there is nothing to act on.
-    if (found === "missing") return null;
-    if (found === "unreadable" || found === "unusable" || found === "framed") return found;
+    const enter = intent.via === "enter";
+    // The first read: what the call would act on, enough to judge it.
+    const found = await this.deps.runtime.withAgentAction(call.session, () => call.page.target(intent.selector, enter), "read");
+    // Only "missing" says there is nothing to act on. For typed text it
+    // says something else: the engine types at the focus when its selector
+    // resolves to nothing (measured), so that Enter would land unseen.
+    if (found === "missing") return intent.typed ? "untypable" : null;
+    if (found === "unreadable" || found === "unusable" || found === "framed" || found === "sealed") return found;
     const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
     const known = ref ? this.deps.runtime.ref(call.session, ref) : undefined;
     // The snapshot's own name for a ref, as a target of its own: a click on
-    // it, with nothing known about a form.
-    const bySnapshot = (): CommitTarget & Pick<PageTarget, "fields" | "identity" | "context"> => {
+    // it, with nothing known about a form. `card` when it is most likely
+    // inside a payment frame the read cannot look into.
+    const bySnapshot = (card: boolean): CommitTarget => {
       const box = known?.role === "searchbox" ? "search" : known?.role === "textbox" ? "single" : null;
-      return { via: "click", label: known?.name ?? "", role: known?.role ?? "", box, submits: false, search: box === "search", card: false, multiline: false, fields: [], identity: "", context: "" };
+      return { via: "click", label: known?.name ?? "", role: known?.role ?? "", box, submits: false, search: box === "search", card, multiline: false, button: isButtonRole(known?.role ?? "") };
     };
-    let targets: Array<CommitTarget & Pick<PageTarget, "fields" | "identity" | "context">>;
-    if (found === "hidden") {
+    // What the page read described, and beside it what the snapshot named.
+    let read: PageTarget[] = [];
+    let targets: CommitTarget[];
+    if (found === "hidden" || found === "hidden-pay") {
       // The engine found an element the page read cannot describe: it is
       // inside a frame, or it has no area. The snapshot's own name for the
-      // ref is all there is to judge a click by; with no name, or for an
-      // Enter, nothing is.
-      if (!known || intent.via !== "click") return "undescribed";
-      targets = [bySnapshot()];
+      // ref is all there is to judge a click by; with no name, or for a key,
+      // nothing is. In a payment frame a button is money whatever it says.
+      if (!known || intent.via !== "click" || !intent.selector) return "undescribed";
+      targets = [bySnapshot(found === "hidden-pay")];
     } else {
       // More than one element can share the box. Each is judged.
-      const read = [found, ...(found.also ?? [])];
-      // The engine measures an element inside a frame from the frame's own
-      // corner, so on a page with a frame the element found in a ref's box
-      // may be another one, outside the frame. Text typed with a line break
-      // is judged by the element alone: when the snapshot does not call it
-      // by the same name, nothing says where that Enter would land.
-      if (intent.typed && ref && found.frames && !(known && read.some((target) => sameName(target.label, known.name)))) return "undescribed";
-      targets = read.map((target: PageTarget) => ({
+      read = [found, ...(found.also ?? [])];
+      const named = Boolean(known && read.some((target) => sameName(target.label, known.name)));
+      if (intent.typed) {
+        // Text with a line break runs only into a text field that will
+        // itself take it. At anything else the engine types at the focus.
+        if (!read.every((target) => target.typable)) return "untypable";
+        // The engine measures an element inside a frame from the frame's own
+        // corner, so on a page with a frame the element found in a ref's box
+        // may be another one, outside the frame. When the snapshot does not
+        // call it by the same name, nothing says where that Enter would land.
+        if (ref && found.frames && !named) return "undescribed";
+      }
+      targets = read.map((target) => ({
         via: intent.via as "click" | "enter", shift: intent.shift, label: target.label, role: target.role, box: target.box,
-        submits: target.submits, search: target.search, card: target.card, multiline: target.multiline,
-        fields: target.fields, identity: target.identity, context: target.context,
+        submits: target.submits, search: target.search, card: target.card, multiline: target.multiline, button: target.button, changes: target.changes,
       }));
       // For a click, the element as the snapshot named it is judged beside
       // the element as it was read: whichever the box really belongs to, a
-      // commitment by either is held.
-      if (intent.via === "click" && known) targets.push(bySnapshot());
+      // commitment by either is held. When the names differ on a page with
+      // a payment frame it cannot look into, the ref is most likely in it.
+      if (intent.via === "click" && known) targets.push(bySnapshot(found.payFrame && !named));
     }
     // The snapshot's name is the browser's own; the page read's is ours. A
     // click is held when either one names a commitment, on any element the
     // engine might act on. The most serious one is the one shown.
-    let pick: { kind: CommitClass; target: (typeof targets)[number]; named: string } | undefined;
-    for (const target of targets) {
+    let pick: { kind: CommitClass; at: number; named: string } | undefined;
+    targets.forEach((target, at) => {
       const labels = intent.via === "click" && known?.name && known.name !== target.label ? [target.label, known.name] : [target.label];
       const classes = labels.map((label) => classifyCommit({ ...target, label }));
       const kind: CommitClass | null = classes.includes("money") ? "money" : classes.includes("send") ? "send" : null;
-      if (!kind || (pick && (pick.kind === "money" || kind === "send"))) continue;
-      pick = { kind, target, named: labels[classes.indexOf(kind)] || labels.find(Boolean) || `unlabelled ${target.role || "control"}` };
-    }
+      if (!kind || (pick && (pick.kind === "money" || kind === "send"))) return;
+      pick = { kind, at, named: labels[classes.indexOf(kind)] || labels.find(Boolean) || `unlabelled ${target.role || "control"}` };
+    });
+    // Nothing to hold: the call goes on, and nothing more of the page is read.
     if (!pick) return null;
-    const { target, named } = pick;
-    const label = intent.via === "enter" && target.box === "multiline" && !target.submits ? `Enter in ${named}` : named;
+    if (intent.typed) return "typed-commit";
+    const { kind, at, named } = pick as { kind: CommitClass; at: number; named: string };
+    const target = targets[at]!;
+    const label = enter && target.box === "multiline" && !target.submits ? `Enter in ${named}` : named;
 
+    // The second read, only for a commitment: the evidence for its card and
+    // what its approval is bound to.
+    const [detail, url] = await this.deps.runtime.withAgentAction(
+      call.session,
+      () => Promise.all([read.length ? call.page.evidence(intent.selector, enter) : Promise.resolve<PageDetail>({ parts: [], secrets: false }), call.page.url()]),
+      "read",
+    );
+    // The page moved between the two reads, or would not answer the second.
+    if (typeof detail === "string" || detail.parts.length !== read.length) return "unreadable";
+    const NONE: PageEvidence = { fields: [], others: 0, bound: "", identity: "", context: "", around: "" };
+    const part = (index: number): PageEvidence => detail.parts[index] ?? NONE;
     const { address, host } = place(url);
-    // What the approval is bound to: the address, which element it is and
-    // what is around it, and every field at full length, for every element
-    // the call might act on. The card shows less; this is all of it.
+    // What the approval is bound to: the address; which element it is and
+    // the text around it (relative times and clocks evened out); every field
+    // the card lists, at full length; and the page's own hash of every
+    // control of the form or region, shown or not. For every element the
+    // call might act on. The card shows less; this is all of it.
+    const listed = (index: number) => part(index).fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null]);
     const digest = createHash("sha256").update(JSON.stringify([
-      address, intent.via, known?.name ?? null,
-      targets.map((each) => [each.label, each.role, each.identity, each.context, each.fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null])]),
+      address, intent.via, intent.key ?? null, known?.name ?? null,
+      targets.map((each, index) => [each.label, each.role, part(index).identity, part(index).around, steady(part(index).context), part(index).bound, part(index).others, listed(index)]),
     ])).digest("hex");
-    const head = { host, label: clip(label, 120), context: masked(target.context) };
-    // No picture of a page that shows a field the card masks, nor of one
+    const loose = createHash("sha256").update(JSON.stringify([
+      address, intent.via, intent.key ?? null, known?.name ?? null,
+      targets.map((each, index) => [each.label, each.role, position(part(index).identity), part(index).bound, part(index).others, listed(index)]),
+    ])).digest("hex");
+    const evidence = part(at);
+    // The text around the element is carried only when nothing in it had to
+    // be masked. When something did, the page is saying a secret out loud.
+    const context = masked(evidence.context) === evidence.context ? evidence.context : "";
+    const head = { host, label: clip(label, 120), context, others: evidence.others };
+    // No picture of a page that shows something the card masks, nor of one
     // the read could not look at: the picture would show what the card hides.
-    const picture = found !== "hidden" && !found.secrets;
-    return { class: pick.kind, ...head, ...fit(head, target.fields.map(shownField)), digest, picture };
+    const picture = read.length > 0 && !detail.secrets && context === evidence.context;
+    return { class: kind, ...head, ...fit(head, evidence.fields.map(shownField)), digest, loose, picture };
   }
 
-  private summary(seen: Sighting): string {
-    return clip(subtitle(seen), SUBTITLE_MAX);
+  private summary(seen: Sighting, changing = false): string {
+    return clip(subtitle(seen, changing), SUBTITLE_MAX);
   }
 
-  private card(seen: Sighting, tool: string, requestId: string, shot: string | undefined): OptionCardData {
+  private card(seen: Sighting, tool: string, requestId: string, shot: string | undefined, changing: boolean): OptionCardData {
     const money = seen.class === "money";
     return {
       title: COMMIT_TITLE[seen.class],
-      subtitle: this.summary(seen),
+      subtitle: this.summary(seen, changing),
       options: ["Allow", "Deny"],
       requestId,
       tool,
@@ -620,6 +696,8 @@ export class BrowserCommitGate {
         ...(seen.context ? { context: seen.context } : {}),
         fields: seen.shown,
         ...(seen.more ? { more: seen.more } : {}),
+        ...(seen.others ? { others: seen.others } : {}),
+        ...(changing ? { changing: true } : {}),
         ...(shot ? { shot } : {}),
         ...(seen.picture ? {} : { noShot: true }),
       },

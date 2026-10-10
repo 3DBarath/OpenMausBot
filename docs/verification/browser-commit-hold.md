@@ -50,7 +50,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | A1 | Enter with the focus on a checkbox, a radio button, a list or a slider is held as the form's "Buy now". |
 | A2 | `agent_browser_check` on a Send button is held; `agent_browser_uncheck` on a box whose `onchange` submits is held. |
 | A3 | `Enter+Shift` in a one-line field and `Enter+Control` in a message box are held; `Enter+Shift` in the message box types a line break and passes. |
-| A4 | After an approved payment that posts a form, `agent_browser_reload` is held and Deny posts nothing; after opening another address it passes; after going back it is held again. |
+| A4 | After an approved payment that posts a form, `agent_browser_reload` is held and Deny posts nothing. The card names the site and "an earlier payment" and repeats no field. After opening another address the reload is held too, and again after going back. |
 | A5 | A 2,400-character selector and one starting with a dash are refused. A button with no area is held by its snapshot name when picked by ref, and refused when picked by CSS. |
 | A6 | A visible Send and a hidden Cancel in one grid cell: the click on Send is held. |
 | A7 | Enter in a form whose only submit is `<input type="image">` is held as money; so is one whose button is tied by the `form` attribute. |
@@ -59,6 +59,17 @@ even when an earlier one failed, and prints `"case"`, its title and
 | A8c | A form with controls named `tagName`, `elements`, `action`, `id`, `closest` and `querySelectorAll` is still read: its submit is held and its field is on the card. |
 | A9 | A payment frame from another origin (a second local server, reached as `localhost`). With the focus in its card field, `Enter`, `Control+Enter` and `Enter+Shift` are refused, and so are a line break typed into the field's ref (whose measured box is also the box of a field outside the frame), a line break typed at the frame element, and a click on the frame element. Nothing is paid. The frame's Pay button, by its ref, is held. In a frame of the page's own origin, Enter is held as money. |
 | A10 | A card form with no autofill hints (card number, expiry, CVC by label) is held as money on "Continue". A form with a card number typed into a field called `ref` is too. A library card number with a PIN signs in with no card. |
+| R1 | A line break typed at a paragraph, an image, and selectors the engine cannot resolve (`text=…`, `placeholder=…`, `label=…`, `role=…`, `@x`) is refused while a "Pay now" form has the focus. Nothing is paid. |
+| R2 | In a card form (card number, expiry and CVC by label), a `type="button"` "Continue", a "Confirm" link, a "Next" element with the button role and a list with an `onchange` handler are each held as money. So is a submit in a form whose card field is a processor's frame from another origin. |
+| R3 | A "Continue" inside a frame of the page's own origin, clicked by ref, is held as money and the card lists the frame's card field by length. The same button inside a payment frame from another origin is held as money too. A click on an `<object>` element is refused. |
+| R4 | `Space`, `" "` and `Shift+Space` on a focused Send button are held. Space in a text box passes. Space with the focus inside a payment frame from another origin is refused. |
+| R5 | After an approved payment, the bot opens another page and that page's own link goes back: the reload is held, and Deny posts nothing. |
+| R6 | An approval is void after the page changes: a field in another section of a page with no form, the text in a rich-text frame, a hidden field, fields in a step that is not displayed, and a tick box outside the button's region. |
+| R7 | Fields called Code, Security answer, Social security number, Contraseña, Secret key, Número de tarjeta, Recovery phrase and Backup code are on the card and in the log by length only; the text around the button, which says a password, is left off and the page is not pictured. On a page with no form, only the button's own section is listed. The reload card repeats nothing that was sent. |
+| R8 | A row whose "3s ago" ticks and whose button is restyled four times a second: one approval is used. A row whose word really changes: two approvals are void, the third card says the page keeps changing, and its approval is used. |
+| R9 | With the focus inside a closed shadow root that holds a card form, Enter and Space are refused. |
+| R11 | On a page with 6,000 filled fields a click that commits nothing runs with no card inside 1.5 seconds. A Send there lists only its own section's field. |
+| R12 | A search box holding a card number submits with no card. An IMEI lookup (a number that passes the Luhn check) does too. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
