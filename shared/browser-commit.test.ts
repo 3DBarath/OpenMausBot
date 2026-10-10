@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyCommit, commitRule, commitRuleClass, enterPress, isButtonRole, scriptAction, spacePress, type CommitTarget } from "./browser-commit.ts";
+import { chordPress, classifyCommit, commitRule, commitRuleClass, enterPress, isButtonRole, scriptAction, spacePress, type CommitTarget } from "./browser-commit.ts";
 
 const click = (label: string, extra: Partial<CommitTarget> = {}): CommitTarget => ({
   via: "click", label, role: "button", box: null, submits: false, search: false, card: false, multiline: false, ...extra,
@@ -12,7 +12,7 @@ const enter = (extra: Partial<CommitTarget> = {}): CommitTarget => ({
 describe("classifyCommit", () => {
   it.each([
     "Send", "send", "SEND NOW", "Reply", "Post", "Post reply", "Publish", "Comment", "Share", "Message", "Submit",
-    "Invite people", "Apply", "List item", "List  item", "Send message",
+    "Invite people", "List item", "List  item", "Send message",
   ])("holds a click on %j as a send", (label) => {
     expect(classifyCommit(click(label))).toBe("send");
   });
@@ -86,13 +86,15 @@ describe("real button labels", () => {
     ["Submit payment", "money"], ["Send payment", "money"], ["Send money", "money"], ["Submit order", "money"], ["Apply payment", "money"],
     // Send.
     ["Send", "send"], ["Send message", "send"], ["Reply", "send"], ["Reply all", "send"], ["Post", "send"], ["Post reply", "send"], ["Publish", "send"],
-    ["Comment", "send"], ["Share", "send"], ["Submit", "send"], ["Invite", "send"], ["Apply now", "send"], ["Apply coupon", "send"], ["List item", "send"],
+    ["Comment", "send"], ["Share", "send"], ["Submit", "send"], ["Invite", "send"], ["Apply now", "send"], ["List item", "send"],
     // Nothing: reading, moving on, managing. A money word that names a thing, not an act, holds nothing.
     ["Order history", null], ["Payment methods", null], ["Search", null], ["Next", null], ["Continue", null], ["Confirm", null], ["Cancel", null],
     ["Cancel order", null], ["Track order", null], ["View order", null], ["Your orders", null], ["Order summary", null], ["Booking details", null],
     ["Purchase history", null], ["Check out our new arrivals", null], ["Check out the docs", null], ["Bookmark", null], ["PayPal", null],
     ["Log in", null], ["Sign up", null], ["Add to cart", null], ["Save", null], ["Back", null], ["Close", null], ["Confirm email", null],
     ["Complete profile", null], ["Reservations", null], ["Donation receipts", null],
+    // "Apply" where nothing is being submitted: a coupon, a filter.
+    ["Apply", null], ["Apply coupon", null], ["Apply filters", null],
   ] as const)("reads %j as %s", (label, kind) => {
     expect(classifyCommit(click(label))).toBe(kind);
   });
@@ -143,6 +145,174 @@ describe("a card region", () => {
   it("holds none of this outside a card region", () => {
     for (const label of ["Continue", "Confirm", "Next"]) expect(classifyCommit(click(label, { button: true }))).toBeNull();
     expect(classifyCommit(click("Plan", { role: "combobox", changes: true }))).toBeNull();
+  });
+});
+
+// The tuning pass: the hold is a guard against a bot over-acting on ordinary
+// pages, and it has to stay out of the way of ordinary browsing.
+describe("a plain link", () => {
+  const link = (label: string, extra: Partial<CommitTarget> = {}) => click(label, { role: "link", button: true, link: true, ...extra });
+
+  it.each(["Share", "Send", "Pay now", "Buy tickets", "Subscribe", "Post archive", "Order", "Book a demo"])("is never a commitment by its text: %j", (label) => {
+    expect(classifyCommit(link(label))).toBeNull();
+    // Enter or Space on it follows it, like a click.
+    expect(classifyCommit(link(label, { via: "enter" }))).toBeNull();
+  });
+
+  it("is money inside a card region, like any other control there", () => {
+    expect(classifyCommit(link("Terms", { card: true }))).toBe("money");
+    expect(classifyCommit(link("Pay now", { card: true }))).toBe("money");
+  });
+
+  it("is judged as a button when it acts as one: the read does not call that a plain link", () => {
+    expect(classifyCommit(click("Share", { role: "link", button: true }))).toBe("send");
+    expect(classifyCommit(click("Pay now", { role: "link", button: true }))).toBe("money");
+  });
+});
+
+describe("a harmless label on a form with a multi-line field", () => {
+  it.each([
+    "Save", "Save changes", "Update", "Next", "Continue", "Back", "Cancel", "Close", "Done", "OK", "Search", "Filter", "Sort", "Reset", "Clear",
+    "Add", "Edit", "Preview", "Upload", "Sign in", "Log in", "Sign up", "Create account", "Register",
+    // As sites write them.
+    "SAVE", "Save changes…", "Next →", "‹ Back", "  Done  ", "Ok", "Sign-in", "Login",
+  ])("lets %j through", (label) => {
+    expect(classifyCommit(click(label, { submits: true, multiline: true }))).toBeNull();
+    // Enter in a one-line field of that form acts through the same button.
+    expect(classifyCommit(enter({ label, role: "button", submits: true, multiline: true }))).toBeNull();
+  });
+
+  it.each(["Go", "Speichern", "Veröffentlichen", "Enviar", "", "Save and continue editing", "Next step", "Finish"])("still holds %j: the label is not one it knows", (label) => {
+    expect(classifyCommit(click(label, { submits: true, multiline: true }))).toBe("send");
+  });
+
+  it("still holds a label with a send or a spend word, whatever else it says", () => {
+    expect(classifyCommit(click("Save and send", { submits: true, multiline: true }))).toBe("send");
+    expect(classifyCommit(click("Update and publish", { submits: true, multiline: true }))).toBe("send");
+    expect(classifyCommit(click("Confirm and pay", { submits: true, multiline: true }))).toBe("money");
+  });
+
+  // "Apply" is on the list of harmless labels, and the rule for Apply is the
+  // more particular one: with a multi-line field, something is being submitted.
+  it("holds Apply there all the same", () => {
+    expect(classifyCommit(click("Apply", { submits: true, multiline: true }))).toBe("send");
+  });
+
+  it("changes nothing inside a card region", () => {
+    for (const label of ["Save", "Continue", "Next", "OK", "Cancel"]) expect(classifyCommit(click(label, { submits: true, multiline: true, card: true, button: true })), label).toBe("money");
+  });
+});
+
+describe("a sign-in form", () => {
+  it.each(["Submit", "Send code", "Post", "Reply", "Message me a link", "Share"])("is never a send, whatever its button says: %j", (label) => {
+    expect(classifyCommit(click(label, { submits: true, signin: true }))).toBeNull();
+    expect(classifyCommit(enter({ label, role: "button", submits: true, signin: true }))).toBeNull();
+    // The same button on a form that is no sign-in is a send.
+    expect(classifyCommit(click(label, { submits: true }))).toBe("send");
+  });
+
+  it("is still money where it spends, and in a card region", () => {
+    expect(classifyCommit(click("Pay now", { submits: true, signin: true }))).toBe("money");
+    expect(classifyCommit(click("Submit payment", { submits: true, signin: true }))).toBe("money");
+    expect(classifyCommit(click("Continue", { submits: true, signin: true, card: true, button: true }))).toBe("money");
+  });
+});
+
+describe("Apply", () => {
+  it.each(["Apply", "Apply filters", "Apply coupon", "Apply changes", "Apply code", "Apply to all"])("alone is not a send where nothing is being submitted: %j", (label) => {
+    expect(classifyCommit(click(label))).toBeNull();
+    expect(classifyCommit(click(label, { submits: true }))).toBeNull();
+  });
+
+  it("is a send where the form or region has a file to attach or a multi-line field", () => {
+    expect(classifyCommit(click("Apply", { submits: true, carries: true }))).toBe("send");
+    expect(classifyCommit(click("Apply", { carries: true }))).toBe("send");
+    expect(classifyCommit(click("Apply", { submits: true, multiline: true }))).toBe("send");
+  });
+
+  it.each(["Apply now", "APPLY NOW", "Easy Apply", "Quick apply", "Apply today", "Apply online", "Apply for this job", "Apply for the role", "Apply to this position", "Submit application", "Send application"])("is a send when the label says an application goes out: %j", (label) => {
+    expect(classifyCommit(click(label))).toBe("send");
+  });
+
+  it("still lifts to money beside what money is spent on", () => {
+    expect(classifyCommit(click("Apply payment"))).toBe("money");
+  });
+});
+
+describe("Enter in a multi-line field", () => {
+  const box = (extra: Partial<CommitTarget> = {}) => enter({ label: "Text", box: "multiline", multiline: true, only: false, ...extra });
+
+  it("is a new line when nothing says the field is a message composer", () => {
+    expect(classifyCommit(box({ label: "Notes" }))).toBeNull();
+    expect(classifyCommit(box({ label: "About you", only: true, says: "About you Tell us about yourself", near: ["Save changes", "Cancel"] }))).toBeNull();
+    // A composer word, or a send button, beside other text fields: a form with a message in it, not a composer.
+    expect(classifyCommit(box({ label: "Message", says: "Message", near: ["Send"] }))).toBeNull();
+  });
+
+  it.each([
+    ["its keyboard hint says send", { hint: true }],
+    ["it is the only text field there and a send-labelled control is there too", { only: true, near: ["Attach", "Send"] }],
+    ["it is the only text field there and its label has a composer word", { only: true, label: "Message #general" }],
+    ["it is the only text field there and its placeholder has one", { only: true, says: "Editor Write a reply…" }],
+    ["it is the only text field there and it is a comment box", { only: true, says: "Add a comment" }],
+    ["it is the only text field there and it is a chat box", { only: true, says: "Chat with us" }],
+  ])("is a send when %s", (_what, extra) => {
+    expect(classifyCommit(box(extra))).toBe("send");
+    // Shift+Enter is a new line even there.
+    expect(classifyCommit(box({ ...extra, shift: true }))).toBeNull();
+  });
+
+  it("is a send when the read said nothing of the field: not knowing is not a new line", () => {
+    expect(classifyCommit(enter({ label: "Notes", box: "multiline", multiline: true }))).toBe("send");
+  });
+
+  it("is a send with any key but Shift held, composer or not: that is never a new line", () => {
+    expect(classifyCommit(box({ label: "Notes", chord: true }))).toBe("send");
+    expect(classifyCommit(box({ label: "Notes", chord: true, only: true }))).toBe("send");
+  });
+
+  it("is nothing in a search box, as before", () => {
+    expect(classifyCommit(box({ label: "Search", search: true, hint: true }))).toBeNull();
+  });
+
+  // Nothing is relaxed inside a card region: there Enter in any multi-line
+  // field is held as it was before the field had to be a composer.
+  it("is held inside a card region, composer or not", () => {
+    expect(classifyCommit(box({ label: "Delivery notes", card: true }))).toBe("send");
+    expect(classifyCommit(box({ label: "Delivery notes", card: true, shift: true }))).toBeNull();
+  });
+});
+
+describe("chordPress", () => {
+  it.each(["Control+Enter", "Enter+Control", "Meta+Enter", "Alt+Return", "Shift+Control+Enter", "Enter+a"])("reads %j as Enter with another key held", (key) => {
+    expect(chordPress(key)).toBe(true);
+  });
+
+  it.each(["Enter", "Return", "\n", "Shift+Enter", "Enter+Shift", " Enter ", "Tab", "Control+a", "", 13, null, undefined])("does not read %j as one", (key) => {
+    expect(chordPress(key)).toBe(false);
+  });
+});
+
+describe("the labels added in the tuning pass", () => {
+  it.each([
+    "Place bet", "Place a bet", "Place bets", "Deposit", "Deposit funds", "Withdraw", "Top up", "Top-up", "Add funds", "Upgrade", "Upgrade plan", "Start free trial",
+    "Start your free trial", "Renew", "Renew now", "Get tickets", "Sell", "Trade", "Sign transaction", "Charge", "Charge card",
+  ])("holds %j as money", (label) => {
+    expect(classifyCommit(click(label))).toBe("money");
+  });
+
+  it.each(["Forward", "Tweet", "Notify", "Notify team", "Accept invitation"])("holds %j as a send", (label) => {
+    expect(classifyCommit(click(label))).toBe("send");
+  });
+
+  it.each(["Confirm", "Continue", "Complete", "Approve", "Authorize", "Agree & Continue"])("leaves %j out of the lists: money only inside a card region", (label) => {
+    expect(classifyCommit(click(label))).toBeNull();
+    expect(classifyCommit(click(label, { submits: true }))).toBeNull();
+    expect(classifyCommit(click(label, { card: true, button: true }))).toBe("money");
+  });
+
+  it.each(["Upgrades", "Seller", "Trademark", "Discharge", "Renewal", "Deposits", "Forwarded", "Tweets", "Notifications"])("still matches whole words only: %j", (label) => {
+    expect(classifyCommit(click(label))).toBeNull();
   });
 });
 

@@ -10,8 +10,11 @@ export type CommitClass = "send" | "money";
 
 /** English in the first version. The form rules in classifyCommit are the
  * fallback for every other language. */
-const SEND_WORDS = ["send", "reply", "post", "publish", "comment", "share", "message", "submit", "invite", "apply", "list item"];
-const MONEY_WORDS = ["pay", "buy", "place order", "checkout", "bid", "book", "reserve", "subscribe", "donate", "transfer"];
+const SEND_WORDS = ["send", "reply", "post", "publish", "comment", "share", "message", "submit", "invite", "list item", "forward", "tweet", "notify", "accept invitation"];
+const MONEY_WORDS = [
+  "pay", "buy", "place order", "checkout", "bid", "book", "reserve", "subscribe", "donate", "transfer",
+  "deposit", "withdraw", "add funds", "upgrade", "renew", "get tickets", "sell", "trade", "sign transaction", "charge",
+];
 
 /** Whole words only, in any letter case: "Post" and "Post reply" match,
  * "Posts" and "Repost" do not. A space in an entry is any white space. */
@@ -20,6 +23,11 @@ function wholeWords(words: readonly string[]): RegExp {
   return new RegExp(`(?<![\\p{L}\\p{N}_])(?:${any})(?![\\p{L}\\p{N}_])`, "iu");
 }
 const SEND = wholeWords(SEND_WORDS);
+/** "Apply" is a send only where something is being submitted: on a form or
+ * region with a file to attach or a multi-line field, or when the label
+ * itself says an application goes out. On a filter or a coupon it is not. */
+const APPLY = wholeWords(["apply"]);
+const APPLY_PHRASES = wholeWords(["apply (?:now|today|here|online)", "(?:easy|quick|one-click|1-click) apply", "apply (?:for|to) (?:this|the|a) (?:job|role|position|opening)"]);
 
 /** The other ways a button says what the Money list says. Each is still a
  * whole word or phrase.
@@ -33,6 +41,9 @@ const MONEY_PHRASES = [
   "check out(?! (?:the|our|this|these|those|what|how|why|more|my|all|some|other|new|latest|an?)(?![\\p{L}\\p{N}_]))",
   "order (?:now|again|online|here|today)",
   "(?:pre|re)-?order",
+  "place (?:an? |your |my )?bets?",
+  "top[- ]?up",
+  "start (?:your |my |an? )?free trial",
 ];
 const MONEY = wholeWords([...MONEY_WORDS, ...MONEY_PHRASES]);
 const ORDER_ALONE = /^\s*order\s*$/i;
@@ -46,7 +57,35 @@ const COMMIT_VERBS = wholeWords(["place", "complete", "confirm", "finish", "fina
 /** Does this label spend money? "Confirm" alone does not, and neither does
  * a money word alone. */
 function spends(label: string): boolean {
-  return MONEY.test(label) || ORDER_ALONE.test(label) || (MONEY_THINGS.test(label) && (COMMIT_VERBS.test(label) || SEND.test(label)));
+  return MONEY.test(label) || ORDER_ALONE.test(label) || (MONEY_THINGS.test(label) && (COMMIT_VERBS.test(label) || SEND.test(label) || APPLY.test(label)));
+}
+
+/** Does this label send something, on this form or region? */
+function sends(target: CommitTarget): boolean {
+  return SEND.test(target.label) || APPLY_PHRASES.test(target.label) || (APPLY.test(target.label) && Boolean(target.carries || target.multiline));
+}
+
+/** Labels that are known to send nothing. A form with a multi-line field is
+ * otherwise taken for a send whatever its button says (that is what catches
+ * a send in another language); these are the buttons of a profile, a
+ * settings page, a note. The whole label must be one of them. ("Apply" has
+ * a rule of its own above: with a multi-line field it is a send.) */
+const HARMLESS: ReadonlySet<string> = new Set([
+  "save", "save changes", "update", "next", "continue", "back", "cancel", "close", "done", "ok", "okay", "search", "filter", "sort", "reset", "clear",
+  "add", "edit", "preview", "upload", "sign in", "signin", "log in", "login", "sign up", "signup", "create account", "register",
+]);
+const harmless = (label: string): boolean => HARMLESS.has(label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim());
+
+/** The words a message composer is called by. */
+const COMPOSER = wholeWords(["message", "reply", "comment", "chat"]);
+/** Is the multi-line field Enter was pressed in a message composer? It is
+ * when its keyboard hint says send; or when it is the only text field in
+ * its form or region and either a send-labelled control is there or its own
+ * label or placeholder has a composer word. A read that said nothing of the
+ * field (`only` unknown) is taken for one: not knowing is not a new line. */
+function composer(target: CommitTarget): boolean {
+  if (target.hint || target.only === undefined) return true;
+  return target.only && (COMPOSER.test(target.label) || COMPOSER.test(target.says ?? "") || (target.near ?? []).some((label) => SEND.test(label)));
 }
 
 /** Controls a click only toggles or selects. Their label names a state
@@ -97,6 +136,26 @@ export interface CommitTarget {
   /** A list or a tick box with a handler of its own, or its form's, that
    * runs when it changes. */
   changes?: boolean;
+  /** A plain link: an anchor whose address loads another document (not "#",
+   * not "javascript:"), with no button role and no click handler written
+   * on it. What it says is where it goes, not what it does. */
+  link?: boolean;
+  /** The form or region is a sign-in: it has a password field and no
+   * multi-line field. */
+  signin?: boolean;
+  /** The form or region holds a file to attach or a multi-line field:
+   * something is being submitted there. */
+  carries?: boolean;
+  /** Enter with a key other than Shift held: never a new line. */
+  chord?: boolean;
+  /** For Enter in a multi-line field, what the read found that could make
+   * it a message composer. `hint`: its keyboard hint is "send". `only`: it
+   * is the only text field in its form or region. `says`: its own label and
+   * placeholder. `near`: the labels of the button-like controls there. */
+  hint?: boolean;
+  only?: boolean;
+  says?: string;
+  near?: string[];
 }
 
 /** The roles a snapshot gives to what a click activates. */
@@ -110,6 +169,9 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   // A search is never a commitment of either class, whatever its button
   // says and whatever was typed into it.
   if (target.search) return null;
+  // A plain link is never a commitment by its text: it opens a page. Inside
+  // a card region it is a control like any other.
+  if (target.link && !target.card) return null;
   // A click into a text box only puts the cursor there, so its label ("Message")
   // is not an action. Enter in a one-line field acts through the submit button.
   const passive = PASSIVE_ROLES.has(target.role);
@@ -120,9 +182,14 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   // its type or label: a click, Enter or Space on it, a submit, a list or a
   // tick box whose handler runs on change, Enter in one of its one-line fields.
   if (target.card && (target.submits || target.changes || (target.button && target.box === null && !passive) || (target.via === "enter" && target.box === "single"))) return "money";
-  if (activates && SEND.test(target.label)) return "send";
-  if (target.via === "enter" && target.box === "multiline" && !target.shift) return "send";
-  if (target.submits && target.multiline) return "send";
+  // A sign-in form is never a send, whatever its button says.
+  if (target.signin) return null;
+  if (activates && sends(target)) return "send";
+  // Enter in a multi-line field is a new line, unless the field is a
+  // message composer or another key is held. Inside a card region nothing
+  // is taken for a new line.
+  if (target.via === "enter" && target.box === "multiline" && !target.shift && (target.chord || target.card || composer(target))) return "send";
+  if (target.submits && target.multiline && !harmless(target.label)) return "send";
   return null;
 }
 
@@ -145,6 +212,13 @@ export function enterPress(key: unknown): { shift: boolean } | null {
   if (!enters) return null;
   const shifts = parts.filter((part) => part.trim().toLowerCase() === "shift").length;
   return { shift: enters === 1 && shifts > 0 && shifts === parts.length - 1 };
+}
+
+/** Enter with a key other than Shift held ("Control+Enter", "Enter+Meta").
+ * Nothing is typed then, and many pages submit on it. */
+export function chordPress(key: unknown): boolean {
+  const enter = enterPress(key);
+  return Boolean(enter) && !enter!.shift && (key as string).split("+").length > 1;
 }
 
 /** Space, alone or in a chord, under every name agent_browser_press takes
