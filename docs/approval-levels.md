@@ -153,10 +153,11 @@ word lifts a send to money ("Submit payment"), so it asks even under a daily
 allowance. A money word that only names a thing holds nothing: "Order
 history", "Payment methods", "Purchase history", "Check out our new
 arrivals". "Confirm" alone holds nothing. "Book a demo" is held as money,
-because "book" is on the list. A click that
-only puts the cursor in a text box, or ticks a checkbox, is never held.
-**Search is never a send**: a search field, anything inside a search region,
-or a form whose only text field is a search field.
+because "book" is on the list.
+
+A click that only puts the cursor in a text box, or ticks a checkbox, is
+never held. **Search is never a send**: a search field, anything inside a
+search region, or a form whose only text field is a search field.
 
 What counts as submitting a form:
 
@@ -245,9 +246,10 @@ up to the configured MCP call timeout when that is shorter. Then the card
 closes and the bot is told nobody answered. The card also closes, and the
 browser is the bot's again, as soon as the call behind it is gone: the turn
 was stopped, the engine cancelled the call, or the hold itself failed
-part-way. A card that has closed cannot be allowed afterwards. On Deny the bot is told not to
-retry and to ask you what you want instead. Each hold and each answer is in
-the bot's activity log and the decision log, with the site and the label.
+part-way. A card that has closed cannot be allowed afterwards. On Deny the
+bot is told not to retry and to ask you what you want instead. Each hold and
+each answer is in the bot's activity log and the decision log, with the site
+and the label.
 
 While a card is open the bot can still read that browser but cannot act in
 it. You can use the browser yourself at any time, and your own clicks are
@@ -268,12 +270,14 @@ refused, not held, when its text:
   `removeAttribute`, `el.ariaLabel = …`);
 - makes an event by hand (`dispatchEvent`, jQuery's `.trigger(…)`, any
   `on…` handler called directly);
-- navigates. The bot is told to use the click
-and fill tools, which the rules above cover. A line break typed with
-`agent_browser_type` is a real Enter key press; it is refused the same way
-where it would send or submit. Typed text with a tab before the line break,
-or with anything after it, is refused wherever it is typed: a tab moves the
-focus, so the server cannot tell where that Enter would land.
+- navigates.
+
+The bot is told to use the click and fill tools, which the rules above
+cover. A line break typed with `agent_browser_type` is a real Enter key
+press; it is refused the same way where it would send or submit. Typed text
+with a tab before the line break, or with anything after it, is refused
+wherever it is typed: a tab moves the focus, so the server cannot tell where
+that Enter would land.
 
 This is a guard against a bot acting through a script by habit. **It is not a
 wall**: it reads the script's text, so a script written to hide what it does
@@ -289,8 +293,9 @@ past it.
   to type in. The daily number is used up sooner than the sends alone would.
 - Space on a focused button clicks it, and is not checked.
 - Inside an embedded frame, such as a payment or comment widget, a click is
-  judged by its label alone and the card shows no fields; Enter there is not
-  checked.
+  judged by the name the last snapshot gave the element. The card shows no
+  fields and no picture, and the approval is bound to that name and the
+  address, not to the element itself. Enter there is not checked.
 - A one-line box outside any form that sends on Enter is not recognised.
 - A page whose text around the button keeps changing by itself (a countdown
   in the same row) voids every approval: each Allow raises a new card.
