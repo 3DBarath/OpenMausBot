@@ -428,6 +428,9 @@ const CLI_OWNER_ROUTE = /^\/api\/auth\/pairing$/;
 
 const DESKTOP_OWNER_HEADER = "x-openmausbot-desktop-owner";
 
+/** Routes whose reads are as private as a change: see mutatingPublicRoute. */
+const PRIVATE_READS = ["/api/shared-notes", "/api/context-import"] as const;
+
 function mutatingPublicRoute(method: string, path: string): boolean {
   const upper = method.toUpperCase();
   // This legacy polling endpoint is spelled GET but synchronizes upstream
@@ -440,6 +443,10 @@ function mutatingPublicRoute(method: string, path: string): boolean {
   // Remote viewer config and its WebSocket upgrade hand out a desktop's VNC
   // password and control. Native owners open the direct viewer instead.
   if (path.startsWith("/api/desktop-viewer/")) return true;
+  // The owner's shared notes and an import nobody has reviewed yet (the
+  // facts proposed from an export) are read by the app itself and by the
+  // owner's signed-in devices, never by whatever else runs on this computer.
+  if (PRIVATE_READS.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) return true;
   if (["GET", "HEAD", "OPTIONS"].includes(upper)) return false;
   // Agent integrations have their own high-entropy, per-boot authorization
   // and narrower route semantics. Pairing-code exchange is intentionally

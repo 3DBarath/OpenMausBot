@@ -310,6 +310,26 @@ describe("resolveRequestAuth", () => {
     ).auth?.kind).toBe("loopback");
   });
 
+  it("answers the shared notes and an import, reads included, only to the desktop app itself", () => {
+    const options = (path: string) => ({ sessions, cookieName, streamPath: "/api/events", url: new URL(path, "http://x"), loopbackMutationToken: "owner-token-123" });
+    const paths = [
+      "/api/shared-notes", "/api/shared-notes/food.md", "/api/shared-notes?imported=1",
+      "/api/context-import", "/api/context-import/3f2b6c1e-0000-4000-8000-000000000000", "/api/context-import/3f2b6c1e-0000-4000-8000-000000000000/candidates",
+    ];
+    for (const path of paths) {
+      // any local process: a bot's shell, a script, another app
+      const local = resolveRequestAuth(request({ host: "127.0.0.1:8799" }, "GET"), options(path));
+      expect(local.auth, path).toBeNull();
+      expect(local.status, path).toBe(403);
+      // the app itself
+      expect(resolveRequestAuth(request({ host: "127.0.0.1:8799", "x-openmausbot-desktop-owner": "owner-token-123" }, "GET"), options(path)).auth?.kind, path).toBe("loopback");
+    }
+    // a name that only starts the same way is another route, read as before
+    for (const path of ["/api/shared-notes-other", "/api/context-importer", "/api/bots"]) {
+      expect(resolveRequestAuth(request({ host: "127.0.0.1:8799" }, "GET"), options(path)).auth?.kind, path).toBe("loopback");
+    }
+  });
+
   it("never grants loopback trust to a request that came through a proxy, whatever Host it carries", () => {
     expect(isProxied(request({ host: "localhost", "x-forwarded-for": "203.0.113.9" }))).toBe(true);
     expect(isProxied(request({ host: "localhost", "x-forwarded-proto": "https" }))).toBe(true);
