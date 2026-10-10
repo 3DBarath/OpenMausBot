@@ -51,7 +51,8 @@ it("imports a ChatGPT export into About me and shared notes that every bot then 
     await api(`/api/bots/${bot.id}`, "PATCH", { memoryUpkeep: false });
     const overview = await api<ImportOverview>("/api/context-import");
     expect(overview.job).toBeNull();
-    expect(overview.engines.find((engine) => engine.botId === bot.id)).toMatchObject({ name: "Memo", available: true });
+    // this engine's CLI can be told to keep no session of the call, and says so
+    expect(overview.engines.find((engine) => engine.botId === bot.id)).toEqual({ botId: bot.id, name: "Memo", available: true, keepsText: false });
 
     // ── upload and scan: no model ───────────────────────────────────────
     const { job } = await api<{ job: ImportJobView }>("/api/context-import", "POST", { source: "chatgpt" }, 201);
@@ -140,3 +141,40 @@ it("imports a ChatGPT export into About me and shared notes that every bot then 
     rmSync(scratch, { recursive: true, force: true });
   }
 }, 240_000);
+
+it("says beside the engine that it may keep the text when its CLI cannot be told not to, and reads the import all the same", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "omb-context-import-old-cli-"));
+  const routes = join(scratch, "routes.json");
+  const textDump = join(scratch, "one-shot.json");
+  writeFileSync(routes, JSON.stringify({
+    [IMPORT_MARKER]: JSON.stringify([{ text: "The person is vegetarian", kind: "core", subject: "Food", aliases: ["dinner"], sensitive: null, chat: 1 }]),
+    [TIDY_MARKER]: '{"pairs": []}',
+  }));
+  // a CLI from before the option that keeps no session of a call
+  const fixture = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_ISOLATION: "0", FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_DUMP: textDump });
+  const api = async <T = any>(path: string, method = "GET", body?: unknown, status = 200): Promise<T> => {
+    const response = await fetch(fixture.info.url + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    expect(response.status, `${method} ${path}`).toBe(status);
+    return response.json() as Promise<T>;
+  };
+  try {
+    const { bot } = await api<{ bot: WireBot }>("/api/bots", "POST", { name: "Memo" }, 201);
+    await api(`/api/bots/${bot.id}`, "PATCH", { memoryUpkeep: false });
+    // said before anything is read
+    expect((await api<ImportOverview>("/api/context-import")).engines.find((engine) => engine.botId === bot.id)).toEqual({ botId: bot.id, name: "Memo", available: true, keepsText: true });
+    // and nothing is refused: the import is read with that engine
+    const { job } = await api<{ job: ImportJobView }>("/api/context-import", "POST", { source: "paste" }, 201);
+    await api(`/api/context-import/${job.id}/text`, "POST", { text: "I am vegetarian and I cook most evenings." });
+    await expect.poll(async () => (await api<{ job: ImportJobView }>(`/api/context-import/${job.id}`)).job.status, { timeout: 20_000 }).toBe("scanned");
+    await api(`/api/context-import/${job.id}/extract`, "POST", { botId: bot.id }, 202);
+    await expect.poll(async () => (await api<{ job: ImportJobView }>(`/api/context-import/${job.id}`)).job.status, { timeout: 60_000 }).toBe("review");
+    expect((await api<{ job: ImportJobView }>(`/api/context-import/${job.id}`)).job.candidates!.map((candidate) => candidate.text)).toEqual(["The person is vegetarian"]);
+    // the call went out without the option this CLI does not have
+    expect((JSON.parse(readFileSync(textDump, "utf8")) as { argv: string[] }).argv).not.toContain("--no-session-persistence");
+    await api(`/api/context-import/${job.id}/cancel`, "POST", {});
+    expect(existsSync(join(fixture.info.dataDir, "context-import"))).toBe(false);
+  } finally {
+    await fixture.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 180_000);

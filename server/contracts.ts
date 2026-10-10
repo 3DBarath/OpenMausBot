@@ -544,6 +544,14 @@ export interface TextGenerationOptions {
   isolated?: boolean;
 }
 
+/** What an engine keeps, for itself, of the text of a text call made with
+ * `isolated` (TextGenerationOptions): "none" when it keeps no record of its
+ * own (no session, no history), "kept" when it is known to keep one,
+ * "unknown" when it cannot be told. This is about the engine on this
+ * computer; what the provider behind it does with what it is sent is that
+ * provider's own and is answered by no engine. */
+export type TextRecord = "none" | "kept" | "unknown";
+
 export interface ProviderInstance {
   readonly instanceId: InstanceId;
   readonly driverKind: DriverKind;
@@ -571,6 +579,12 @@ export interface ProviderInstance {
    * The signal is a best-effort cap: drivers that can honor it abort the
    * underlying provider call; the rest keep their own timeout. */
   generateText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
+  /** Whether `generateText` with `isolated` reads text without this engine
+   * keeping its own record of it. Absent means unknown: an engine says
+   * "none" only when it knows. A context import tells the person before it
+   * sends anything to an engine that does not say "none"
+   * (server/context-import, docs/memory.md). Never rejects. */
+  textRecord?(): Promise<TextRecord>;
   /** A one-shot text call for memory upkeep only, on an engine whose turns
    * are a whole agent process (the ACP family). It starts a fresh tool-free
    * session on the engine's own provider, so it is never offered to titles or

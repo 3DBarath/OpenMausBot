@@ -982,6 +982,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;
     },
+    // The helper is one request made from this process: there is no engine
+    // program, so no session or history of the text is written on this
+    // computer. (What the provider does with a request is the provider's.)
+    textRecord: async () => "none",
     dispose: async () => {
       const turns = [...active.values()];
       for (const turn of turns) turn.abort.abort();

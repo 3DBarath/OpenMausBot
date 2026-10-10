@@ -56,7 +56,7 @@ async function serve(auth: RequestAuth = OWNER, owner: (auth: RequestAuth) => bo
   const routes = [createContextImportRoutes({
     owner,
     imports,
-    engines: () => [{ botId: "bot-1", name: "Scout", available: true }, { botId: "bot-2", name: "Relay", available: false }],
+    engines: async () => [{ botId: "bot-1", name: "Scout", available: true, keepsText: false }, { botId: "bot-2", name: "Relay", available: false }, { botId: "bot-3", name: "Agent", available: true, keepsText: true }],
   })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -90,7 +90,8 @@ describe("an import over HTTP", () => {
     const base = await serve();
     expect(await call<ImportOverview>(base, "GET", "/api/context-import")).toEqual({
       job: null, imports: [],
-      engines: [{ botId: "bot-1", name: "Scout", available: true }, { botId: "bot-2", name: "Relay", available: false }],
+      // each bot that can read an export says whether its engine may keep its own record of the text
+      engines: [{ botId: "bot-1", name: "Scout", available: true, keepsText: false }, { botId: "bot-2", name: "Relay", available: false }, { botId: "bot-3", name: "Agent", available: true, keepsText: true }],
     });
     const { job } = await call<{ job: ImportJobView }>(base, "POST", "/api/context-import", { source: "chatgpt" }, 201);
     expect(job.status).toBe("created");

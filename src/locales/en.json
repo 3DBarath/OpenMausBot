@@ -4083,6 +4083,7 @@
   "contextImport.engine.choose": "Choose a bot",
   "contextImport.engine.unavailable": "{name} (its engine cannot make the quick call an import uses)",
   "contextImport.engine.hint": "The export is read by this bot's engine and by nothing else.",
+  "contextImport.engine.keepsText": "This engine may keep its own record of the text it is sent. OpenMausBot deletes its own copies either way.",
   "contextImport.progress.title": "Reading",
   "contextImport.progress.aria": "Import progress",
   "contextImport.progress.preparing": "Getting the conversations ready…",

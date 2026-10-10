@@ -6664,6 +6664,31 @@ const memoryUpkeep = createMemoryUpkeep({
   log: (line) => console.log(line),
 });
 
+/** Whether the engine an import would use for this bot may keep its own
+ * record of the text it is sent. Only an engine that says it keeps none
+ * answers no. The ACP engines' one-shot is a whole agent program with a
+ * session store of its own and says nothing, and an engine that is slow to
+ * answer is not waited for: both count as "it may". Nothing is refused on
+ * this; the person is told beside the engine choice (docs/memory.md). */
+async function importEngineKeepsText(botId: string): Promise<boolean> {
+  const bot = store.bot(botId);
+  const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
+  // `textRecord` speaks for generateText; an engine that has only the memory one-shot has not said
+  if (!instance?.generateText || !instance.textRecord) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const record = await Promise.race([
+      instance.textRecord(),
+      new Promise<"unknown">((resolve) => { timer = setTimeout(() => resolve("unknown"), 3_000); }),
+    ]);
+    return record !== "none";
+  } catch {
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Context import (server/context-import/job.ts): reads a ChatGPT or Claude
 // export with the engine of the bot the person picks. A job a previous run
 // left comes back here, paused if it was running.
@@ -16485,7 +16510,10 @@ ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesO
 ROUTES.push(createContextImportRoutes({
   owner: (auth) => ownerRequest(auth, notesOwnerFacts()),
   imports: contextImport,
-  engines: () => store.bots.map((bot) => ({ botId: bot.id, name: bot.name, available: Boolean(backgroundTextEngine(bot.id)?.generateText) })),
+  engines: () => Promise.all(store.bots.map(async (bot) => {
+    const available = Boolean(backgroundTextEngine(bot.id)?.generateText);
+    return { botId: bot.id, name: bot.name, available, ...(available ? { keepsText: await importEngineKeepsText(bot.id) } : {}) };
+  })),
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.

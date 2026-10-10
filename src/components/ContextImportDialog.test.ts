@@ -13,7 +13,7 @@ import { ContextImportPanel, type ContextImportActions, type ContextImportDraft 
 
 const actions = new Proxy({}, { get: () => () => undefined }) as ContextImportActions;
 const DRAFT: ContextImportDraft = { origin: "chatgpt", fileName: null, text: "", from: "", to: "", cap: "", botId: "bot-1", busy: false, error: "", copied: false, result: null };
-const ENGINES = [{ botId: "bot-1", name: "Scout", available: true }, { botId: "bot-2", name: "Relay", available: false }];
+const ENGINES = [{ botId: "bot-1", name: "Scout", available: true, keepsText: false }, { botId: "bot-2", name: "Relay", available: false }, { botId: "bot-3", name: "Agent", available: true, keepsText: true }, { botId: "bot-4", name: "Older", available: true }];
 const SCAN = { format: "chatgpt" as const, conversations: 1_240, withOwnMessages: 1_180, oldest: new Date(2023, 0, 5).getTime(), newest: new Date(2026, 9, 8).getTime(), ownChars: 2_400_000, alreadyRead: 12, skipped: { conversations: 3, messages: 40, oversized: 1, entries: ["big/conversations.json: larger than 2 GB once unpacked"], secrets: 7, overLimit: 0 }, truncated: true };
 
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
@@ -79,6 +79,17 @@ describe("the import dialog, step by step", () => {
     expect(html).toMatch(/<option value="bot-2" disabled="">Relay \(its engine cannot make the quick call an import uses\)<\/option>/);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);
     // nothing in range, or no bot picked: the button is off
+    // An engine that cannot be told to keep no record of the text, or that
+    // does not say, is named as such beside the choice, before reading starts.
+    const KEEPS = "This engine may keep its own record of the text it is sent. OpenMausBot deletes its own copies either way.";
+    const scanned = (botId: string) => render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 500, chars: 1_900_000, calls: 81, maxCalls: 160, minSeconds: 810, maxSeconds: 3_807 } }), { botId });
+    expect(words).not.toContain(KEEPS);
+    expect(scanned("bot-3").words).toContain(KEEPS);
+    expect(scanned("bot-3").html).toMatch(/role="note"[^>]*>This engine may keep its own record/);
+    // an answer the server did not give is not a "no"
+    expect(scanned("bot-4").words).toContain(KEEPS);
+    // nothing is chosen yet: nothing to say
+    expect(scanned("").words).not.toContain(KEEPS);
     const none = render(job({ status: "scanned", scan: SCAN, slice, estimate: { conversations: 0, chars: 0, calls: 0, maxCalls: 0, minSeconds: 0, maxSeconds: 0 } }));
     expect(none.words).toContain("Nothing to read in this range. Widen the dates.");
     expect(none.html).toMatch(/<button[^>]*disabled=""[^>]*>Start reading/);

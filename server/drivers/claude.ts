@@ -34,6 +34,7 @@ import type {
   SendTurnInput,
   SteerOutcome,
   TextGenerationOptions,
+  TextRecord,
 } from "../contracts.ts";
 import { gateServer, resultBudget } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
@@ -2553,23 +2554,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * the published binaries (CLAUDE_FLAG_FLOORS), so the CLI's own option
      * listing decides, as it does for --autocompact: reading it calls no
      * model. Read once; read again after a read that failed. */
-    let isolatedArgs: Promise<string[]> | undefined;
-    const isolatedOneShotArgs = (): Promise<string[]> => (isolatedArgs ??= new Promise<string[]>((resolve) => {
+    let isolationRead: Promise<{ args: string[]; read: boolean }> | undefined;
+    const oneShotIsolation = (): Promise<{ args: string[]; read: boolean }> => (isolationRead ??= new Promise((resolve) => {
       execCli(config.cli, ["--help"], { timeout: 8000, env: environment(config.managedModels?.[0] ?? "claude-haiku-4-5") }, (err, stdout) => {
         if (err || !stdout) {
-          isolatedArgs = undefined;
-          resolve([]);
+          isolationRead = undefined;
+          resolve({ args: [], read: false });
           return;
         }
         const has = (flag: string) => new RegExp(`^\\s*${flag}\\b`, "m").test(stdout);
-        resolve([
-          ...(has("--no-session-persistence") ? ["--no-session-persistence"] : []),
-          ...(has("--strict-mcp-config") ? ["--strict-mcp-config"] : []),
-          // last: the option takes a list, and "" is the empty one
-          ...(has("--tools") ? ["--tools", ""] : []),
-        ]);
+        resolve({
+          read: true,
+          args: [
+            ...(has("--no-session-persistence") ? ["--no-session-persistence"] : []),
+            ...(has("--strict-mcp-config") ? ["--strict-mcp-config"] : []),
+            // last: the option takes a list, and "" is the empty one
+            ...(has("--tools") ? ["--tools", ""] : []),
+          ],
+        });
       });
     }));
+    const isolatedOneShotArgs = async (): Promise<string[]> => (await oneShotIsolation()).args;
+    /** What an isolated one-shot leaves with the CLI: no session where the
+     * CLI has the option that says so; a session, as for every call, where
+     * it has not; and not known when the CLI could not be asked. */
+    const textRecord = async (): Promise<TextRecord> => {
+      const { args, read } = await oneShotIsolation();
+      return !read ? "unknown" : args.includes("--no-session-persistence") ? "none" : "kept";
+    };
 
     /** One-shot Claude call with the prompt on stdin, never argv. Approval
      * summaries can contain paths, commands, or secrets, so the generic
@@ -2735,6 +2747,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         },
       },
       generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, { isolated: options?.isolated, timeoutMs: options?.timeoutMs }),
+      textRecord,
       reviewPermission: (prompt, signal) => generateReview(prompt, signal),
       dispose: async () => {
         try {

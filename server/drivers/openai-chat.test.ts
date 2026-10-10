@@ -68,6 +68,8 @@ describe("createOpenAIChatRuntime one-shot usage", () => {
     expect(instance.models.default).toBe("grok-4.7");
     expect(onUsage.mock.calls).toEqual([[{ model: "grok-3-mini-actual", input: 120, output: 20, cachedInput: 100, costUsd: 0.004 }]]);
     await expect(instance.generateText!("plain summary")).resolves.toBe("helper result");
+    // the call is one request made from here: no engine process, so no session of the text is kept on this computer
+    await expect(instance.textRecord?.()).resolves.toBe("none");
     await instance.dispose();
   });
 

@@ -35,8 +35,9 @@ export interface ContextImportRouteDeps {
   /** Whether this request is the installation owner's (server/shared-notes-owner.ts). */
   owner(auth: RequestAuth): boolean;
   imports: ContextImport;
-  /** Every bot, and whether its engine can make the quick text call an import uses. */
-  engines(): ImportEngineChoice[];
+  /** Every bot, whether its engine can make the quick text call an import
+   * uses, and whether that engine may keep its own record of the text. */
+  engines(): Promise<ImportEngineChoice[]>;
 }
 
 const candidatePatch = z.object({
@@ -60,7 +61,7 @@ export function createContextImportRoutes(deps: ContextImportRouteDeps): RouteHa
     try {
       if (path === PREFIX) {
         if (method === "GET") {
-          const overview: ImportOverview = { job: deps.imports.current(), engines: deps.engines(), imports: listImportRecords().map(recordView) };
+          const overview: ImportOverview = { job: deps.imports.current(), engines: await deps.engines(), imports: listImportRecords().map(recordView) };
           return json(res, 200, overview);
         }
         if (method === "POST") {

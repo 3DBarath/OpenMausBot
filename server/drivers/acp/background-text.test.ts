@@ -53,6 +53,8 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     process.env.FAKE_ACP_DUMP = join(scratch, "dump.json");
     const engine = await create(driver);
     expect(engine.generateText).toBeUndefined();
+    // a whole agent process with a session store of its own: it does not claim to keep no record of the text
+    expect(engine.textRecord).toBeUndefined();
     const usage: TextGenerationUsage[] = [];
     const answer = await engine.generateMemoryText!("You are the CAPTURE step", { onUsage: (row) => usage.push(row) });
     expect(answer).toBe('[{"text":"The person likes jazz","kind":"preference"}]');

@@ -3520,6 +3520,29 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     }
   });
 
+  it("says whether an isolated one-shot leaves the CLI a record of the text: none with the session option, kept without it, unknown when the CLI cannot be asked", async () => {
+    await create();
+    await expect(instance.textRecord?.()).resolves.toBe("none");
+    // a CLI without the option keeps a session of every call
+    process.env.FAKE_CLAUDE_ISOLATION = "0";
+    try {
+      await create();
+      await expect(instance.textRecord?.()).resolves.toBe("kept");
+    } finally {
+      delete process.env.FAKE_CLAUDE_ISOLATION;
+    }
+    // a CLI that does not answer: not known, and asked again the next time
+    process.env.FAKE_CLAUDE_HELP_FAILS = "1";
+    try {
+      await create();
+      await expect(instance.textRecord?.()).resolves.toBe("unknown");
+      delete process.env.FAKE_CLAUDE_HELP_FAILS;
+      await expect(instance.textRecord?.()).resolves.toBe("none");
+    } finally {
+      delete process.env.FAKE_CLAUDE_HELP_FAILS;
+    }
+  });
+
   it("gives a one-shot the time its caller asks for", async () => {
     await create();
     process.env.FAKE_CLAUDE_TEXT_HANG = "1";

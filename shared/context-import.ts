@@ -153,6 +153,11 @@ export interface ImportEngineChoice {
   name: string;
   available: boolean;
   reason?: string;
+  /** Whether the engine may keep its own record of the text it is sent:
+   * false only when the engine says it keeps none (a session, a history).
+   * True when it keeps one or cannot say; the dialog reads a missing answer
+   * as true. Set for a bot that is `available`. */
+  keepsText?: boolean;
 }
 
 /** One finished import, as kept in context-imports.json. No text. */

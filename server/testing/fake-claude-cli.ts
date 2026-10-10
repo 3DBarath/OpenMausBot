@@ -293,6 +293,8 @@ if (argv[0] === "--version") {
 }
 
 if (argv[0] === "--help") {
+  // A CLI that cannot be asked what it offers: FAKE_CLAUDE_HELP_FAILS=1.
+  if (process.env.FAKE_CLAUDE_HELP_FAILS === "1") process.exit(1);
   // Lists --autocompact in the option column like the real CLI, unless the
   // fake stands in for a build without it: FAKE_CLAUDE_AUTOCOMPACT=0, or a
   // version below the 2.1.122 floor.

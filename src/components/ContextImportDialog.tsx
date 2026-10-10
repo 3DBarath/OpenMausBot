@@ -167,6 +167,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
     const minutes = estimate ? estimateMinutes(estimate) : null;
     const paste = job!.origin === "paste";
     const nothing = !estimate || estimate.conversations === 0;
+    const chosenEngine = engines.find((engine) => engine.botId === draft.botId);
     return <div>
       {heading(t("contextImport.scan.title"))}
       <ul className="mt-2 flex flex-col gap-1 text-[12.5px] leading-relaxed text-ink-secondary">
@@ -207,6 +208,9 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
         </select>
         <span className="text-[12px]">{t("contextImport.engine.hint")}</span>
       </label>
+      {/* Said before reading starts, never a refusal: only an engine that
+          says it keeps no record of the text goes without this line. */}
+      {chosenEngine?.available && chosenEngine.keepsText !== false && <p role="note" className="mt-1.5 text-[12px] leading-relaxed text-ink">{t("contextImport.engine.keepsText")}</p>}
       {expires}
       {error}
       <div className="mt-5 flex justify-between gap-2">{cancel}
