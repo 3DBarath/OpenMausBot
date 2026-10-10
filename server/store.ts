@@ -1535,6 +1535,15 @@ export class Store {
     return this.thread(threadId).messages;
   }
 
+  /** A conversation's lines for one pass over many conversations (adopting
+   * older ones, server/shared-notes-adopt.ts): read from what is loaded when
+   * it is, otherwise read and not kept, so a pass over every conversation
+   * does not leave them all in memory. Every line, in stored order, without
+   * the tidying a loaded conversation gets; never to be changed. */
+  messagesOnce(threadId: string): readonly Message[] {
+    return this.threads.get(threadId)?.messages ?? mdb.readThread(threadId, messagesFile(threadId)).messages;
+  }
+
   /** A bounded page of a thread's newest messages, for callers that only
    * need a display page — the startup/reconnect hydrate and a fresh
    * scrollback view. Reads just `limit` rows at the SQL boundary instead of

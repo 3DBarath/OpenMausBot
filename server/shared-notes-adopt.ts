@@ -20,13 +20,27 @@
 //             service: whose device that was is not recorded
 //   later     it holds a line or an answer written since proof began that
 //             is not on record (decided by the record, not here)
+//   restored  it came from a backup: an import brought it in beside the
+//             others, or the whole installation was put back from an
+//             archive after its lines were written. No request of a person
+//             here wrote those lines, and a backup can hold anyone's
+//   lost      it holds something from before the record of whose lines are
+//             whose was last lost. Without that record an older line cannot
+//             be told from a later one nobody vouched for
+//
+// The last two give way to one thing: a conversation the record already
+// proves the owner's alone (or that was adopted before) is left exactly as
+// it is and counted as theirs already.
 //
 // What is stored cannot tell a line typed at the computer from a line a
-// device edited before this version (an edit recorded no sender), or from
-// the prompt of a routine run that is no longer in the run history and whose
-// conversation was later carried on by hand. That is why this is the owner
-// saying so, and why the button says to use it only if nobody else has
+// device edited before this version (an edit recorded no sender then), or
+// from the prompt of a routine run that is no longer in the run history and
+// whose conversation was later carried on by hand. That is why this is the
+// owner saying so, and why the button says to use it only if nobody else has
 // written in these conversations.
+//
+// Conversations are read one at a time and not kept, and the rest of the
+// server gets a turn between batches: an installation can hold thousands.
 //
 // Pure, but for the record it is given.
 import { cardProofId, personAnsweredCard, personWrittenLine } from "./shared-notes-owner.ts";
@@ -39,6 +53,8 @@ export interface AdoptableConversation {
   room: boolean;
   /** A routine's or a webhook's run executed here, as far as what is stored says. */
   routine: boolean;
+  /** An import from a backup brought this conversation in (OwnerThreads.imported). */
+  restored?: boolean;
   lines: ReadonlyArray<{
     id: string;
     at: number;
@@ -59,15 +75,28 @@ export interface AdoptionFacts {
   singleOwner: boolean;
   /** Whether a person key is a live device with full access. */
   ownerDevice: (person: string) => boolean;
+  /** Everything from before this moment came from a backup (OwnerThreads.restoredAt). */
+  restoredBefore?: number | null;
+  /** The record of whose lines are whose was lost at this moment (OwnerThreads.lostAt). */
+  lostBefore?: number | null;
 }
 
+/** Why a conversation is not adopted although its own lines give no reason. */
+export type AdoptionHold = Extract<AdoptionSkipReason, "restored" | "lost">;
+
+/** How many lines are read before the rest of the server gets a turn. */
+const BATCH_LINES = 2_000;
+
 /** What adopting one conversation would record, or why it is left alone:
- * the ids of its older lines and answered cards, and of the ones since. */
-export function adoptionPlan(conversation: AdoptableConversation, facts: AdoptionFacts): { skip: Exclude<AdoptionSkipReason, "later"> } | { older: string[]; later: string[] } {
+ * the ids of its older lines and answered cards, and of the ones since, and
+ * whether something outside its lines holds it back. */
+export function adoptionPlan(conversation: AdoptableConversation, facts: AdoptionFacts): { skip: Exclude<AdoptionSkipReason, "later" | AdoptionHold> } | { older: string[]; later: string[]; held?: AdoptionHold } {
   if (conversation.room) return { skip: "room" };
   if (conversation.routine) return { skip: "routine" };
   const older: string[] = [];
   const later: string[] = [];
+  /** The earliest thing a person wrote or answered here. */
+  let earliest = Number.POSITIVE_INFINITY;
   for (const line of conversation.lines) {
     if (personWrittenLine(line)) {
       if (line.relayed) return { skip: "relayed" };
@@ -75,6 +104,7 @@ export function adoptionPlan(conversation: AdoptableConversation, facts: Adoptio
       const owners = line.sender ? facts.singleOwner && typeof line.sender.id === "string" && facts.ownerDevice(line.sender.id) : facts.loopbackIsOwner;
       if (!owners) return { skip: "sender" };
       (line.at < facts.since ? older : later).push(line.id);
+      earliest = Math.min(earliest, line.at);
     }
     if (personAnsweredCard(line)) {
       const id = cardProofId(line.card!.requestId!);
@@ -82,23 +112,35 @@ export function adoptionPlan(conversation: AdoptableConversation, facts: Adoptio
       // an older answer is the owner's only when it was given at this computer
       else if (line.card!.answeredBy?.kind === "loopback" && facts.loopbackIsOwner) older.push(id);
       else return { skip: "card" };
+      earliest = Math.min(earliest, line.at);
     }
   }
+  const before = (moment: number | null | undefined): boolean => typeof moment === "number" && earliest < moment;
+  if (conversation.restored || before(facts.restoredBefore)) return { older, later, held: "restored" };
+  if (before(facts.lostBefore)) return { older, later, held: "lost" };
   return { older, later };
 }
 
-/** Adopt every conversation that can be, and count the rest by reason. */
-export function adoptConversations(conversations: readonly AdoptableConversation[], facts: AdoptionFacts, threads: Pick<OwnerThreads, "adopt" | "writeNow">): AdoptionResult {
-  const result: AdoptionResult = { adopted: 0, already: 0, empty: 0, skipped: { room: 0, routine: 0, relayed: 0, sender: 0, card: 0, later: 0 } };
+/** Adopt every conversation that can be, and count the rest by reason. Each
+ * conversation is taken from `conversations` when its turn comes and let go
+ * at once (hand over a generator that reads them), and the event loop gets a
+ * turn every `BATCH_LINES` lines. */
+export async function adoptConversations(conversations: Iterable<AdoptableConversation>, facts: AdoptionFacts, threads: Pick<OwnerThreads, "adopt" | "writeNow">): Promise<AdoptionResult> {
+  const result: AdoptionResult = { adopted: 0, already: 0, empty: 0, skipped: { room: 0, routine: 0, relayed: 0, sender: 0, card: 0, later: 0, restored: 0, lost: 0 } };
+  let read = 0;
   for (const conversation of conversations) {
     const plan = adoptionPlan(conversation, facts);
-    if ("skip" in plan) {
-      result.skipped[plan.skip] += 1;
-      continue;
+    if ("skip" in plan) result.skipped[plan.skip] += 1;
+    else {
+      const outcome = threads.adopt(conversation.threadId, plan.older, plan.later, plan.held);
+      if (outcome === "adopted" || outcome === "already" || outcome === "empty") result[outcome] += 1;
+      else result.skipped[outcome] += 1;
     }
-    const outcome = threads.adopt(conversation.threadId, plan.older, plan.later);
-    if (outcome === "later") result.skipped.later += 1;
-    else result[outcome] += 1;
+    read += conversation.lines.length + 1;
+    if (read >= BATCH_LINES) {
+      read = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
   // one write for all of them, before the owner is told the counts
   if (result.adopted) threads.writeNow();

@@ -6,7 +6,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { writeFileAtomic } from "./atomic.ts";
 import { rm as removeDirectory } from "node:fs/promises";
@@ -798,9 +798,25 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
 }
 // Who each thread is for, when a signed-in person can be named (server-private).
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
+/** The last time this whole installation was put back from an archive, if it
+ * ever was: its conversations came from that archive, not from requests
+ * made here. The receipt (server/workspace-backup.ts) is this machine's own
+ * and is written at the restore, so its time is when the archive arrived. */
+function lastRestoreForNotes(): { id: string; at: number } | null {
+  if (!workspaceRestore.restored || !workspaceRestore.id) return null;
+  let at = Number.NaN; // unreadable: the record takes "now"
+  if (!restoredAtStart) {
+    try {
+      at = statSync(join(DATA_DIR, ".backups", "last-restore.json")).mtimeMs;
+    } catch {
+      /* now */
+    }
+  }
+  return { id: workspaceRestore.id, at };
+}
 // Which conversations are provably the owner's alone, and which hold a
 // recalled shared note in their engine session (server/shared-notes-threads.ts).
-const ownerThreads = new OwnerThreads(join(DATA_DIR, "shared-notes-threads.json"), (line) => console.warn(line));
+const ownerThreads = new OwnerThreads(join(DATA_DIR, "shared-notes-threads.json"), (line) => console.warn(line), { restore: lastRestoreForNotes() });
 
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
@@ -1631,21 +1647,32 @@ function notesOwnerOnlyThread(threadId: string): boolean {
  * every bot is offered; rooms are counted and left. A routine's or a
  * webhook's run is recognised by what is stored and nothing else: the
  * conversation still carries its run (`routineRunId`), or a run still in the
- * run history names it. Only the route calls this, for the proven owner. */
-function adoptOlderConversations(): AdoptionResult {
+ * run history names it. A conversation an import from a backup brought in is
+ * named by the record, and one from before a restore of the whole
+ * installation by its lines' times. Each conversation is read when its turn
+ * comes and not kept loaded. Only the route calls this, for the proven
+ * owner; a second click while one is under way gets the same answer. */
+let adoptingConversations: Promise<AdoptionResult> | null = null;
+function adoptOlderConversations(): Promise<AdoptionResult> {
+  adoptingConversations ??= adoptEveryConversation().finally(() => { adoptingConversations = null; });
+  return adoptingConversations;
+}
+
+async function adoptEveryConversation(): Promise<AdoptionResult> {
   const facts = notesOwnerFacts();
   const runThreads = new Set((routines?.listRuns() ?? []).map((run) => run.threadId).filter((threadId): threadId is string => Boolean(threadId)));
-  const conversations: AdoptableConversation[] = [];
+  // which conversations there are is settled now; their lines are read one conversation at a time
+  const offers: Array<Omit<AdoptableConversation, "lines">> = [];
   const seen = new Set<string>();
   for (const bot of store.bots) {
     for (const threadId of [bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)]) {
       if (seen.has(threadId)) continue;
       seen.add(threadId);
-      const room = Boolean(store.groupByThread(threadId));
-      conversations.push({
-        threadId, room,
+      offers.push({
+        threadId,
+        room: Boolean(store.groupByThread(threadId)),
         routine: Boolean(store.taskByThread(bot.id, threadId)?.routineRunId) || runThreads.has(threadId),
-        lines: room ? [] : store.messagesFor(threadId),
+        restored: ownerThreads.imported(threadId),
       });
     }
   }
@@ -1653,16 +1680,22 @@ function adoptOlderConversations(): AdoptionResult {
     for (const threadId of [group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]) {
       if (seen.has(threadId)) continue;
       seen.add(threadId);
-      conversations.push({ threadId, room: true, routine: false, lines: [] });
+      offers.push({ threadId, room: true, routine: false });
     }
   }
-  const result = adoptConversations(conversations, {
+  function* conversations(): Generator<AdoptableConversation> {
+    // a room's or a routine's conversation is never read: it is left whatever it holds
+    for (const offer of offers) yield { ...offer, lines: offer.room || offer.routine ? [] : store.messagesOnce(offer.threadId) };
+  }
+  const result = await adoptConversations(conversations(), {
     since: ownerThreads.since,
     loopbackIsOwner: facts.loopbackIsOwner,
     singleOwner: hasSingleOwner(facts),
     ownerDevice: (person) => sessions.list().some((session) => session.scopes.includes("admin") && personKey(session) === person),
+    restoredBefore: ownerThreads.restoredAt,
+    lostBefore: ownerThreads.lostAt,
   }, ownerThreads);
-  console.log(`shared notes: the owner adopted ${result.adopted} older conversation(s); ${result.already} were theirs already, ${result.empty} held nothing a person wrote, ${Object.values(result.skipped).reduce((total, count) => total + count, 0)} were left`);
+  console.log(`shared notes: the owner adopted ${result.adopted} older conversation(s); ${result.already} were theirs already, ${result.empty} held nothing a person wrote, ${Object.values(result.skipped).reduce((total, count) => total + count, 0)} were left (${result.skipped.restored} from a backup, ${result.skipped.lost} from before the record was lost)`);
   return result;
 }
 
@@ -20915,7 +20948,24 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body?.format === "openmaus.backup") {
         if (importMode !== "add") return json(res, 400, { error: "Import backups alongside your existing bots; project mode is only for templates" });
         try {
-          const imported = importTeamBackup(store, routines!, body, await defaultSelection(), { visibility: importVisibility });
+          const selection = await defaultSelection();
+          // The conversations a backup brings in were written by whoever
+          // made the file, through no request here: they are named in the
+          // owner record so that they are never adopted as the owner's
+          // (server/shared-notes-threads.ts). That an import is under way is
+          // recorded before it starts; nothing else runs until it is over.
+          const importedConversations = ownerThreads.importing();
+          let imported: ReturnType<typeof importTeamBackup>;
+          try {
+            imported = importTeamBackup(store, routines!, body, selection, { visibility: importVisibility });
+          } catch (error) {
+            importedConversations(null); // it took back everything it had made
+            throw error;
+          }
+          importedConversations([
+            ...imported.bots.flatMap((bot) => [bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)]),
+            ...imported.groups.flatMap((group) => [group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]),
+          ]);
           // A restore writes its transcripts without store events, after the
           // store's own frames announced each bot and room, so these frames
           // are what carries the restored pages to other clients.
@@ -23322,13 +23372,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the message was sent with, so the model sees what it saw. Changed
       // words take the context the client sends now, if any.
       const dataContext = parseDataContext(body.dataContext) ?? (text === source.text ? source.dataContext : undefined);
-      // On a Cloud home an edit is its author's line, so the owner's own edit
-      // keeps their conversation theirs for lending (server/cloud-lending.ts).
-      // Whose turn the rerun is comes from this request, never from the line
-      // that was edited: anyone's edit of the owner's line is their own turn.
+      // An edit is its author's line and says so, the way a send does, on
+      // every kind of installation: what is stored with the line is then
+      // enough to tell a signed-in device's edit from words typed at the
+      // computer, whatever becomes of the record of whose lines are whose
+      // (server/shared-notes-adopt.ts). On a Cloud home that is also what
+      // keeps the owner's own conversation theirs for lending
+      // (server/cloud-lending.ts). Whose turn the rerun is comes from this
+      // request, never from the line that was edited: anyone's edit of the
+      // owner's line is their own turn.
       const message = await startTurn(bot.id, text, { threadId: bot.threadId, editedMessageId: messageId, replyTo, sendId, trigger: usageTriggerFor(auth), dataContext,
         byOwner: ownerRequest(auth, notesOwnerFacts()),
-        ...(CLOUD_HOME ? { sender: messageSender(auth) } : {}) });
+        sender: messageSender(auth) });
       return json(res, 202, { ok: true, message });
     }
 

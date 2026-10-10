@@ -22,7 +22,7 @@ describe("adopting older conversations", () => {
   });
 
   it("shows what was adopted and what was left, with each reason that applies", () => {
-    const result: AdoptionResult = { adopted: 14, already: 3, empty: 2, skipped: { room: 2, routine: 1, relayed: 0, sender: 4, card: 1, later: 0 } };
+    const result: AdoptionResult = { adopted: 14, already: 3, empty: 2, skipped: { room: 2, routine: 1, relayed: 0, sender: 4, card: 1, later: 0, restored: 0, lost: 0 } };
     const words = text(render({ result }));
     expect(words).toContain("Conversations that now use your notes: 14. Already using them: 3.");
     expect(words).toContain("Left as they are: 8.");
@@ -36,7 +36,20 @@ describe("adopting older conversations", () => {
     // it can be run again
     expect(render({ result })).toMatch(/<button[^>]*>Use my notes in my existing conversations<\/button>/);
     // nothing left: no list of reasons
-    expect(text(render({ result: { ...result, skipped: { room: 0, routine: 0, relayed: 0, sender: 0, card: 0, later: 0 } } }))).not.toContain("Left as they are");
+    expect(text(render({ result: { ...result, skipped: { room: 0, routine: 0, relayed: 0, sender: 0, card: 0, later: 0, restored: 0, lost: 0 } } }))).not.toContain("Left as they are");
     expect(text(render({ error: true }))).toContain("That did not work. Try again.");
+  });
+
+  it("says when conversations came from a backup, and when the record of whose messages are whose was lost", () => {
+    const result: AdoptionResult = { adopted: 0, already: 2, empty: 0, skipped: { room: 0, routine: 0, relayed: 0, sender: 0, card: 0, later: 0, restored: 6, lost: 9 } };
+    const words = text(render({ result }));
+    expect(words).toContain("Left as they are: 15.");
+    expect(words).toContain("Brought in from a backup, so nothing here recorded who wrote them: 6.");
+    // the person is told the record was lost, and how many conversations that cost
+    expect(words).toContain("OpenMausBot lost its record of which messages are yours, so it cannot do this for conversations from before then: 9.");
+    // neither is mentioned when it did not happen
+    const usual = text(render({ result: { ...result, skipped: { ...result.skipped, restored: 0, lost: 0, room: 1 } } }));
+    expect(usual).not.toContain("backup");
+    expect(usual).not.toContain("lost its record");
   });
 });

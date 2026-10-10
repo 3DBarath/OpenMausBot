@@ -2593,4 +2593,23 @@ describe("soul", () => {
       rmSync(folder, { force: true });
     }
   });
+
+  it("reads a conversation for one pass without keeping it loaded", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const before = store.messagesFor(bot.threadId).length;
+    store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hello from before" });
+    const loaded = (target: Store) => (target as unknown as { threads: Map<string, unknown> }).threads;
+    // after a restart nothing is loaded, and a pass over the conversation leaves it that way
+    const reloaded = new Store(selection);
+    expect(loaded(reloaded).has(bot.threadId)).toBe(false);
+    const once = reloaded.messagesOnce(bot.threadId);
+    expect(once).toHaveLength(before + 1);
+    expect(once.at(-1)).toMatchObject({ role: "user", text: "hello from before" });
+    expect(loaded(reloaded).has(bot.threadId)).toBe(false);
+    // a conversation that is loaded is read from what is loaded
+    const kept = reloaded.messagesFor(bot.threadId);
+    expect(loaded(reloaded).has(bot.threadId)).toBe(true);
+    expect(reloaded.messagesOnce(bot.threadId)).toBe(kept);
+  });
 });

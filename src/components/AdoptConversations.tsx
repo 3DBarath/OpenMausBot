@@ -4,13 +4,15 @@ import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
 import type { AdoptionResult, AdoptionSkipReason } from "../../shared/shared-notes";
 
-const REASONS: ReadonlyArray<{ reason: AdoptionSkipReason; label: "sharedNotes.adopt.skipped.room" | "sharedNotes.adopt.skipped.routine" | "sharedNotes.adopt.skipped.relayed" | "sharedNotes.adopt.skipped.sender" | "sharedNotes.adopt.skipped.card" | "sharedNotes.adopt.skipped.later" }> = [
+const REASONS: ReadonlyArray<{ reason: AdoptionSkipReason; label: `sharedNotes.adopt.skipped.${AdoptionSkipReason}` }> = [
   { reason: "room", label: "sharedNotes.adopt.skipped.room" },
   { reason: "routine", label: "sharedNotes.adopt.skipped.routine" },
   { reason: "relayed", label: "sharedNotes.adopt.skipped.relayed" },
   { reason: "sender", label: "sharedNotes.adopt.skipped.sender" },
   { reason: "card", label: "sharedNotes.adopt.skipped.card" },
   { reason: "later", label: "sharedNotes.adopt.skipped.later" },
+  { reason: "restored", label: "sharedNotes.adopt.skipped.restored" },
+  { reason: "lost", label: "sharedNotes.adopt.skipped.lost" },
 ];
 
 /** The button, the sentence that says what pressing it claims, and what the

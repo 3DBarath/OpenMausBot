@@ -1,8 +1,10 @@
 // Adopting older conversations, end to end, against an isolated fixture
 // server and the fake engine. The fixture is made "older" the way an
 // upgrade makes an installation older: conversations are written, the server
-// stops, the record of whose lines they were is removed, and the server
-// starts again. Then: the owner's turn in an older conversation is sent no
+// stops, both files this feature keeps about whose lines are whose are
+// removed, as if this version had never run, and the server starts again.
+// (Removing only one of them is a loss, not an upgrade:
+// shared-notes-adopt-lost.e2e.test.ts.) Then: the owner's turn in an older conversation is sent no
 // shared note; a chat-only device cannot adopt; the owner can, once, and the
 // same question is then sent the note; and a conversation that holds a line
 // from a chat-only device is left alone and still gets none.
@@ -65,6 +67,7 @@ it.skipIf(process.platform === "win32")("uses the owner's notes in an older conv
     // ── the installation is upgraded: no record of whose lines those were ──
     await waitForExit(fixture.child, { signal: "SIGTERM" });
     rmSync(join(dataDir, "shared-notes-threads.json"), { force: true });
+    rmSync(join(dataDir, "shared-notes-proof.json"), { force: true });
     restarted = spawn(process.execPath, ["--experimental-strip-types", join(ROOT, "server", "index.ts")], {
       cwd: ROOT, env: verificationServerEnvironment(parentEnv, dataDir, Number(new URL(url).port)), stdio: "ignore",
     });

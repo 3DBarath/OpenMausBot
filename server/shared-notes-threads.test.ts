@@ -2,20 +2,24 @@
 // owner's own request wrote are on record, a conversation with any other
 // line is "not proven", and nothing is ever proven by a file being absent,
 // damaged or unwritable.
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OwnerThreads } from "./shared-notes-threads.ts";
 
 let dir: string;
 let file: string;
+/** Where the moment proof began is kept, apart from the record. */
+let anchor: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "omb-owner-threads-"));
   file = join(dir, "shared-notes-threads.json");
+  anchor = join(dir, "shared-notes-proof.json");
 });
 afterEach(() => {
+  vi.useRealTimers();
   chmodSync(dir, 0o700);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -142,5 +146,165 @@ describe("the owner's conversations", () => {
     const later = new OwnerThreads(file);
     expect(later.since).toBeGreaterThanOrEqual(first.since);
     expect(JSON.parse(readFileSync(file, "utf8")).since).toBe(later.since);
+  });
+
+  // The moment proof began decides which lines count as older, and older
+  // lines are the ones an adoption may take. So it is never worked out again
+  // from a record that has gone: it is kept in a file of its own.
+  it("does not begin proof again when the record is lost: the moment is kept apart from it, and the loss is remembered", async () => {
+    const T0 = 1_700_000_000_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T0);
+    const first = new OwnerThreads(file);
+    first.prove("t1", "m1");
+    await first.flush();
+    expect(first.since).toBe(T0);
+    // the record goes missing (deleted, a disk that lost it), and the server starts again later
+    rmSync(file);
+    vi.setSystemTime(T0 + 500_000);
+    const lines: string[] = [];
+    const after = new OwnerThreads(file, (line) => lines.push(line));
+    expect(after.since).toBe(T0);
+    expect(first.lostAt).toBeNull();
+    expect(after.lostAt).toBe(T0 + 500_000);
+    expect(lines.join("\n")).toMatch(/missing or unreadable/);
+    // nothing is proven by the loss, and the record exists again
+    expect(after.ownerOnly("t1", ["m1"])).toBe(false);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, since: T0, threads: {} });
+    // the next start finds a record, and still knows there was a loss and when
+    vi.setSystemTime(T0 + 600_000);
+    const again = new OwnerThreads(file);
+    expect(again.since).toBe(T0);
+    expect(again.lostAt).toBe(T0 + 500_000);
+    // a record that cannot be read is a lost one too, and the later loss is the one kept
+    writeFileSync(file, "{ torn");
+    vi.setSystemTime(T0 + 700_000);
+    const torn = new OwnerThreads(file);
+    expect(torn.since).toBe(T0);
+    expect(torn.lostAt).toBe(T0 + 700_000);
+  });
+
+  it("reads the loss of the file beside the record as a loss too, and takes the moment from the record", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_700_000_000_000);
+    const first = new OwnerThreads(file);
+    first.importing()(["t-in"]);
+    expect(first.noteRecalled("t1")).toBe(true);
+    // what rules conversations out of adoption went with that file: nothing from before now is adopted
+    rmSync(anchor);
+    vi.setSystemTime(1_700_000_900_000);
+    const after = new OwnerThreads(file);
+    expect(after.since).toBe(1_700_000_000_000);
+    expect(after.lostAt).toBe(1_700_000_900_000);
+    // the proofs were not lost
+    expect(after.recalled("t1")).toBe(true);
+    expect(JSON.parse(readFileSync(anchor, "utf8"))).toEqual({ version: 1, since: 1_700_000_000_000, lostAt: 1_700_000_900_000 });
+    // where the two files disagree the earlier moment stands: it leaves fewer lines to count as older
+    writeFileSync(anchor, JSON.stringify({ version: 1, since: 1_600_000_000_000 }));
+    const earlier = new OwnerThreads(file);
+    expect(earlier.since).toBe(1_600_000_000_000);
+    expect(JSON.parse(readFileSync(file, "utf8")).since).toBe(1_600_000_000_000);
+    writeFileSync(file, JSON.stringify({ version: 1, since: 1_500_000_000_000, threads: {} }));
+    expect(new OwnerThreads(file).since).toBe(1_500_000_000_000);
+    expect(JSON.parse(readFileSync(anchor, "utf8")).since).toBe(1_500_000_000_000);
+  });
+
+  it("finishes a first start that was cut short between the two files, and that is no loss", () => {
+    const first = new OwnerThreads(file);
+    expect(first.lostAt).toBeNull();
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, since: first.since, threads: {} });
+    expect(JSON.parse(readFileSync(anchor, "utf8"))).toEqual({ version: 1, since: first.since });
+    // the server died after the first file and before the record
+    rmSync(file);
+    writeFileSync(anchor, JSON.stringify({ version: 1, since: 1_700_000_000_000, fresh: true }));
+    const resumed = new OwnerThreads(file);
+    expect(resumed.since).toBe(1_700_000_000_000);
+    expect(resumed.lostAt).toBeNull();
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(anchor, "utf8"))).toEqual({ version: 1, since: 1_700_000_000_000 });
+    // or after the record and before the first start was marked over
+    writeFileSync(anchor, JSON.stringify({ version: 1, since: 1_700_000_000_000, fresh: true }));
+    expect(new OwnerThreads(file).lostAt).toBeNull();
+    expect(JSON.parse(readFileSync(anchor, "utf8"))).toEqual({ version: 1, since: 1_700_000_000_000 });
+    // once the first start is over, a record that is gone is a loss
+    rmSync(file);
+    expect(new OwnerThreads(file).lostAt).not.toBeNull();
+  });
+
+  it("clears the scratch files a killed run left behind, and nothing else", () => {
+    new OwnerThreads(file);
+    // an earlier run's process is never this one
+    const earlier = process.pid + 1;
+    const stale = [`${file}.${earlier}.11111111-1111-4111-8111-111111111111.tmp`, `${file}.${earlier + 1}.22222222-2222-4222-8222-222222222222.tmp`];
+    for (const path of stale) writeFileSync(path, "{ half a snapshot");
+    const other = join(dir, "something-else.json.1.tmp");
+    writeFileSync(other, "not ours");
+    // a write of this process that is under way is left alone
+    const live = `${file}.${process.pid}.33333333-3333-4333-8333-333333333333.tmp`;
+    writeFileSync(live, "{ being written");
+    const after = new OwnerThreads(file);
+    for (const path of stale) expect(existsSync(path), path).toBe(false);
+    expect(existsSync(other)).toBe(true);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(file)).toBe(true);
+    expect(existsSync(anchor)).toBe(true);
+    expect(after.lostAt).toBeNull();
+  });
+
+  // Conversations that came in from a backup were never written through a
+  // person's request here. Those brought in beside the others are marked one
+  // by one; a restore of the whole installation marks everything before it.
+  it("remembers which conversations an import brought in, apart from the record and across its loss", () => {
+    const first = new OwnerThreads(file);
+    expect(first.imported("t-in")).toBe(false);
+    const done = first.importing();
+    done(["t-in", "t-in-2", "../not-a-thread"]);
+    expect(first.imported("t-in")).toBe(true);
+    expect(first.imported("t-mine")).toBe(false);
+    expect(first.restoredAt).toBeNull();
+    rmSync(file);
+    const after = new OwnerThreads(file);
+    expect(after.imported("t-in")).toBe(true);
+    expect(after.imported("t-in-2")).toBe(true);
+    expect(after.imported("../not-a-thread")).toBe(false);
+    expect(after.restoredAt).toBeNull();
+  });
+
+  it("marks everything when an import was cut short or nobody said which conversations it made", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_700_000_000_000);
+    const first = new OwnerThreads(file);
+    // the import started and the server died before it finished
+    first.importing();
+    vi.setSystemTime(1_700_000_100_000);
+    const after = new OwnerThreads(file);
+    expect(after.restoredAt).toBe(1_700_000_100_000);
+    // one that failed and took back what it made marks nothing more
+    vi.setSystemTime(1_700_000_200_000);
+    after.importing()(null);
+    expect(new OwnerThreads(file).restoredAt).toBe(1_700_000_100_000);
+  });
+
+  it("marks everything from before a restore of the whole installation, once per restore", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_700_000_000_000);
+    expect(new OwnerThreads(file).restoredAt).toBeNull();
+    // the installation was replaced from an archive at this moment
+    const restore = { id: "11111111-1111-4111-8111-111111111111", at: 1_700_000_050_000 };
+    vi.setSystemTime(1_700_000_060_000);
+    expect(new OwnerThreads(file, undefined, { restore }).restoredAt).toBe(1_700_000_050_000);
+    // every later start names the same restore: nothing moves
+    vi.setSystemTime(1_700_000_070_000);
+    expect(new OwnerThreads(file, undefined, { restore: { ...restore, at: 1_700_000_069_000 } }).restoredAt).toBe(1_700_000_050_000);
+    // the archive may bring its own files: a restore they do not know is a new one
+    writeFileSync(anchor, JSON.stringify({ version: 1, since: 1_600_000_000_000 }));
+    expect(new OwnerThreads(file, undefined, { restore }).restoredAt).toBe(1_700_000_050_000);
+    // a second restore moves the mark forward, never back
+    const second = { id: "22222222-2222-4222-8222-222222222222", at: 1_700_000_065_000 };
+    expect(new OwnerThreads(file, undefined, { restore: second }).restoredAt).toBe(1_700_000_065_000);
+    expect(new OwnerThreads(file, undefined, { restore: { id: "33333333-3333-4333-8333-333333333333", at: 1_650_000_000_000 } }).restoredAt).toBe(1_700_000_065_000);
+    // a time the caller could not read is "now"
+    vi.setSystemTime(1_700_000_080_000);
+    expect(new OwnerThreads(file, undefined, { restore: { id: "44444444-4444-4444-8444-444444444444", at: Number.NaN } }).restoredAt).toBe(1_700_000_080_000);
   });
 });

@@ -30,8 +30,9 @@ export interface SharedNotesRouteDeps {
   aboutMe(): string;
   saveAboutMe(text: string): void;
   /** Record the older lines of every conversation that can be adopted as the
-   * owner's, and say what was done (server/shared-notes-adopt.ts). */
-  adopt(): AdoptionResult;
+   * owner's, and say what was done (server/shared-notes-adopt.ts). It reads
+   * every conversation, giving way to other requests as it goes. */
+  adopt(): Promise<AdoptionResult>;
 }
 
 const PREFIX = "/api/shared-notes";
@@ -68,7 +69,7 @@ export function createSharedNotesRoutes(deps: SharedNotesRouteDeps): RouteHandle
     // the person's own click.
     if (path === `${PREFIX}/adopt`) {
       if (method !== "POST") return PASS;
-      return json(res, 200, { ok: true, ...deps.adopt() });
+      return json(res, 200, { ok: true, ...(await deps.adopt()) });
     }
     const m = path.match(/^\/api\/shared-notes\/([^/]+)$/);
     if (!m) return PASS;

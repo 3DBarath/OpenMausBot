@@ -4147,6 +4147,8 @@
   "sharedNotes.adopt.skipped.sender": "Holding a message from a device that is not one of yours with full access: {count}.",
   "sharedNotes.adopt.skipped.card": "Holding a card that was answered from another device: {count}.",
   "sharedNotes.adopt.skipped.later": "Holding a message written since that was not proven yours: {count}.",
+  "sharedNotes.adopt.skipped.restored": "Brought in from a backup, so nothing here recorded who wrote them: {count}.",
+  "sharedNotes.adopt.skipped.lost": "OpenMausBot lost its record of which messages are yours, so it cannot do this for conversations from before then: {count}.",
   "sharedNotes.adopt.error": "That did not work. Try again.",
   "contextImport.done.overflowed": "About me was full. Core facts filed under their subject in shared notes instead: {count}.",
   "contextImport.done.notDeleted": "The facts were saved, but the export could not be deleted from this computer. Delete this folder yourself: {path}",

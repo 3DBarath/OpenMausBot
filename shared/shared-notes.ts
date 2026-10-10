@@ -18,8 +18,9 @@ export interface SharedNoteDoc extends SharedNoteInfo {
 }
 
 /** Why "Use my notes in my existing conversations" left a conversation as it
- * was (server/shared-notes-adopt.ts). */
-export type AdoptionSkipReason = "room" | "routine" | "relayed" | "sender" | "card" | "later";
+ * was (server/shared-notes-adopt.ts). `restored`: it came from a backup.
+ * `lost`: it is from before the record of whose lines are whose was lost. */
+export type AdoptionSkipReason = "room" | "routine" | "relayed" | "sender" | "card" | "later" | "restored" | "lost";
 
 /** What adopting older conversations did: how many it adopted, how many were
  * the owner's alone already (or adopted before), how many held nothing a

@@ -38,7 +38,7 @@ afterEach(async () => {
 async function serve(auth: RequestAuth = OWNER, owner: (auth: RequestAuth) => boolean = () => true): Promise<string> {
   const routes = [createSharedNotesRoutes({
     owner, aboutMe: () => aboutMe, saveAboutMe: (text) => { aboutMe = text; },
-    adopt: () => { adoptions += 1; return { adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0 } }; },
+    adopt: async () => { adoptions += 1; return { adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0, restored: 4, lost: 5 } }; },
   })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -151,7 +151,7 @@ describe("shared notes over HTTP", () => {
     const owner = await serve();
     const done = await fetch(`${owner}/api/shared-notes/adopt`, { method: "POST" });
     expect(done.status).toBe(200);
-    expect(await done.json()).toEqual({ ok: true, adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0 } });
+    expect(await done.json()).toEqual({ ok: true, adopted: 2, already: 1, empty: 0, skipped: { room: 1, routine: 0, relayed: 0, sender: 3, card: 0, later: 0, restored: 4, lost: 5 } });
     expect(adoptions).toBe(1);
     // looking is not adopting: only a POST runs it
     for (const method of ["GET", "PUT", "DELETE"]) expect(await (await fetch(`${owner}/api/shared-notes/adopt`, { method })).json(), method).toEqual({ from: "inline routes" });
