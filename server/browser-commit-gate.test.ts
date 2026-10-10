@@ -26,10 +26,10 @@ afterEach(async () => {
 type Scripted = Omit<PageTarget, "also"> & Partial<PageEvidence> & { secrets?: boolean; also?: Scripted[] };
 const element = (extra: Partial<Scripted> = {}): Scripted => ({
   label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
-  button: true, changes: false, typable: true, link: false, signin: false, carries: false, frames: false, payFrame: false, ...extra,
+  button: true, changes: false, typable: true, link: false, signin: false, carries: false, lang: "", frames: false, payFrame: false, inPay: false, ...extra,
 });
 const evidenceOf = (target: Scripted): PageEvidence => ({
-  fields: target.fields ?? [], others: target.others ?? 0, bound: target.bound ?? "", identity: target.identity ?? "", context: target.context ?? "", around: target.around ?? "",
+  opaque: target.opaque ?? false, fields: target.fields ?? [], others: target.others ?? 0, bound: target.bound ?? "", identity: target.identity ?? "", context: target.context ?? "", around: target.around ?? "",
 });
 const SEND = element({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = element({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -59,6 +59,9 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     details: [] as Array<{ selector: string | null; enter: boolean }>,
     /** What the second read answers, when not what the first one saw. */
     evidence: undefined as PageDetail | PageBlind | undefined,
+    /** The address the engine gives for a ref's own element, and each time it was asked. */
+    href: null as string | null,
+    hrefs: [] as string[],
     /** Throws to make one of the gate's own writes fail: "post", "patch", "log:card-shown"… */
     fail: undefined as ((step: string) => void) | undefined,
     /** Runs as each read of the page starts, with how many there have been. */
@@ -89,6 +92,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     page: {
       url: async () => state.url,
       target: async (selector, enter) => { state.reads.push({ selector, enter }); state.onRead?.(state.reads.length); return state.target as PageTarget | PageBlind; },
+      href: async (selector) => { state.hrefs.push(selector); return state.href; },
       evidence: async (selector, enter) => {
         state.details.push({ selector, enter });
         if (state.evidence) return state.evidence;
@@ -1447,7 +1451,7 @@ describe("round three: a click inside a payment frame the read cannot look into"
   // corner, so the element read in its box may be another one, out here.
   it("holds a button the read matched to something else on a page with a payment frame", async () => {
     const f = fixture();
-    const EMAIL = element({ label: "Email", role: "textbox", box: "single", button: false, frames: true, payFrame: true });
+    const EMAIL = element({ label: "Email", role: "textbox", box: "single", button: false, frames: true, payFrame: true, inPay: true });
     f.state.target = EMAIL;
     f.refs.set("e9", { role: "button", name: "Continue" });
     const held = f.call(click("@e9"));
@@ -1455,11 +1459,26 @@ describe("round three: a click inside a payment frame the read cannot look into"
     await f.answer("deny");
     await held;
     // When the names agree the element read is the one, and it is judged as it was read.
-    f.state.target = element({ label: "Continue", frames: true, payFrame: true });
+    f.state.target = element({ label: "Continue", frames: true, payFrame: true, inPay: true });
     await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
     // On a page with no payment frame a name that differs says nothing by itself.
-    f.state.target = { ...EMAIL, payFrame: false };
+    f.state.target = { ...EMAIL, payFrame: false, inPay: false };
     await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
+  });
+
+  // Round four. A shop page with a payment brand's message in a frame is
+  // still a shop page: the box is nowhere near the frame's own size, so
+  // the ref cannot be inside it, and a name that differs says nothing.
+  it("judges a button by its name when its box could not be inside the payment frame", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "", role: "button", frames: true, payFrame: true, inPay: false });
+    f.refs.set("e9", { role: "button", name: "Add to cart" });
+    await expect(f.call(click("@e9"))).resolves.toBe(CLICKED);
+    f.refs.set("e10", { role: "button", name: "Pay now" });
+    const held = f.call(click("@e10"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { label: "Pay now" } });
+    await f.answer("deny");
+    await held;
   });
 });
 
@@ -1591,7 +1610,7 @@ describe("round three: a page that keeps changing under an approval", () => {
     ["a field", { fields: [{ name: "Message", type: "textarea", value: "Something else" }] }],
     ["a control the card does not list", { bound: "bbbbbbbbbbbbbbbb" }],
     ["the label", { label: "Send to all" }],
-    ["where the element is", { identity: "html:0/body:1/div:4/button:0#0000000000000003" }],
+    ["how many filled fields the page has", { others: 2 }],
   ])("still voids that third approval when %s changed", async (_what, change) => {
     const f = fixture();
     f.state.target = shifting(0);
@@ -1735,6 +1754,161 @@ describe("tuning: ordinary browsing", () => {
     expect(text(result)).toMatch(message);
     expect(f.state.dispatched).toEqual([]);
     expect(f.cards.size).toBe(0);
+  });
+});
+
+describe("round four: what the third card is bound to", () => {
+  // A list that keeps gaining rows above the button moves it down the page
+  // every time: its place is never the same twice, and nothing else changes.
+  const AT = (row: number) => `html:0/body:1/ul:0/li:${row}/button:0#aaaaaaaaaaaaaaaa`;
+
+  it("is not the element's place: a list that gains rows above the button can be approved", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, identity: AT(0) };
+    const held = f.call(click());
+    await f.pending();
+    f.state.target = { ...SEND, identity: AT(1) };
+    await f.answer("allow");
+    await vi.waitFor(() => expect(f.cards.size).toBe(2));
+    f.state.target = { ...SEND, identity: AT(2) };
+    await f.answer("allow");
+    await vi.waitFor(() => expect(f.cards.size).toBe(3));
+    expect((await f.pending()).browserCommit).toMatchObject({ changing: true });
+    f.state.target = { ...SEND, identity: AT(3) };
+    await f.answer("allow");
+    await expect(held).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toHaveLength(1);
+  });
+});
+
+describe("round four: text typed with a line break, aimed at a field without the focus", () => {
+  it("is refused, and the bot is told to click the field first or to fill it", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Search", role: "searchbox", box: "search", search: true, button: false, typable: false });
+    const result = await f.call({ name: "agent_browser_type", arguments: { selector: "#q", text: "lamps\n" } }) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/Click the field first and then type/);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+    // The same for a selector the engine resolves to nothing.
+    f.state.target = "missing";
+    expect(text(await f.call({ name: "agent_browser_type", arguments: { selector: "text=Search", text: "lamps\n" } }))).toMatch(/Click the field first and then type/);
+  });
+});
+
+describe("round four: a link by ref, on the engine's own word", () => {
+  const HEADLINE = "How to share and post your first message with the new publishing tools";
+  /** What the read found in the ref's box: a plain link, under a name that is not the snapshot's. */
+  const LINK = element({ label: "Read more", role: "link", link: true, frames: true });
+
+  it("passes a ref the snapshot calls a link when the engine says its address goes to another page", async () => {
+    const f = fixture();
+    f.state.target = LINK;
+    f.state.href = "/story?id=7";
+    f.refs.set("e5", { role: "link", name: HEADLINE });
+    await expect(f.call(click("@e5"))).resolves.toBe(CLICKED);
+    expect(f.state.hrefs).toEqual(["@e5"]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it.each([
+    ["a bare #", "#"],
+    ["a place on the page, which only the page can vouch for", "#comments"],
+    ["javascript:", "javascript:void(0)"],
+    ["nothing", ""],
+    ["no address at all", null],
+  ])("still holds it when the engine says its address is %s", async (_what, href) => {
+    const f = fixture();
+    f.state.target = LINK;
+    f.state.href = href;
+    f.refs.set("e5", { role: "link", name: HEADLINE });
+    const held = f.call(click("@e5"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("passes a #/ route on the engine's word too", async () => {
+    const f = fixture();
+    f.state.target = LINK;
+    f.state.href = "#/share";
+    f.refs.set("e5", { role: "link", name: "Share prices" });
+    await expect(f.call(click("@e5"))).resolves.toBe(CLICKED);
+  });
+
+  it("does not ask the engine when the snapshot calls the ref anything but a link, or nothing would be held", async () => {
+    const f = fixture();
+    f.state.target = LINK;
+    f.state.href = "/story";
+    f.refs.set("e5", { role: "button", name: "Share" });
+    const held = f.call(click("@e5"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    await f.answer("deny");
+    await held;
+    f.refs.set("e6", { role: "link", name: "Read the whole story" });
+    await expect(f.call(click("@e6"))).resolves.toBe(CLICKED);
+    expect(f.state.hrefs).toEqual([]);
+  });
+
+  it("still holds it as money when its box could be inside a payment frame: a link in there is a control like any other", async () => {
+    const f = fixture();
+    f.state.target = { ...LINK, payFrame: true, inPay: true };
+    f.state.href = "/terms";
+    f.refs.set("e5", { role: "link", name: "Learn more" });
+    const held = f.call(click("@e5"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?" });
+    await f.answer("deny");
+    await held;
+  });
+
+  it("still holds what the read itself found to be a button, whatever the engine says of the ref", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Share", role: "link", link: false, frames: true });
+    f.state.href = "/share";
+    f.refs.set("e5", { role: "link", name: "Share this" });
+    const held = f.call(click("@e5"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    await f.answer("deny");
+    await held;
+  });
+});
+
+describe("round four: part of a form the read cannot look into", () => {
+  it("says so on the card, and is part of what the approval is bound to", async () => {
+    const f = fixture();
+    f.state.target = { ...SEND, opaque: true };
+    const held = f.call(click());
+    const card = await f.pending();
+    expect(card.subtitle).toBe("mail.example.com · Send\nMessage: Hello there\nPart of this form could not be read: a component keeps its inside closed. This approval does not cover what is in there.");
+    expect(card.browserCommit).toMatchObject({ partial: true });
+    f.state.target = SEND;
+    await f.answer("allow");
+    const next = await f.pending();
+    expect(next.requestId).not.toBe(card.requestId);
+    expect(next.subtitle).toBe("mail.example.com · Send\nMessage: Hello there");
+    expect(next.browserCommit).not.toHaveProperty("partial");
+    await f.answer("deny");
+    await held;
+  });
+});
+
+describe("round four: the page's language reaches the rules", () => {
+  const FORM = { label: "Save draft", submits: true, multiline: true, carries: true };
+
+  it("passes an everyday label on an English page, and asks on a page in another language", async () => {
+    const f = fixture();
+    f.state.target = element({ ...FORM, lang: "en" });
+    f.refs.set("e3", { role: "button", name: "Save draft" });
+    await expect(f.call(click("@e3"))).resolves.toBe(CLICKED);
+    f.state.target = element({ ...FORM, lang: "" });
+    await expect(f.call(click("@e3"))).resolves.toBe(CLICKED);
+    f.state.target = element({ ...FORM, label: "Speichern", lang: "de" });
+    f.refs.set("e4", { role: "button", name: "Speichern" });
+    const held = f.call(click("@e4"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Speichern" } });
+    await f.answer("deny");
+    await held;
   });
 });
 

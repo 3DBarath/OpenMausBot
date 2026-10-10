@@ -659,6 +659,25 @@ describe("agentBrowserQuery", () => {
       .resolves.toEqual({ ok: true, data: { args: ["get", "box", "@e4", "--json"], session: "profile-x" } });
   });
 
+  // A script for the page goes in on the engine's input. As a command-line
+  // argument it is bounded by the longest command line Windows will start.
+  it("hands the engine its input, whole, and leaves it off the command line", async () => {
+    const script = `(() => "${"é".repeat(40_000)}")()`;
+    const binaryPath = await fakeBinary(`
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => process.stdout.write(JSON.stringify({ success: true, data: { args: process.argv.slice(1), length: input.length, tail: input.slice(-6) }, error: null })));
+    `);
+    await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["eval", "--stdin"], stdin: script }))
+      .resolves.toEqual({ ok: true, data: { args: ["eval", "--stdin", "--json"], length: script.length, tail: 'éé")()' } });
+  });
+
+  it("still answers when the engine goes away without reading its input", async () => {
+    const binaryPath = await fakeBinary('process.stdin.destroy(); process.stdout.write(JSON.stringify({ success: false, data: null, error: "Unknown flag: --stdin" })); process.exitCode = 1');
+    await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["eval", "--stdin"], stdin: "x".repeat(2_000_000) })).resolves.toEqual({ ok: false, error: "Unknown flag: --stdin" });
+  });
+
   it("reports the engine's own refusal, such as a ref the page no longer has", async () => {
     const binaryPath = await fakeBinary('process.stdout.write(JSON.stringify({ success: false, data: null, error: "Unknown ref: e4" })); process.exitCode = 1');
     await expect(agentBrowserQuery({ binaryPath, env: {}, args: ["get", "box", "@e4"] })).resolves.toEqual({ ok: false, error: "Unknown ref: e4" });

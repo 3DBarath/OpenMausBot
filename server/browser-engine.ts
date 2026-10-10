@@ -627,20 +627,31 @@ const QUERY_TIMEOUT_MS = 10_000;
 const QUERY_MAX_BYTES = 4_194_304;
 
 /** One engine command for a session, answered as JSON: the server's own
- * reads of a bot's page (`get box`, `get url`, `eval`). Like
+ * reads of a bot's page (`get box`, `get url`, `get attr`, `eval`). Like
  * agentBrowserFrame it runs the mount's binary with the mount's session env,
  * so it reaches the browser the bot is driving. It never rejects: a failed,
- * hung or garbled command is `{ ok: false }` with the engine's reason. */
+ * hung or garbled command is `{ ok: false }` with the engine's reason.
+ *
+ * `stdin` is handed to the engine on its input (`eval --stdin`). A script
+ * goes that way, never as an argument: Windows will not start a command
+ * line over 32,767 characters, and a read that cannot start refuses every
+ * click. */
 export function agentBrowserQuery(input: {
   binaryPath: string;
   env: Record<string, string>;
   args: readonly string[];
+  stdin?: string;
   timeoutMs?: number;
 }): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
   return new Promise((settle) => {
     let child: ReturnType<typeof spawn>;
-    try { child = spawn(input.binaryPath, [...input.args, "--json"], { env: browserRuntimeEnv(input.env), stdio: ["ignore", "pipe", "ignore"], windowsHide: true }); }
+    try { child = spawn(input.binaryPath, [...input.args, "--json"], { env: browserRuntimeEnv(input.env), stdio: [input.stdin === undefined ? "ignore" : "pipe", "pipe", "ignore"], windowsHide: true }); }
     catch { settle({ ok: false, error: "the browser engine could not start" }); return; }
+    if (input.stdin !== undefined) {
+      // An engine that exits without reading its input closes the pipe; its answer still says why.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(input.stdin);
+    }
     // The answer is one UTF-8 text, and the pipe cuts it at any byte: it is
     // kept as bytes and decoded once, whole. Decoding piece by piece turns a
     // character cut in two into two replacement characters.

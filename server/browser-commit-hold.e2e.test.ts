@@ -75,7 +75,7 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
       'else if (args[0] === "get" && args[1] === "url") answer({ url: page().url });',
       // The gate's two reads: what the call would act on, then the evidence for a card.
       'else if (args[0] === "eval") {',
-      '  const seen = page().target, asked = Buffer.from(args[2], "base64").toString();',
+      '  const seen = page().target, asked = readFileSync(0, "utf8");',
       '  const { fields = [], secrets = false, identity = "", context = "", ...first } = seen;',
       '  answer({ result: !/"detail":true\\}\\)$/.test(asked) ? first : { found: true, secrets, parts: [{ fields, others: 0, bound: "", identity, context, around: "" }] } });',
       "}",

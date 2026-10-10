@@ -48,6 +48,8 @@ const FRAME_PAGES: Record<string, string> = {
   "/card-number-frame": `<input id="card" aria-label="Card number">`,
   // A payment frame whose button says nothing about money.
   "/continue-frame": `<button type="button" onclick="fetch('/framed-paid', { method: 'POST' })">Continue</button>`,
+  // A payment brand's message, as a shop page carries one beside the price.
+  "/message-frame": `<p>4 interest-free instalments of $10. <a href="/pay-frame">Learn more</a></p>`,
 };
 const frameSite = createServer((req, res) => {
   req.resume();
@@ -60,6 +62,10 @@ await new Promise<void>((resolve) => frameSite.listen(0, "127.0.0.1", resolve));
 /** Reached as localhost, so it is another site than the page at 127.0.0.1, not only another port. */
 const frameOrigin = `http://localhost:${(frameSite.address() as { port: number }).port}`;
 
+/** A headline longer than the 120 characters a label is cut to, with words from the lists in it. */
+const LONG_HEADLINE = "How to share and post your first message with the new publishing tools: a complete walk-through for people who have never sent one before today";
+/** Everyday buttons on a form with a text area: none of them sends anything. */
+const EVERYDAY = ["Save draft", "Translate", "Generate", "Check grammar", "Update profile", "Add note"];
 /** One local page per reviewer scenario (docs/verification/browser-commit-hold.md, "Cases"). */
 const CASE_PAGES: Record<string, string> = {
   // The Email field is the first thing on the page, as the card field is the
@@ -89,11 +95,11 @@ const CASE_PAGES: Record<string, string> = {
     <button id="zero" type="button" style="width:0;height:0;padding:0;border:0;overflow:visible;position:relative" onclick="note('clicked:zero')"><span style="position:absolute;left:0;top:0;width:90px;height:22px;display:block">Send C</span></button>`),
   "/stacked": doc("Stacked", `<div style="display:grid;width:200px"><button id="vis" type="button" style="grid-area:1/1" onclick="note('clicked:send')">Send</button><button id="hid" type="button" style="grid-area:1/1;visibility:hidden" onclick="note('clicked:cancel')">Cancel</button></div>`),
   "/image-submit": doc("Image submit", `<form id="order"><input id="name" aria-label="Name" value="Ada"><input id="card" aria-label="Card number" autocomplete="cc-number" value="4111111111111111"><input type="image" alt="Continue" src="${PIXEL}"></form>
-    <form id="ext"><textarea aria-label="Comment">Nice</textarea><input id="who" aria-label="Name" value="Ada"><input id="mail" aria-label="Email" value="ada@example.com"></form><button form="ext" id="outside">Go</button>`),
+    <form id="ext"><textarea aria-label="Comment">Nice</textarea><input id="who" aria-label="Name" value="Ada"><input id="mail" aria-label="Email" value="ada@example.com"></form><button form="ext" id="outside">Send</button>`),
   "/frame": doc("Frame", `<iframe id="frame" title="Tip jar" width="300" height="80" srcdoc="<button onclick=&quot;parent.note('paid:frame')&quot;>Pay</button>"></iframe>`),
   "/auto-select": doc("Auto select", `<form id="quick"><textarea aria-label="Message">Running late</textarea><select id="when" aria-label="When" onchange="this.form.requestSubmit()"><option>later<option>now</select></form>`),
   "/clobbered": doc("Clobbered", `<form id="clob"><input name="tagName" value="1"><input name="elements" value="2"><input name="action" value="3"><input name="id" value="4"><input name="closest" value="5"><input name="querySelectorAll" value="6">
-    <textarea aria-label="Feedback">Great</textarea><button id="go">Go</button></form>`),
+    <textarea aria-label="Feedback">Great</textarea><button id="go">Send</button></form>`),
   "/shop": doc("Shop", `<ul id="list"><li>Sticker $1 <button type="button" onclick="note('bought:sticker')">Buy now</button></li><li>Laptop $18,000 <button type="button" onclick="note('bought:laptop')">Buy now</button></li></ul>
     <button id="resort" type="button">Sort by price in a moment</button>
     <script>document.getElementById("resort").addEventListener("click", () => setTimeout(() => {
@@ -127,6 +133,60 @@ const CASE_PAGES: Record<string, string> = {
   "/ordinary-money": doc("Ordinary money", `<section><form id="cart"><input aria-label="Email" value="ada@example.com"><button>Pay now</button></form></section>
     <section><button type="button" onclick="note('upgraded')">Upgrade</button> <button type="button" onclick="note('confirmed')">Confirm</button></section>`),
   "/ordinary-card": doc("Ordinary card", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button" onclick="note('continued')">Continue</button></form>`),
+  // ── Round four: one page per reviewer finding A to L ──
+  "/typed-unfocused": doc("Typed, not focused", `<form id="find" role="search"><input id="q" type="search" aria-label="Search"></form>
+    <fieldset disabled><form id="dis"><input id="disabled-in" aria-label="Disabled field"></form></fieldset>
+    <div inert><form id="in"><input id="inert-in" aria-label="Inert field"></form></div>
+    <form id="hid"><input id="hidden-in" aria-label="Hidden field" style="visibility:hidden"></form>
+    <form id="pay"><input id="amount" aria-label="Amount" value="5"><button>Pay now</button></form>
+    <button id="open" type="button" onclick="document.getElementById('dlg').showModal()">Open the offer</button>
+    <dialog id="dlg"><form id="buy"><p>Buy it?</p><button id="buynow">Buy now</button></form></dialog>`),
+  "/search-card": doc("Search and card", `<form id="addr"><input type="search" id="finder" aria-label="Find your address"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button>Pay now</button></form>
+    <form id="promo"><input role="searchbox" id="code" aria-label="Promo code"><input aria-label="Card number" autocomplete="cc-number"><button>Continue</button></form>
+    <div role="search"><form id="inside"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button>Continue</button></form></div>
+    <form id="only"><input type="search" id="product" aria-label="Find a product"><button>Buy now</button></form>`),
+  "/shop-frames": doc("Desk lamp", `<main><h1>Desk lamp</h1><p>$40.00</p>
+    <select id="size" aria-label="Size" onchange="note('size:' + this.value)"><option>Small</option><option>Large</option></select>
+    <button type="button" aria-label="Increase quantity" onclick="note('plus')">+</button>
+    <button type="button" onclick="note('added')">Add to cart</button>
+    <div role="button" tabindex="0" onclick="note('opened')">Shipping details</div>
+    <p><a href="/elsewhere">Read the reviews</a></p>
+    <iframe title="Klarna On-site messaging" src="${frameOrigin}/message-frame" width="320" height="40"></iframe>
+    <iframe title="Secure express checkout frame" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe></main>`),
+  "/klarna-only": doc("Checkout", `<main><h1>Checkout</h1><p>Choose how to pay.</p><iframe name="klarna-payments-main" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe></main>`),
+  "/links-frame": doc("News", `<article><h2><a style="display:block" href="/elsewhere?story">${LONG_HEADLINE}</a></h2>
+    <p><a href="/elsewhere?subscribe">Subscribe<span aria-hidden="true"> to the newsletter</span></a></p>
+    <p><a href="/elsewhere?tip"><img alt="Send icon" width="10" height="10" src="${PIXEL}"> Send us a tip</a></p></article>
+    <iframe title="Advertisement" src="${frameOrigin}/message-frame" width="320" height="60"></iframe>`),
+  "/same-page": doc("Contents", `<nav><a href="#transfer">Transfer of power</a> <a href="#trade">Trade</a> <a href="#/blog">Blog post</a> <a href="#!/share">Share prices</a> <a href="#" id="bare">Send</a> <a href="#nowhere" id="lost">Post</a></nav>
+    <h2 id="transfer">Transfer of power</h2><h2 id="trade">Trade</h2>
+    <script>for (const id of ["bare", "lost"]) document.getElementById(id).addEventListener("click", (event) => { event.preventDefault(); window.note("sent:" + id); });</script>`),
+  "/shadow": doc("Components", `<section><card-box></card-box></section>
+    <form id="mail"><text-field label="To" value="ada@example.com"></text-field><text-field label="Subject" value="Lunch"></text-field><sealed-note></sealed-note><button>Send</button></form>
+    <footer><button id="swap" type="button">Swap in a moment</button></footer>
+    <script>
+      customElements.define("card-box", class extends HTMLElement { constructor() { super(); const root = this.attachShadow({ mode: "open" });
+        root.innerHTML = '<input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button">Continue</button>';
+        root.querySelector("button").addEventListener("click", () => window.note("continued")); } });
+      customElements.define("text-field", class extends HTMLElement { constructor() { super(); const root = this.attachShadow({ mode: "open" });
+        root.innerHTML = "<input>"; const input = root.querySelector("input"); input.setAttribute("aria-label", this.getAttribute("label")); input.value = this.getAttribute("value"); } });
+      customElements.define("sealed-note", class extends HTMLElement { constructor() { super(); this.attachShadow({ mode: "closed" }).innerHTML = '<input aria-label="Bcc" value="boss@example.com">'; } });
+      document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.querySelector("text-field").shadowRoot.querySelector("input").value = "mallory@example.com"; document.getElementById("state").textContent = "changed"; }, 1500));
+    </script>`),
+  "/label-wrap": doc("Wallet", `<form id="wallet"><label>Recovery phrase <textarea>abandon ability able about above absent</textarea></label>
+    <label>Password hint <input value="first dog's name"></label><label>Network <select><option>Mainnet</option><option>Testnet</option></select></label><button>Send</button></form>`),
+  "/growing-list": doc("Feed", `<ul id="list"><li>Invoice 7 <button id="go" type="button" onclick="note('sent')">Send</button></li></ul>
+    <script>const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]; let count = 0;
+      setInterval(() => { count += 1; const row = document.createElement("li"); row.textContent = "New row " + names[count % names.length]; document.getElementById("list").prepend(row); }, 300);</script>`),
+  "/role-box": doc("Role box", `<section><div id="all" role="checkbox" aria-checked="false" tabindex="0">Everyone in the company</div><input aria-label="Note" value="See you soon">
+    <div id="send" role="button" tabindex="0" onclick="note('sent:' + document.getElementById('all').getAttribute('aria-checked'))">Send</div></section><button id="swap" type="button">Swap in a moment</button>
+    <script>document.getElementById("swap").addEventListener("click", () => setTimeout(() => { document.getElementById("all").setAttribute("aria-checked", "true"); document.getElementById("state").textContent = "changed"; }, 1500));</script>`),
+  "/card-roles": doc("Saved cards", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc">
+    <div role="listbox" aria-label="Saved cards"><div role="option" tabindex="0" onclick="note('paid:option')">Use this card</div></div>
+    <div role="tablist"><div role="tab" tabindex="0" onclick="note('paid:tab')">Card ending 4242</div></div>
+    <div role="switch" aria-checked="false" tabindex="0" onclick="note('paid:switch')">One-click</div></form>`),
+  "/everyday-forms": doc("Everyday forms", EVERYDAY.map((label, index) => `<form id="f${index}"><input aria-label="Title" value="Tuesday"><textarea aria-label="Text">Some text</textarea><button>${label}</button></form>`).join("\n")),
+  "/german-form": doc("Notizen", `<form id="notiz"><input aria-label="Titel" value="Dienstag"><textarea aria-label="Text">Etwas Text</textarea><button>Speichern</button></form>`).replace('<html lang="en">', '<html lang="de">'),
   // ── Round three: one page per reviewer scenario R1 to R12 ──
   "/typed-focus": doc("Typed focus", `<p id="para">Just a paragraph</p><img id="pic" alt="A picture" width="20" height="20" src="${PIXEL}">
     <form id="pay"><input id="amount" aria-label="Amount" placeholder="Amount" value="5"><button>Pay now</button></form>`),
@@ -485,7 +545,7 @@ try {
       await passes("agent_browser_click", { selector: "#name" });
       await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Spend money?", label: /^Continue$/ });
       await passes("agent_browser_click", { selector: "#who" });
-      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Send on your behalf?", label: /^Go$/ });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Send on your behalf?", label: /^Send$/ });
     } },
     { id: "A8a", title: "a ref with stray whitespace is the same ref", run: async () => {
       const page = await visit("/frame");
@@ -497,7 +557,7 @@ try {
     } },
     { id: "A8c", title: "controls named tagName, elements, action, id, closest, querySelectorAll hide nothing", run: async () => {
       await visit("/clobbered");
-      const card = await heldThenDenied("agent_browser_click", { selector: "#go" }, { title: "Send on your behalf?", label: /^Go$/ });
+      const card = await heldThenDenied("agent_browser_click", { selector: "#go" }, { title: "Send on your behalf?", label: /^Send$/ });
       assert.match(card.subtitle, /Feedback: Great/);
     } },
     { id: "A9", title: "Enter with the focus inside a frame that cannot be read is refused; the frame's button, by its ref, is judged", run: async () => {
@@ -735,6 +795,137 @@ try {
       assert.equal(await log(), "confirmed");
       page = await visit("/ordinary-card");
       await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+    } },
+    { id: "4A", title: "text typed with a line break runs only at the element that already has the focus", run: async () => {
+      await visit("/typed-unfocused");
+      await passes("agent_browser_click", { selector: "#amount" });
+      // The engine cannot focus these, so its Enter lands on the Amount field, in a form that pays.
+      for (const selector of ["#disabled-in", "#inert-in", "#hidden-in"]) await refused("agent_browser_type", { selector, text: "1\n" }, /Click the field first/);
+      // A field that could take the focus but does not have it is refused too; clicked first, the same text runs.
+      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /Click the field first/);
+      await passes("agent_browser_click", { selector: "#q" });
+      await passes("agent_browser_type", { selector: "#q", text: "lamps\n" });
+      assert.equal(await log(), "submitted:find");
+      // A modal's Buy now button has the focus, and the search box is behind the modal.
+      await visit("/typed-unfocused");
+      await passes("agent_browser_click", { selector: "#open" });
+      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /Click the field first/);
+    } },
+    { id: "4B", title: "a search field is no way round a money label or a card region", run: async () => {
+      await visit("/search-card");
+      await passes("agent_browser_click", { selector: "#finder" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Spend money?", label: /^Pay now$/ });
+      await passes("agent_browser_click", { selector: "#code" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Spend money?", label: /^Continue$/ });
+      await heldThenDenied("agent_browser_click", { selector: "#inside button" }, { title: "Spend money?", label: /^Continue$/ });
+      await passes("agent_browser_click", { selector: "#product" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Spend money?", label: /^Buy now$/ });
+    } },
+    { id: "4C", title: "a payment brand's message or button frame does not make a shop page a card region; a click inside it is still money", run: async () => {
+      let page = await visit("/shop-frames");
+      const before = framedPaid;
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      await passes("agent_browser_select", { selector: "#size", values: ["Large"] });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Increase quantity"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Add to cart"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Shipping details"') });
+      assert.equal(await log(), "size:Large plus added opened");
+      await passes("agent_browser_click", { selector: refIn(page, 'link "Read the reviews"') });
+      assert.match((await tool("agent_browser_get_url")).text, /\/elsewhere/);
+      // A frame known only by the name "klarna-payments-main" is a payment frame too.
+      page = await visit("/klarna-only");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      await sleep(300);
+      assert.equal(framedPaid, before, "a payment inside a frame went through");
+    } },
+    { id: "4D", title: "a link clicked by ref passes on a page with a frame, although the snapshot names it differently from its text", run: async () => {
+      for (const line of ['link "How to share', 'link "Subscribe"', 'link "Send icon']) {
+        const page = await visit("/links-frame");
+        await passes("agent_browser_click", { selector: refIn(page, line) });
+        assert.match((await tool("agent_browser_get_url")).text, /\/elsewhere\?/, `${line} did not open its page`);
+      }
+    } },
+    { id: "4E", title: "a link to a place on the same page, and a #/ route, are plain links; a bare # is a button", run: async () => {
+      let page = await visit("/same-page");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'link "Send"') }, { title: "Send on your behalf?", label: /^Send$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'link "Post"') }, { title: "Send on your behalf?", label: /^Post$/ });
+      for (const [text, hash] of [["Transfer of power", "#transfer"], ["Trade", "#trade"], ["Blog post", "#/blog"], ["Share prices", "#!/share"]] as const) {
+        page = await visit("/same-page");
+        await passes("agent_browser_click", { selector: refIn(page, `link "${text}"`) });
+        assert.ok((await tool("agent_browser_get_url")).text.includes(hash), `${text} did not go to ${hash}`);
+      }
+    } },
+    { id: "4F", title: "fields inside open shadow roots are read: card fields make a card region, a form's fields are listed and bound, and a closed part is named on the card", run: async () => {
+      const page = await visit("/shadow");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      await passes("agent_browser_click", { selector: "#swap" });
+      const first = await ask("agent_browser_click", { selector: refIn(page, 'button "Send"') });
+      assert.match(first.card.subtitle, /To: ada@example\.com/, "the fields inside the components were not read");
+      assert.match(first.card.subtitle, /could not be read/, "the card did not say part of the form could not be read");
+      await changed();
+      const second = await voided(first);
+      assert.match(second.subtitle, /To: mallory@example\.com/);
+      await respond(second, "deny");
+      await first.result;
+      return { first: first.card.subtitle };
+    } },
+    { id: "4G", title: "a field's name is its label's own words, never the text or value of a control inside the label", run: async () => {
+      const page = await visit("/label-wrap");
+      const sending = await ask("agent_browser_click", { selector: refIn(page, 'button "Send"') });
+      await respond(sending.card, "deny");
+      await sending.result;
+      const rows = ((await api("GET", "/api/decisions?limit=300")).body.decisions as any[]).filter((row) => row.requestId === sending.card.requestId);
+      const told = `${sending.card.subtitle}\n${JSON.stringify(sending.card.browserCommit)}\n${JSON.stringify(rows)}`;
+      for (const secret of ["abandon", "ability", "first dog"]) assert.ok(!told.includes(secret), `"${secret}" is on the card or in the log`);
+      assert.match(sending.card.subtitle, /Recovery phrase: \d+ characters, not shown/);
+      assert.match(sending.card.subtitle, /Password hint: \d+ characters, not shown/);
+      assert.match(sending.card.subtitle, /^Network: Mainnet$/m);
+      return { subtitle: sending.card.subtitle };
+    } },
+    { id: "4H", title: "a list that keeps gaining rows above the button can be approved on the third card", run: async () => {
+      await visit("/growing-list");
+      const first = await ask("agent_browser_click", { selector: "#go" });
+      await sleep(500);
+      const second = await voided(first);
+      await sleep(500);
+      const third = await voided({ card: second, result: first.result });
+      assert.match(third.subtitle, /keeps changing/);
+      await sleep(500);
+      await respond(third, "allow");
+      const sent = await Promise.race([first.result, sleep(6_000).then(() => null)]);
+      for (const row of await cards()) if (!row.card.answered) await respond(row.card, "deny");
+      assert.ok(sent && !sent.isError, "the third approval was not used");
+      assert.equal(await log(), "sent");
+    } },
+    { id: "4I", title: "a tick box that is a role, not an input, is part of what an approval covers", run: async () => {
+      await visit("/role-box");
+      await passes("agent_browser_click", { selector: "#swap" });
+      const first = await ask("agent_browser_click", { selector: "#send" });
+      await changed();
+      const second = await voided(first);
+      await respond(second, "deny");
+      await first.result;
+      assert.equal(await log(), "");
+    } },
+    { id: "4J", title: "on an English page a form with a text area and an everyday label passes; on a page in another language it asks", run: async () => {
+      const page = await visit("/everyday-forms");
+      for (const label of EVERYDAY) await passes("agent_browser_click", { selector: refIn(page, `button "${label}"`) });
+      assert.equal(await log(), EVERYDAY.map((_label, index) => `submitted:f${index}`).join(" "));
+      const german = await visit("/german-form");
+      await heldThenDenied("agent_browser_click", { selector: refIn(german, 'button "Speichern"') }, { title: "Send on your behalf?", label: /^Speichern$/ });
+    } },
+    { id: "4K", title: "in a card region an option, a tab and a switch pay like a button", run: async () => {
+      const page = await visit("/card-roles");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'option "Use this card"') }, { title: "Spend money?" });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'tab "Card ending 4242"') }, { title: "Spend money?" });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'switch "One-click"') }, { title: "Spend money?" });
+    } },
+    { id: "4L", title: "a script that writes a field through a name it made from a page query is refused", run: async () => {
+      await visit("/typed-unfocused");
+      await refused("agent_browser_eval", { script: "const el = [document.querySelector('#amount')][0]; el.value = '999'" }, /did not run this script/);
+      assert.match((await tool("agent_browser_eval", { script: "document.getElementById('amount').value" })).text, /"5"|: ?5\b|\b5\b/);
+      // A script that only fills an object of its own still runs.
+      assert.equal((await tool("agent_browser_eval", { script: "const out = {}; out.value = document.getElementById('amount').value; JSON.stringify(out)" })).isError, false);
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

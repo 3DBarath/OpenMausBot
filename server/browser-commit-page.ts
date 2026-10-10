@@ -39,7 +39,8 @@ export interface PageTarget {
   /** For text typed at a selector: the element is itself a text field that
    * takes the focus, so the keys go to it and nowhere else. */
   typable: boolean;
-  /** A plain link: an anchor whose address loads another document, with no
+  /** A plain link: an anchor whose address goes somewhere (another
+   * document, a place on this page that exists, a "#/" route), with no
    * button role and no click handler written on it. */
   link: boolean;
   /** Its form, or the region around it when it has no form, is a sign-in:
@@ -55,13 +56,20 @@ export interface PageTarget {
   only?: boolean;
   says?: string;
   near?: string[];
+  /** The language the page declares for the element (the nearest `lang`
+   * around it), "" when it declares none. */
+  lang: string;
   /** The page has a frame. The engine measures an element inside a frame
    * from the frame's own corner, so on such a page the element found by a
    * ref's box may be another one outside the frame. */
   frames: boolean;
   /** The page has a frame the read cannot look into whose title, name or
-   * address says payment or card. */
+   * address says payment or card: a frame for typing a card in, or a
+   * payment brand's message or button. */
   payFrame: boolean;
+  /** The measured box could be inside such a frame: it starts within the
+   * frame's own width and height, where the engine measures from. */
+  inPay: boolean;
   /** Other elements in the same box, when nothing says which of them the
    * engine would act on. Any of them may be the one. */
   also?: PageTarget[];
@@ -69,6 +77,10 @@ export interface PageTarget {
 
 /** The evidence for one target: the second read. */
 export interface PageEvidence {
+  /** The form or region holds a component whose inside cannot be read (a
+   * closed shadow root): what is in it is not on the card, and not part of
+   * the approval. */
+  opaque: boolean;
   /** The fields a card lists: the visible ones of the target's own form, or
    * with no form of the region around it. A value the card must not carry
    * is here by its length only. Each other value is whole. */
@@ -87,7 +99,7 @@ export interface PageEvidence {
   /** The visible text of the row, list item, card or dialog it is in.
    * Empty when that text holds something the card must not carry. */
   context: string;
-  /** A hash of that text with digits and relative times evened out, so a
+  /** A hash of that text with relative times and clocks evened out, so a
    * ticking "3s ago" is not a change. */
   around: string;
 }
@@ -129,6 +141,10 @@ export interface BrowserPageReader {
   target(selector: string | null, enter: boolean): Promise<PageTarget | PageBlind>;
   /** The evidence for that same target. Only asked for a commitment. */
   evidence(selector: string | null, enter: boolean): Promise<PageDetail | PageBlind>;
+  /** The `href` attribute of the selector's own element, as the engine
+   * resolves it: its own word for where a ref's link goes, inside a frame
+   * too. Null when it has none, or the engine would not say. */
+  href(selector: string): Promise<string | null>;
 }
 
 interface Box { x: number; y: number; width: number; height: number }
@@ -175,15 +191,27 @@ const PRELUDE = String.raw`
       if (attr(el, "role") === "textbox") return attr(el, "aria-multiline") === "true" ? "multiline" : "single";
       return null;
     };
+    // What a label says, without what any control inside it holds: the text
+    // of a text area is its value, a list's is its choices, and neither is
+    // part of what the field is called.
+    const kidsOf = prop("childNodes"), dataOf = prop("nodeValue");
+    const wordsIn = (node) => {
+      let out = "";
+      for (const kid of Array.from(kidsOf(node) || [])) {
+        if (kindOf(kid) === 3) out += dataOf(kid) || "";
+        else if (kindOf(kid) === 1 && !FORM_OWNED.includes(tag(kid)) && !hasAttr(kid, "contenteditable")) out += " " + wordsIn(kid) + " ";
+      }
+      return out;
+    };
     const nameOf = (el) => {
       const named = text(attr(el, "aria-label"));
       if (named) return named;
       const root = rootOf(el);
-      const by = text(text(attr(el, "aria-labelledby")).split(" ").map((id) => { const node = id && root ? byId(root, id) : null; return node ? textOf(node) : ""; }).join(" "));
+      const by = text(text(attr(el, "aria-labelledby")).split(" ").map((id) => { const node = id && root ? byId(root, id) : null; return node ? wordsIn(node) : ""; }).join(" "));
       if (by) return by;
       if (["submit", "button", "reset"].includes(inputType(el))) return text(el.value);
       const labels = FORM_OWNED.includes(tag(el)) ? el.labels : null;
-      if (labels && labels.length && text(textOf(labels[0]))) return text(textOf(labels[0]));
+      if (labels && labels.length && text(wordsIn(labels[0]))) return text(wordsIn(labels[0]));
       if (boxKind(el)) return text(attr(el, "placeholder")) || text(attr(el, "name")) || text(attr(el, "title"));
       if (text(textOf(el))) return text(textOf(el));
       const image = queryIn(el, "img[alt], svg[aria-label]");
@@ -210,6 +238,29 @@ const PRELUDE = String.raw`
     const all = (root, out) => {
       for (const el of queryAll(root, "*")) { out.push(el); const inner = shadowOf(el); if (inner) all(inner, out); }
       return out;
+    };
+    // Every match under a root, in the open shadow roots under it too: a
+    // component keeps its fields in one, and a plain query does not go in.
+    const deep = (root, selector) => {
+      const out = queryAll(root, selector);
+      for (const el of queryAll(root, "*")) { const inner = shadowOf(el); if (inner) for (const found of deep(inner, selector)) out.push(found); }
+      return out;
+    };
+    // A form's fields: the controls it owns, and those in the shadow roots
+    // of the components inside it, which no form owns.
+    const fieldsOf = (form, owned, selector) => owned.concat(deep(form, selector).filter((el) => !owned.includes(el)));
+    // The element that has the focus, through open shadow roots and frames
+    // that can be read. Null when nothing has it, or it is where no read goes.
+    const focused = () => {
+      let el = focusOf(document);
+      for (let depth = 0; depth < 9; depth += 1) {
+        for (let inner = el && shadowOf(el); inner && focusOf(inner); inner = shadowOf(el)) el = focusOf(inner);
+        if (!el || !isFrame(el)) return el || null;
+        const inside = frameDoc(el);
+        if (!inside) return null;
+        el = focusOf(inside);
+      }
+      return null;
     };
     // Names are compared as words, without accents: "cardNumber",
     // "card_number" and "cardnumber" are one name, "Contraseña" is "contrasena".
@@ -339,17 +390,26 @@ const LIGHT = String.raw`
     // or an expiry. One alone is not enough: a library card has a number, a
     // gift card a code.
     const CARD_COMPANION = /\bcv[cv]\d?\b|\bcvn\b|\bcsc\b|\bsecurity ?code\b|\bcard ?verification\b|\bverification ?value\b|\bexp(?:iry|iration|ires)?\b|\bexp ?(?:date|month|year|mm|yy)\b|\bvalid ?(?:thru|through|until)\b|\bmm ?yy(?:yy)?\b|\bcodigo de segur\w+\b|\bcryptogramme\b|\bprufziffer\b|\bsicherheitscode\b|\bcaducidad\b|\bvencimiento\b|\bdate d expiration\b|\bablaufdatum\b|\bgultig bis\b|\bvalidade\b/;
-    // A frame the page cannot look into whose title, name or address says payment or card.
-    const PAY_FRAME = /\b(?:card|cvc|cvv|payment|pay|checkout|stripe|adyen|braintree|paypal|razorpay|tarjeta|carte|karte|cartao|pago|paiement|zahlung|pagamento)\b/;
+    // A frame from another site, by what its title, name or address says.
+    // One for typing a card in (a card number, an expiry, a security code,
+    // a processor's hosted fields) is a card signal for the region around
+    // it. One that only names a payment or a payment brand is that brand's
+    // message or button: a click inside it is money, and the page around
+    // it is an ordinary page.
+    const CARD_FRAME = /\b(?:cards?|cc|cvc|cvv|cvn|csc|expir\w+|security ?code|hosted ?fields?|payment (?:input|form|element|fields?|details)|tarjetas?|cartes?|karten?|kartennummer|kreditkarte|cartao|cartoes)\b/;
+    const PAY_FRAME = /\b(?:pay|payments?|checkout|stripe|adyen|braintree|paypal|razorpay|klarna|afterpay|clearpay|affirm|sezzle|gpay|pagos?|paiements?|zahlung(?:en)?|pagamentos?)\b/;
     // The numbers card schemes issue, by their first digits and length. A
     // number that only passes the checksum may be anything: an IMEI does.
     const BRAND = /^(?:4\d{12}(?:\d{3}){0,2}|(?:5[1-5]\d\d|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720)\d{12}|3[47]\d{13}|(?:6011|65\d\d|64[4-9]\d|62\d\d)\d{12,15}|35(?:2[89]|[3-8]\d)\d{12,15}|3(?:0[0-5]|[689]\d)\d{11,16}|(?:5[06-9]|6\d)\d{10,17}|(?:8[12]\d\d|508\d)\d{12}|220[0-4]\d{12,15})$/;
-    const payFrameIn = (root) => queryAll(root, FRAMES).some((frame) => shown(frame) && !frameDoc(frame) && PAY_FRAME.test(frameWords(frame)));
-    // Does this set of controls and frames hold a card signal? An autofill
-    // hint; a card-number field beside a security-code or expiry field, by
-    // name; a payment frame; a card number typed in. A number that passes
-    // the checksum counts only with a scheme's first digits, or beside
-    // another of these signs. Kept cheap: attributes first, a label only
+    // The frames of another site under a root whose own words match a pattern.
+    const framesIn = (root, kind) => deep(root, FRAMES).filter((frame) => shown(frame) && !frameDoc(frame) && kind.test(frameWords(frame)));
+    // Does this set of controls and frames hold a card signal? 2 for one
+    // that stands by itself: an autofill hint; a card-number field beside a
+    // security-code or expiry field, by name; a frame for typing a card in.
+    // 1 when all there is is a card number typed in: a number that passes
+    // the checksum with a scheme's first digits, or beside one of those
+    // names. (What is typed in a search form is never taken for one, so the
+    // caller drops a 1 there.) Kept cheap: attributes first, a label only
     // when they say nothing, a visibility check only for a field that counts.
     const cardSigns = (controls, root, page, depth) => {
       let hint = false, checksum = false, branded = false, labels = null;
@@ -361,7 +421,7 @@ const LIGHT = String.raw`
         if (inputType(el) === "hidden") continue;
         let named = words(attr(el, "name") + " | " + attr(el, "id") + " | " + attr(el, "placeholder") + " | " + attr(el, "aria-label"));
         if (!CARD_NUMBER.test(named) && !CARD_COMPANION.test(named)) {
-          if (!labels) { labels = new Map(); for (const label of queryAll(page, "label")) { const control = label.control; if (control) labels.set(control, (labels.get(control) || "") + " " + textOf(label)); } }
+          if (!labels) { labels = new Map(); for (const label of deep(page, "label")) { const control = label.control; if (control) labels.set(control, (labels.get(control) || "") + " " + wordsIn(label)); } }
           named = words(labels.get(el));
         }
         const number = CARD_NUMBER.test(named), companion = CARD_COMPANION.test(named);
@@ -372,11 +432,12 @@ const LIGHT = String.raw`
         if (digits) { checksum = true; if (BRAND.test(digits)) branded = true; }
       }
       // The two signs must be on two fields: one field called "Card number or CVC" is one sign.
-      const two = numbers.some((number) => companions.some((companion) => companion !== number));
-      if (hint || two || branded || (checksum && (numbers.length > 0 || companions.length > 0))) return true;
-      if (payFrameIn(root)) return true;
+      if (hint || numbers.some((number) => companions.some((companion) => companion !== number))) return 2;
+      if (framesIn(root, CARD_FRAME).length) return 2;
       // A frame the page can read is a card frame when what is in it is.
-      return depth < 2 && queryAll(root, FRAMES).some((frame) => { const inside = shown(frame) && frameDoc(frame); return Boolean(inside) && cardSigns(queryAll(inside, "input, select"), inside, inside, depth + 1); });
+      let inner = 0;
+      if (depth < 2) for (const frame of deep(root, FRAMES)) { const inside = shown(frame) && frameDoc(frame); if (inside) inner = Math.max(inner, cardSigns(deep(inside, "input, select"), inside, inside, depth + 1)); }
+      return Math.max(inner, branded || (checksum && (numbers.length > 0 || companions.length > 0)) ? 1 : 0);
     };
     const roleOf = (el) => {
       const explicit = text(attr(el, "role")).toLowerCase();
@@ -408,7 +469,7 @@ const LIGHT = String.raw`
     const judge = (pick, known) => {
       const { control, box, form, owned, toggles, acting, submits } = known;
       // The fields that decide what the control is: its form's, or the box itself when it is one.
-      const own = form ? owned.concat(queryAll(form, "[contenteditable]").filter(editable)) : box ? [control] : [];
+      const own = form ? fieldsOf(form, owned, "input, select, textarea, [contenteditable]").filter((field) => !hasAttr(field, "contenteditable") || editable(field)) : box ? [control] : [];
       let multiline = false, boxes = 0, searches = 0;
       for (const field of own) {
         const kind = boxKind(field);
@@ -422,33 +483,49 @@ const LIGHT = String.raw`
       const page = pageOf(control) || document;
       const region = form ? null : regionOf(control);
       const scope = form || region || page;
-      if (!regions.has(scope)) regions.set(scope, form ? cardSigns(owned, form, page, 0) : cardSigns(queryAll(scope, "input, select"), scope, page, 0));
+      if (!regions.has(scope)) regions.set(scope, cardSigns(form ? fieldsOf(form, owned, "input, select") : deep(scope, "input, select"), scope, page, 0));
       const search = box === "search" || Boolean(climb(control, (n) => matches(n, "[role=search], search"))) || (boxes === 1 && searches === 1);
+      // What is typed in a search form is never a card number, so there only a sign that stands by itself counts.
+      const card = regions.get(scope) > (search ? 1 : 0);
       const changes = toggles && Boolean(text(handlers(control, ["onchange", "oninput"]) + (form ? handlers(form, ["onchange", "oninput"]) : "")));
-      const typable = Boolean(input.enter && input.box && pick.el === control && box && !control.disabled);
-      // A plain link: an anchor whose address loads another document, with
-      // no role that makes it a button and no click handler written on it.
+      // Text typed at a selector lands on its element only when that element
+      // already has the focus: the engine cannot always give it the focus
+      // (a modal in front, a disabled fieldset, an inert or hidden parent),
+      // and then its Enter goes to whatever has it.
+      const typable = Boolean(input.enter && input.box && pick.el === control && box && !control.disabled && holder === control);
+      // A plain link: an anchor whose address goes somewhere, with no role
+      // that makes it a button and no click handler written on it. Somewhere
+      // is another document, a place on this page that exists (an element
+      // with that id, or an anchor with that name), or a "#/" or "#!" route.
+      // A bare "#", an address to no place, and "javascript:" go nowhere:
+      // such a link is a button.
       const href = text(attr(control, "href")), there = String(hrefOf(control) || ""), here = String(urlOf(page) || "").split("#")[0];
-      const link = tag(control) === "A" && Boolean(href) && !/^(?:#|javascript:)/i.test(href) && !(there.includes("#") && there.split("#")[0] === here)
+      const cut = there.indexOf("#");
+      let place = cut < 0 || there.slice(0, cut) !== here ? null : there.slice(cut + 1);
+      if (place) try { place = decodeURIComponent(place); } catch (error) { /* as it is written */ }
+      const goes = place === null || /^[/!]/.test(place) || (place !== "" && Boolean(byId(page, place) || queryAll(page, "a[name]").some((anchor) => attr(anchor, "name") === place)));
+      const link = tag(control) === "A" && Boolean(href) && !/^javascript:/i.test(href) && goes
         && ["", "link"].includes(text(attr(control, "role")).toLowerCase()) && !text(handlers(control, ["onclick"]));
       // What the form, or the region around a control with no form, holds:
       // a sign-in has a password field and no multi-line field; a file to
       // attach or a multi-line field means something is being submitted.
-      const within = form ? own : region ? queryAll(region, "input, textarea, [contenteditable], [role=textbox]") : [];
+      const within = form ? own : region ? deep(region, "input, textarea, [contenteditable], [role=textbox]") : [];
       const lines = form ? multiline : within.some((field) => boxKind(field) === "multiline" && shown(field));
       const signin = !lines && within.some((field) => inputType(field) === "password" && shown(field));
       const carries = lines || within.some((field) => inputType(field) === "file");
-      const target = { label: labelOf(acting), role: roleOf(acting), box, submits, search, card: regions.get(scope), multiline, button: buttonLike(control), changes, typable, link, signin, carries };
+      // The language the page declares for this element: its own or the nearest around it, "" for none.
+      const speaks = climb(control, (n) => hasAttr(n, "lang"));
+      const target = { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, button: buttonLike(control), changes, typable, link, signin, carries, lang: clip(text(speaks ? attr(speaks, "lang") : ""), 20) };
       if (input.enter && box === "multiline") {
         // What could make this box a message composer: its keyboard hint,
         // whether it is the only text field there, what it is called, and
         // what the buttons there are called, the nearest first.
         target.hint = attr(control, "enterkeyhint").toLowerCase() === "send";
-        target.only = (form ? boxes : queryAll(scope, TEXTS).filter((field) => boxKind(field) && shown(field)).length) === 1;
+        target.only = (form ? boxes : deep(scope, TEXTS).filter((field) => boxKind(field) && shown(field)).length) === 1;
         target.says = clip(text(labelOf(control) + " " + attr(control, "placeholder") + " " + attr(control, "aria-placeholder") + " " + attr(control, "data-placeholder")), 200);
         target.near = [];
         for (let n = target.only ? up(control) : null; n && target.near.length < 12; n = n === scope ? null : up(n)) {
-          for (const other of queryAll(n, PRESSED)) {
+          for (const other of deep(n, PRESSED)) {
             const called = clip(labelOf(other), 60);
             if (called && target.near.length < 12 && !target.near.includes(called)) target.near.push(called);
           }
@@ -459,10 +536,18 @@ const LIGHT = String.raw`
 
     const found = resolve();
     if (found.nothing) return { found: true, label: "", role: "document", box: null, submits: false, search: false, card: false, multiline: false };
+    const holder = input.enter && input.box ? focused() : null;
     // Shared by every element in the box: whether the page has a frame (the
     // engine measures an element inside one from the frame's own corner, so
-    // its box can be another element's out here), and a payment frame.
-    const about = { frames: queryAll(document, FRAMES).length > 0, payFrame: payFrameIn(document) };
+    // its box can be another element's out here), whether one of them is a
+    // payment frame, and whether the measured box could be inside one: it
+    // starts within the frame's own width and height.
+    const frames = deep(document, FRAMES);
+    const pays = frames.filter((frame) => shown(frame) && !frameDoc(frame) && (CARD_FRAME.test(frameWords(frame)) || PAY_FRAME.test(frameWords(frame))));
+    const about = {
+      frames: frames.length > 0, payFrame: pays.length > 0,
+      inPay: Boolean(input.box) && pays.some((frame) => { const size = rectOf(frame); return Boolean(size) && input.box.x >= -1 && input.box.y >= -1 && input.box.x < size.width && input.box.y < size.height; }),
+    };
     if (!found.picks) return { ...found, ...about };
     const described = each(found.picks, judge);
     if (described.length > 9) return { found: false, error: "too many elements share this box" };
@@ -522,7 +607,7 @@ const DETAIL = String.raw`
       const kind = boxKind(field);
       const type = tag(field) === "TEXTAREA" ? "textarea" : tag(field) === "SELECT" ? "select" : editable(field) ? "contenteditable" : tag(field) === "INPUT" ? inputType(field) : kind ? "textbox" : "";
       if (!type || ["hidden", "submit", "button", "image", "reset", "file"].includes(type) || !shown(field)) return null;
-      const name = clip(labelOf(field) || attr(field, "id") || type, 80);
+      const name = clip(labelOf(field) || attr(field, "id") || type, 60);
       if (type === "checkbox" || type === "radio") return { kind, type, entry: { name, type, value: field.checked ? "checked" : "unchecked" } };
       if (type === "select") return { kind, type, entry: { name, type, value: Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ") } };
       const typed = type === "contenteditable" || type === "textbox";
@@ -553,16 +638,19 @@ const DETAIL = String.raw`
     // it is called and what it holds, shown or not.
     const stateOf = (el) => {
       const type = tag(el) === "INPUT" ? inputType(el) : String(tag(el)).toLowerCase();
-      const holds = type === "checkbox" || type === "radio" ? String(el.checked) + ":" + el.value
+      // A box, a switch or an option that is a role, not an input, says what it holds in its state attributes.
+      const holds = !FORM_OWNED.includes(tag(el)) && matches(el, STATED) ? attr(el, "role") + ":" + attr(el, "aria-checked") + ":" + attr(el, "aria-selected") + ":" + attr(el, "aria-pressed")
+        : type === "checkbox" || type === "radio" ? String(el.checked) + ":" + el.value
         : type === "select" ? Array.from(el.selectedOptions || []).map((option) => option.value).join(",")
-        : FORM_OWNED.includes(tag(el)) ? String(el.value == null ? "" : el.value)
+        : FORM_OWNED.includes(tag(el)) ? String(el.value == null ? "" : el.value) + ":" + attr(el, "aria-pressed")
         : plain(el);
       return type + "|" + attr(el, "name") + "|" + attr(el, "id") + "|" + holds;
     };
     // Every control under a root and what it holds, and for a frame the page
     // can read, its body and its own controls: a rich-text editor keeps its
     // text there.
-    const BOUND = TYPED + ", " + FRAMES;
+    const STATED = '[role=checkbox], [role=switch], [role=radio], [role=option], [role=menuitemcheckbox], [role=menuitemradio], [aria-pressed]';
+    const BOUND = TYPED + ", " + STATED + ", " + FRAMES;
     const statesIn = (nodes, depth, out) => {
       for (const el of nodes) {
         if (!isFrame(el)) { out.push(stateOf(el)); continue; }
@@ -592,7 +680,7 @@ const DETAIL = String.raw`
         listed.push(field);
         fields.push(read.entry);
       };
-      if (form) for (const field of owned.concat(queryAll(form, "[contenteditable]").filter(editable))) list(field, true);
+      if (form) for (const field of fieldsOf(form, owned, TYPED)) { if (!hasAttr(field, "contenteditable") || editable(field)) list(field, true); }
       else {
         if (box) list(control, true);
         if (region) for (const field of all(region, [])) if (field !== control && matches(field, TYPED)) list(field, false);
@@ -601,7 +689,16 @@ const DETAIL = String.raw`
       // hidden and not displayed ones and the state of tick boxes and lists
       // included. A region with no control of its own says nothing about
       // what goes, so then it is every control on the page.
-      let bound = form ? owned.concat(queryAll(form, "[contenteditable], [role=textbox], " + FRAMES)) : region ? all(region, []).filter((el) => matches(el, BOUND)) : [];
+      let bound = form ? fieldsOf(form, owned, BOUND) : region ? all(region, []).filter((el) => matches(el, BOUND)) : [];
+      // A component in the form or region whose inside cannot be read: it
+      // has no root that can be opened and nothing of its own on the page,
+      // and yet it takes up room. What is in it is not on the card and not
+      // part of the approval, and the card has to say so.
+      const opaque = Boolean(form || region) && all(form || region, []).some((el) => {
+        if (!String(tag(el)).includes("-") || shadowOf(el) || prop("firstElementChild")(el) || !shown(el)) return false;
+        const size = rectOf(el);
+        return Boolean(size) && size.width > 0 && size.height > 0;
+      });
       let others = 0;
       if (!form && !bound.some((el) => el !== control)) {
         bound = all(document, []).filter((el) => matches(el, BOUND));
@@ -627,7 +724,7 @@ const DETAIL = String.raw`
       // or holds a card number it is not carried, and the page is not pictured.
       const trips = Boolean(said) && (Boolean(secretIn(words(said))) || (said.match(/\d(?:[ -]?\d){12,18}/g) || []).some((run) => cardDigits(run)));
       const identity = pick.within.map((frame) => identify(frame) + ">").join("") + (acting === control ? identify(control) : identify(control) + " " + identify(acting));
-      return { control, trips, part: { fields, others, bound: hash(input.salt + "\n" + statesIn(bound, 0, []).join("\n")), identity, context: trips ? "" : said, around: hash(input.salt + "\n" + steady(said)) } };
+      return { control, trips, part: { opaque, fields, others, bound: hash(input.salt + "\n" + statesIn(bound, 0, []).join("\n")), identity, context: trips ? "" : said, around: hash(input.salt + "\n" + steady(said)) } };
     };
 
     const found = resolve();
@@ -637,9 +734,8 @@ const DETAIL = String.raw`
     return { found: true, parts: described.map((one) => one.part), secrets: described.some((one) => one.trips) || masks(document, 0) };
 `;
 
-/** A script as it is sent. Its comments and indentation are for readers
- * here: all of it travels as one command-line argument, and Windows allows
- * 32,767 characters for a whole command line. */
+/** A script as it is sent: without the comments and indentation that are
+ * for readers here. */
 const compact = (body: string): string => `(input) => {\ntry {\n${body.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("//")).join("\n")}\n} catch (error) {\nreturn { found: false, error: String(error) };\n}\n}`;
 const LIGHT_SCRIPT = compact(PRELUDE + LIGHT);
 const DETAIL_SCRIPT = compact(PRELUDE + DETAIL);
@@ -668,12 +764,12 @@ export function parsePageTarget(value: unknown): PageTarget | null {
   if (!value || typeof value !== "object" || (value as { found?: unknown }).found !== true) return null;
   const raw = value as Record<string, unknown>;
   // The page is one page: what is true of it is so for every element in the box.
-  const about = { frames: raw.frames === true, payFrame: raw.payFrame === true };
+  const about = { frames: raw.frames === true, payFrame: raw.payFrame === true, inPay: raw.inPay === true };
   const also = (Array.isArray(raw.also) ? raw.also : []).filter((entry) => entry && typeof entry === "object").slice(0, MAX_ALSO).map((entry) => ({ ...parseTarget(entry as Record<string, unknown>), ...about }));
   return { ...parseTarget(raw), ...about, ...(also.length ? { also } : {}) };
 }
 
-function parseTarget(raw: Record<string, unknown>): Omit<PageTarget, "frames" | "payFrame" | "also"> {
+function parseTarget(raw: Record<string, unknown>): Omit<PageTarget, "frames" | "payFrame" | "inPay" | "also"> {
   return {
     label: text(raw.label, 120),
     role: text(raw.role, 40),
@@ -688,6 +784,7 @@ function parseTarget(raw: Record<string, unknown>): Omit<PageTarget, "frames" | 
     link: raw.link === true,
     signin: raw.signin === true,
     carries: raw.carries === true,
+    lang: text(raw.lang, 20),
     // All together or not at all: without `only` nothing says the field is not a composer.
     ...(typeof raw.only === "boolean" ? {
       hint: raw.hint === true,
@@ -722,6 +819,7 @@ function parseEvidence(raw: Record<string, unknown>): PageEvidence | null {
     }];
   });
   return {
+    opaque: raw.opaque === true,
     fields,
     others: typeof raw.others === "number" && Number.isSafeInteger(raw.others) && raw.others > 0 ? raw.others : 0,
     bound: text(raw.bound, 64),
@@ -739,8 +837,9 @@ function parseBox(data: Record<string, unknown>): Box | null {
 }
 
 /** One engine command for the session being read (agentBrowserQuery with the
- * mount's binary and session env). */
-export type EngineQuery = (args: string[]) => ReturnType<typeof agentBrowserQuery>;
+ * mount's binary and session env). `stdin` is what the engine is given on
+ * its input: the script, for `eval --stdin`. */
+export type EngineQuery = (args: string[], stdin?: string) => ReturnType<typeof agentBrowserQuery>;
 
 /** The longest selector this read hands to the engine. */
 export const MAX_SELECTOR = 2_000;
@@ -755,7 +854,10 @@ export function browserPageReader(query: EngineQuery): BrowserPageReader {
   /** Run one of the two scripts. A page answer that is not a description
    * is one of the reasons it could not give one. */
   const run = async <T>(input: PageReadInput, parse: (value: unknown) => T | null): Promise<T | "unseen" | "unseen-pay" | "framed" | "sealed" | "unreadable"> => {
-    const answer = await query(["eval", "-b", Buffer.from(pageReadScript({ ...input, salt })).toString("base64")]);
+    // The script goes to the engine on its input, not on its command line:
+    // its length is then no concern of the longest command line an
+    // operating system will start.
+    const answer = await query(["eval", "--stdin"], pageReadScript({ ...input, salt }));
     if (!answer.ok) return "unreadable";
     const result = answer.data.result as { found?: unknown; error?: unknown; framed?: unknown; sealed?: unknown; payFrame?: unknown } | null;
     if (result && typeof result === "object" && result.found === false && result.error === undefined) {
@@ -797,5 +899,10 @@ export function browserPageReader(query: EngineQuery): BrowserPageReader {
     },
     target: (selector, enter) => read(selector, enter, false, parsePageTarget),
     evidence: (selector, enter) => read(selector, enter, true, parsePageDetail),
+    async href(selector) {
+      if (!selector || selector.startsWith("-") || selector.length > MAX_SELECTOR) return null;
+      const answer = await query(["get", "attr", selector, "href"]);
+      return answer.ok && typeof answer.data.value === "string" ? answer.data.value : null;
+    },
   };
 }

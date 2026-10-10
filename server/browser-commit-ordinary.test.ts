@@ -24,8 +24,8 @@ import { removeTempDir } from "./testing/cleanup.ts";
 import type { OptionCardData } from "../shared/wire.ts";
 
 /** The server's types carry no DOM. This is all of happy-dom the table touches. */
-interface El { focus(): void; getAttribute(name: string): string | null; textContent: string | null; tagName: string; value?: string }
-const page = (globalThis as unknown as { document: { body: { innerHTML: string }; querySelector(selector: string): El | null } }).document;
+interface El { focus(): void; getAttribute(name: string): string | null; textContent: string | null; tagName: string; value?: string; attachShadow?(init: { mode: string }): { innerHTML: string; querySelector(selector: string): El | null } }
+const page = (globalThis as unknown as { document: { body: { innerHTML: string }; documentElement: { setAttribute(name: string, value: string): void; removeAttribute(name: string): void }; querySelector(selector: string): El | null } }).document;
 
 /** happy-dom lays nothing out: each element the engine "measures" gets a box
  * of its own, which the read then finds it by. */
@@ -61,6 +61,20 @@ interface Op {
   type?: [selector: string, text: string];
   /** Another tool on the element: check, select. */
   tool?: [name: string, selector: string];
+  /** The language the page declares. English when not given; "" for none. */
+  lang?: string;
+  /** What the snapshot calls the clicked element, when not what its text says. */
+  named?: string;
+  /** The role the snapshot gives it, when not the one its tag has. */
+  role?: string;
+  /** Runs once the page is in place: to give a component its shadow root. */
+  setup?: () => void;
+  /** The clicked element, when no selector reaches it (it is inside a shadow root). */
+  pick?: () => El;
+  /** The click is on a ref inside a frame from another site: the engine
+   * measures it from the frame's own corner, and nothing on the page has
+   * that box. */
+  inFrame?: { role: string; name: string; href?: string };
   want: Outcome;
 }
 
@@ -75,27 +89,41 @@ function snapshotOf(el: El): { role: string; name: string } {
   return { role, name };
 }
 
+/** Where the engine says an element inside another site's frame is: a box no element of the page has. */
+const FRAMED = { x: 6, y: 8, width: 83, height: 21 };
+
 async function outcomeOf(op: Op): Promise<Outcome> {
+  if (op.lang === "") page.documentElement.removeAttribute("lang");
+  else page.documentElement.setAttribute("lang", op.lang ?? "en");
   page.body.innerHTML = op.html;
+  op.setup?.();
   if (op.focus) page.querySelector(op.focus)!.focus();
   const refs = new Map<string, El>();
   const selector = op.click ?? op.tool?.[1];
-  if (selector) refs.set("e1", page.querySelector(selector)!);
-  const params = op.click ? { name: "agent_browser_click", arguments: { selector: "@e1" } }
+  if (op.pick) refs.set("e1", op.pick());
+  else if (selector) refs.set("e1", page.querySelector(selector)!);
+  const clicks = Boolean(op.click || op.pick || op.inFrame);
+  const params = clicks ? { name: "agent_browser_click", arguments: { selector: "@e1" } }
     : op.tool ? { name: op.tool[0], arguments: { selector: "@e1", value: "b" } }
     : op.type ? { name: "agent_browser_type", arguments: { selector: op.type[0], text: op.type[1] } }
     : { name: "agent_browser_press", arguments: { key: op.press } };
-  const engine: EngineQuery = async (args) => {
+  const engine = async (args: string[], stdin?: string): ReturnType<EngineQuery> => {
+    // A ref is the engine's own; anything else here is a CSS selector, and
+    // what is not one (`text=…`) the engine cannot resolve either.
+    const resolve = (asked: string): El | null => { try { return asked.startsWith("@") ? refs.get(asked.slice(1)) ?? null : page.querySelector(asked); } catch { return null; } };
     if (args[0] === "get" && args[1] === "box") {
-      const asked = args[2]!;
-      let el: El | null = null;
-      // A ref is the engine's own; anything else here is a CSS selector, and
-      // what is not one (`text=…`) the engine cannot measure either.
-      try { el = asked.startsWith("@") ? refs.get(asked.slice(1)) ?? null : page.querySelector(asked); } catch { el = null; }
-      return el ? { ok: true, data: boxFor(el) } : { ok: false, error: `Element not found: ${asked}` };
+      if (op.inFrame && args[2] === "@e1") return { ok: true, data: FRAMED };
+      const el = resolve(args[2]!);
+      return el ? { ok: true, data: boxFor(el) } : { ok: false, error: `Element not found: ${args[2]}` };
+    }
+    if (args[0] === "get" && args[1] === "attr") {
+      if (op.inFrame && args[2] === "@e1") return { ok: true, data: { value: op.inFrame.href ?? null } };
+      const el = resolve(args[2]!);
+      return el ? { ok: true, data: { value: el.getAttribute(args[3]!) } } : { ok: false, error: `Element not found: ${args[2]}` };
     }
     if (args[0] === "get") return { ok: true, data: { url: "https://app.example.com/page" } };
-    return { ok: true, data: { result: new Function(`return ${Buffer.from(args[2]!, "base64").toString()}`)() as Record<string, unknown> } };
+    // The read's own script, which the engine is given on its input.
+    return { ok: true, data: { result: new Function(`return ${stdin}`)() as Record<string, unknown> } };
   };
   const dir = mkdtempSync(join(tmpdir(), "omb-ordinary-"));
   scratch.push(dir);
@@ -108,7 +136,11 @@ async function outcomeOf(op: Op): Promise<Outcome> {
     runtime: {
       hold: runtime.hold.bind(runtime), releaseHold: runtime.releaseHold.bind(runtime), personReleased: runtime.personReleased.bind(runtime),
       withAgentAction: runtime.withAgentAction.bind(runtime),
-      ref: (_session, ref) => { const el = refs.get(ref); return el ? snapshotOf(el) : undefined; },
+      ref: (_session, ref) => {
+        if (op.inFrame) return ref === "e1" ? { role: op.inFrame.role, name: op.inFrame.name } : undefined;
+        const el = refs.get(ref);
+        return el ? { ...snapshotOf(el), ...(op.named === undefined ? {} : { name: op.named }), ...(op.role === undefined ? {} : { role: op.role }) } : undefined;
+      },
     },
     requests, counts: new OutboundCounts(join(dir, "outbound-counts.json")), holdMs: 5_000, handBackMs: 1_000,
     policy: () => null,
@@ -172,8 +204,10 @@ const OPS: Op[] = [
   // Forms with a box of many lines: a harmless label is not a send.
   { ...boxForm("Save changes", "passes"), what: 'a profile form with an "About you" box and "Save changes"' },
   ...["Save", "Update", "Next", "Continue", "Back", "Cancel", "Close", "Done", "OK", "Reset", "Clear", "Add", "Edit", "Preview", "Upload", "Sign up", "Create account", "Register"].map((label) => boxForm(label, "passes")),
-  boxForm("Go", "held as Send"),
-  boxForm("Enviar", "held as Send"),
+  // A label on neither list: on an English page it passes; the rule that
+  // holds it is for pages in another language.
+  boxForm("Go", "passes"),
+  { ...boxForm("Enviar", "held as Send"), what: '"Enviar" on a form with a box of many lines, on a page in Spanish', lang: "es" },
   boxForm("Send", "held as Send"),
   { what: '"Send" in a mail compose form', html: `<form><input aria-label="To" value="ada@example.com"><input aria-label="Subject" value="Lunch"><textarea aria-label="Body">At one?</textarea><button id="t">Send</button></form>`, click: "#t", want: "held as Send" },
   { what: 'a "Comment" button on a form with one field', html: `<form><textarea aria-label="Add a comment">Looks good</textarea><button id="t">Comment</button></form>`, click: "#t", want: "held as Send" },
@@ -195,7 +229,7 @@ const OPS: Op[] = [
   { what: 'a log-in with "Log in"', html: SIGN_IN("Log in"), click: "#t", want: "passes" },
   { what: "Enter in a log-in's password field", html: SIGN_IN("Submit"), focus: "#pw", press: "Enter", want: "passes" },
   { what: '"Continue" in a sign-up form', html: `<form><input aria-label="Email"><input type="password" aria-label="Choose a password"><button id="t">Continue</button></form>`, click: "#t", want: "passes" },
-  { what: "a line break typed into a log-in's password field", html: SIGN_IN("Log in"), type: ["#pw", "correct-horse\n"], want: "passes" },
+  { what: "a line break typed into a log-in's password field, which has the focus", html: SIGN_IN("Log in"), focus: "#pw", type: ["#pw", "correct-horse\n"], want: "passes" },
 
   // Money: what the label says, and anything in a card region.
   { what: '"Pay now" on a cart', html: `<form><input aria-label="Email" value="ada@example.com"><button id="t">Pay now</button></form>`, click: "#t", want: "held as Money" },
@@ -221,8 +255,8 @@ const OPS: Op[] = [
   { what: "Enter in a search box", html: `<form role="search"><input id="q" type="search" aria-label="Search" value="lamps"><button>Search</button></form>`, focus: "#q", press: "Enter", want: "passes" },
 
   // Typed text.
-  { what: "several lines typed into a notes box", html: NOTES, type: ["#box", "Bring the charger\nand the cable\n"], want: "passes" },
-  { what: "a line break typed into a chat composer", html: CHAT, type: ["#box", "On my way\n"], want: "refused" },
+  { what: "several lines typed into a notes box, which has the focus", html: NOTES, focus: "#box", type: ["#box", "Bring the charger\nand the cable\n"], want: "passes" },
+  { what: "a line break typed into a chat composer", html: CHAT, focus: "#box", type: ["#box", "On my way\n"], want: "refused" },
   { what: "a line break typed at a paragraph", html: `<p id="para">Read this first</p>${NOTES}`, type: ["#para", "x\n"], want: "refused" },
   { what: "a tab and a line break typed into a notes box", html: NOTES, type: ["#box", "a\tb\n"], want: "refused" },
   { what: "a line break typed at a selector the engine cannot resolve", html: NOTES, type: ["text=Notes", "x\n"], want: "refused" },
@@ -246,6 +280,101 @@ const OPS: Op[] = [
   { what: 'a "Messages" tab', html: `<div role="tablist"><div id="t" role="tab" tabindex="0">Messages</div></div>`, click: "#t", want: "passes" },
   { what: "the Tab key", html: NOTES, focus: "#box", press: "Tab", want: "passes" },
 ];
+
+// ── What the first table missed ──
+// The table above was built beside the rules it tests. These are the groups
+// a reviewer found outside it: links that stay on the page, shop pages with
+// a payment brand's frame on them, text-area forms with everyday labels,
+// and links whose snapshot name is not their text.
+const contents = (text: string, id: string): Op => ({ what: `a contents link "${text}" to a place on the same page`, html: `<nav><a id="t" href="#${id}">${text}</a></nav><p>…</p><h2 id="${id}">${text}</h2>`, click: "#t", want: "passes" });
+const route = (text: string, href: string): Op => ({ what: `a "${href}" route that says "${text}"`, html: `<nav><a href="#/">Home</a> <a id="t" href="${href}">${text}</a></nav><div id="app"></div>`, click: "#t", want: "passes" });
+/** A product page with a pay-later message frame and an express-checkout button frame, both from another site. */
+const SHOP = (inner: string) => `<main><h1>Desk lamp</h1><p>$40.00</p>${inner}
+  <object title="Klarna On-site messaging" name="klarna-payments-main"></object><object title="Secure express checkout frame"></object></main>`;
+const shop = (what: string, inner: string, rest: Partial<Op> = { click: "#t" }): Op => ({ what: `${what} on a shop page with a pay-later frame and an express-checkout frame`, html: SHOP(inner), want: "passes", ...rest });
+/** An article with an advert frame, and a link whose name in the snapshot is not what its text says. */
+const renamed = (what: string, anchor: string, named: string): Op => ({ what: `${what}, by ref, on a page with an advert frame`, html: `<article>${anchor}<p>Body.</p></article><object title="Advertisement"></object>`, click: "#t", named, want: "passes" });
+const LONG = "How to share and post your first message with the new publishing tools: a complete walk-through for people who have never sent one before today";
+const CARD_REGION = (control: string) => `<form>${CARD}${control}</form>`;
+const shadow = (host: string, inner: string) => () => { page.querySelector(host)!.attachShadow!({ mode: "open" }).innerHTML = inner; };
+
+const GAPS: Op[] = [
+  // Links that stay on the page: a contents list, a single-page app's routes.
+  contents("Transfer of power", "transfer"), contents("Trade", "trade"), contents("Reply to critics", "reply"), contents("Share of the vote", "share"),
+  contents("Post-war order", "post-war"), contents("Book of the year", "book"),
+  { what: "a contents link to a named anchor", html: `<nav><a id="t" href="#notes">Send-off notes</a></nav><a name="notes"></a>`, click: "#t", want: "passes" },
+  route("Blog post", "#/blog"), route("Message centre", "#/messages"), route("Share prices", "#!/share"), route("Pay rates", "#/pay"), route("Subscribe", "#/subscribe"),
+  { what: 'a "#" link that says Send, still', html: `<p><a id="t" href="#">Send</a></p>`, click: "#t", want: "held as Send" },
+  { what: "a link to a place the page does not have, that says Send", html: `<p><a id="t" href="#nowhere">Send</a></p>`, click: "#t", want: "held as Send" },
+  { what: "a route link with a click handler, that says Send", html: `<p><a id="t" href="#/send" onclick="send()">Send</a></p>`, click: "#t", want: "held as Send" },
+
+  // A shop page with a payment brand's message or button in a frame is still a shop page.
+  shop('"Add to cart"', `<button id="t" type="button">Add to cart</button>`),
+  shop("a size list that updates the page", `<select id="t" aria-label="Size" onchange="pick(this.value)"><option value="a">Small</option><option value="b">Large</option></select>`, { tool: ["agent_browser_select", "#t"] }),
+  shop("a quantity stepper", `<button id="t" type="button" aria-label="Increase quantity">+</button>`),
+  shop("a link to the reviews", `<a id="t" href="/reviews">Read the reviews</a>`),
+  shop("an accordion", `<div id="t" role="button" tabindex="0" aria-expanded="false">Shipping details</div>`),
+  shop('"Add to wishlist"', `<button id="t" type="button">Add to wishlist</button>`),
+  { what: "a link on a blog post with a donation-button frame", html: `<article><p>Thanks for reading.</p><a id="t" href="/next">Share this story</a><object title="Donate with PayPal button"></object></article>`, click: "#t", want: "passes" },
+  { what: '"Like" on a blog post with a donation-button frame', html: `<article><p>Thanks for reading.</p><button id="t" type="button">Like</button><object title="Donate with PayPal button"></object></article>`, click: "#t", want: "passes" },
+  // A click inside such a frame is still money, and a frame for typing a card in still makes its form a card region.
+  { what: "the button inside an express-checkout frame", html: SHOP(""), inFrame: { role: "button", name: "Buy with Pay" }, want: "held as Money" },
+  { what: 'a "Continue" inside a frame named only klarna-payments-main', html: `<main><h1>Checkout</h1><object name="klarna-payments-main"></object></main>`, inFrame: { role: "button", name: "Continue" }, want: "held as Money" },
+  { what: '"Continue" on a form whose card field is a hosted card-number frame', html: `<form><input aria-label="Email"><object title="Secure card number input frame"></object><button id="t" type="button">Continue</button></form>`, click: "#t", want: "held as Money" },
+
+  // Forms with a box of many lines, on an English page: an everyday label is not a send.
+  ...["Save settings", "Save draft", "Update profile", "Translate", "Format", "Run", "Generate", "Create", "Add note", "Finish", "Convert", "Check grammar"].map((label) => boxForm(label, "passes")),
+  { ...boxForm("Save draft", "passes"), what: '"Save draft" on such a form, on a page that declares no language', lang: "" },
+  // The same form on a page in another language is where the rule is for.
+  { ...boxForm("Speichern", "held as Send"), what: '"Speichern" on such a form, on a German page', lang: "de" },
+  { ...boxForm("Enviar", "held as Send"), what: '"Enviar" on such a form, on a Spanish page', lang: "es-MX" },
+  { ...boxForm("Veröffentlichen", "held as Send"), what: '"Veröffentlichen" on such a form, on a page that declares no language', lang: "" },
+  { ...boxForm("送信", "held as Send"), what: "a label in Japanese on such a form, on a page that says it is English" },
+
+  // A link whose name in the snapshot is not what its text says.
+  renamed("a headline longer than a label", `<h2><a id="t" href="/story">${LONG}</a></h2>`, LONG),
+  renamed("a link with text only a screen reader gets", `<a id="t" href="/subscribe">Subscribe<span aria-hidden="true"> to the newsletter</span></a>`, "Subscribe"),
+  renamed("a link with a picture and text", `<a id="t" href="/tips"><img alt="Send icon" width="10" height="10"> Send us a tip</a>`, "Send icon Send us a tip"),
+  { ...shop("a link the snapshot names by its title", `<a id="t" href="/guide" title="Buy and pay guide">Guide</a>`), named: "Buy and pay guide" },
+  { ...renamed("a button the snapshot calls Send", `<a id="t" href="/story">Read on</a>`, "Send"), what: "a ref the snapshot calls a button named Send, over a plain link, on a page with an advert frame", role: "button", want: "held as Send" as const },
+
+  // A search field is no way round a payment.
+  { what: 'Enter in an address finder inside a card form with "Pay now"', html: `<form><input id="find" type="search" aria-label="Find your address">${CARD}<button>Pay now</button></form>`, focus: "#find", press: "Enter", want: "held as Money" },
+  { what: "Enter in a promo field marked as a search box, inside a card form", html: `<form><input id="find" role="searchbox" aria-label="Promo code">${CARD}<button>Continue</button></form>`, focus: "#find", press: "Enter", want: "held as Money" },
+  { what: '"Continue" on a card form inside a search region', html: `<div role="search"><form>${CARD}<button id="t">Continue</button></form></div>`, click: "#t", want: "held as Money" },
+  { what: '"Buy now" on a form whose only text field is a search field', html: `<form><input type="search" aria-label="Find a product" value="lamp"><button id="t">Buy now</button></form>`, click: "#t", want: "held as Money" },
+  { what: 'Enter in the search field of a form whose button says "Buy now"', html: `<form><input id="find" type="search" aria-label="Find a product" value="lamp"><button>Buy now</button></form>`, focus: "#find", press: "Enter", want: "held as Money" },
+  { what: "a search whose words are a card number", html: `<form role="search"><input type="search" aria-label="Search" value="4242 4242 4242 4242"><button id="t">Search</button></form>`, click: "#t", want: "passes" },
+
+  // Typed text with a line break, aimed at a field that does not have the focus.
+  { what: "a line break typed at a search box while a Buy now button has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"></form><form><button id="buy">Buy now</button></form>`, focus: "#buy", type: ["#q", "lamps\n"], want: "refused" },
+  { what: "a line break typed at a disabled field while a payment form has the focus", html: `<fieldset disabled><form><input id="off" aria-label="Notes"></form></fieldset><form><input id="amount" aria-label="Amount"><button>Pay now</button></form>`, focus: "#amount", type: ["#off", "x\n"], want: "refused" },
+  { what: "a line break typed at a notes box that does not have the focus", html: `<form><input id="title" aria-label="Title"><textarea id="box" aria-label="Notes"></textarea><button>Save</button></form>`, focus: "#title", type: ["#box", "one\n"], want: "refused" },
+  { what: "a line break typed into the search box that has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form>`, focus: "#q", type: ["#q", "lamps\n"], want: "passes" },
+
+  // In a card region, a control with an option, tab or switch role pays like a button.
+  { what: 'an option that says "Use this card" in a card region', html: CARD_REGION(`<div id="t" role="option" tabindex="0">Use this card</div>`), click: "#t", want: "held as Money" },
+  { what: "a tab in a card region", html: CARD_REGION(`<div id="t" role="tab" tabindex="0">Card ending 4242</div>`), click: "#t", want: "held as Money" },
+  { what: "a switch in a card region", html: CARD_REGION(`<div id="t" role="switch" tabindex="0" aria-checked="false">One-click pay</div>`), click: "#t", want: "held as Money" },
+
+  // Card fields inside a web component.
+  { what: '"Continue" beside card fields that sit in a component\'s shadow root', html: `<section><card-fields></card-fields><button id="t" type="button">Continue</button></section>`,
+    setup: shadow("card-fields", `<input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc">`), click: "#t", want: "held as Money" },
+  { what: '"Continue" inside the same shadow root as the card fields', html: `<checkout-box id="host"></checkout-box>`,
+    setup: shadow("checkout-box", `<input aria-label="Card number" autocomplete="cc-number"><button id="go" type="button">Continue</button>`),
+    pick: () => (page.querySelector("#host") as unknown as { shadowRoot: { querySelector(selector: string): El } }).shadowRoot.querySelector("#go"), want: "held as Money" },
+];
+
+describe("ordinary operations the first table missed", () => {
+  it("has a row for each group", () => {
+    expect(GAPS.length).toBeGreaterThanOrEqual(50);
+    expect(new Set(GAPS.map((op) => op.what)).size).toBe(GAPS.length);
+  });
+
+  it.each(GAPS.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {
+    expect(await outcomeOf(op)).toBe(want);
+  });
+});
 
 describe("ordinary operations", () => {
   it("covers at least seventy of them, with each outcome present", () => {

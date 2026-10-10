@@ -17192,7 +17192,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             threadId: internalCapability.threadId,
             session: browser.session,
             params: body.params,
-            page: browserPageReader((args) => agentBrowserQuery({ ...engine, args })),
+            page: browserPageReader((args, stdin) => agentBrowserQuery({ ...engine, args, stdin })),
             shot: async () => {
               const frame = await browserRuntime.withAgentAction(browser.session, () => agentBrowserFrame(engine), "read");
               return browserHoldShots.keep(saveImage(Buffer.from(frame.png, "base64"), "image/jpeg").path);
