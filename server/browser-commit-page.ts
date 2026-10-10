@@ -202,6 +202,8 @@ const PAGE_READ = String.raw`(input) => {
       for (let i = 0; i < digits.length; i += 1) { let digit = digits.charCodeAt(digits.length - 1 - i) - 48; if (i % 2 === 1) { digit *= 2; if (digit > 9) digit -= 9; } sum += digit; }
       return sum % 10 === 0;
     };
+    // What a field is called, every way it is called: its name, id, placeholder and label, as words.
+    const namesOf = (field, name) => [attr(field, "name"), attr(field, "id"), attr(field, "placeholder"), name].map(words).join(" | ");
     const secretKind = (field, type, auto, name) => {
       if (type === "password") return "password";
       for (const token of auto.split(/\s+/)) {
@@ -211,10 +213,16 @@ const PAGE_READ = String.raw`(input) => {
       }
       // A message is what the person is asked to approve: only a one-line field is hidden for its name.
       if (tag(field) !== "INPUT") return null;
-      const named = [attr(field, "name"), attr(field, "id"), attr(field, "placeholder"), name].map(words).join(" | ");
+      const named = namesOf(field, name);
       const found = SECRET_NAMES.find((entry) => entry[1].test(named));
       return found ? found[0] : null;
     };
+    // The two signs of a card form that carries no autofill hints: a field
+    // called a card number, and another called a security code or an expiry.
+    // One alone is not enough: a library card has a number, a gift card a code.
+    const CARD_NUMBER = /\b(?:card|cc) ?(?:number|num|no|nr)\b|\bccn\b|\b(?:credit|debit) ?card\b/;
+    const CARD_COMPANION = /\bcv[cv]\d?\b|\bcvn\b|\bcsc\b|\bsecurity ?code\b|\bcard ?verification\b|\bverification ?value\b|\bexp(?:iry|iration|ires)?\b|\bexp ?(?:date|month|year|mm|yy)\b|\bvalid ?(?:thru|through|until)\b|\bmm ?yy(?:yy)?\b/;
+    const cardSigns = (field, name) => { const named = namesOf(field, name); return { number: CARD_NUMBER.test(named), companion: CARD_COMPANION.test(named) }; };
     // One field as the card and the approval have it, or null for a control
     // that carries nothing a person typed or chose, or that is not shown.
     const fieldOf = (field) => {
@@ -224,11 +232,12 @@ const PAGE_READ = String.raw`(input) => {
       if (!type || ["hidden", "submit", "button", "image", "reset", "file"].includes(type) || !shown(field)) return null;
       const name = clip(labelOf(field) || attr(field, "id") || type, 80);
       if (type === "checkbox" || type === "radio") return { kind, type, entry: { name, type, value: field.checked ? "checked" : "unchecked" } };
-      if (type === "select") return { kind, type, entry: { name, type, value: Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ") } };
+      if (type === "select") return { kind, type, signs: cardSigns(field, name), entry: { name, type, value: Array.from(field.selectedOptions).map((option) => text(textOf(option))).join(", ") } };
       const typed = type === "contenteditable" || type === "textbox";
       const value = typed ? String(innerTextOf(field) == null ? textOf(field) : innerTextOf(field)) : String(field.value == null ? "" : field.value);
-      const secret = secretKind(field, type, auto, name) || (cardNumber(value) ? "card" : null);
-      return { kind, type, entry: secret ? { name, type: secret, length: value.length } : { name, type, value } };
+      const luhn = cardNumber(value);
+      const secret = secretKind(field, type, auto, name) || (luhn ? "card" : null);
+      return { kind, type, luhn, signs: tag(field) === "INPUT" ? cardSigns(field, name) : null, entry: secret ? { name, type: secret, length: value.length } : { name, type, value } };
     };
     // Is anything on the screen that the card would mask? A picture of the
     // page would show it, so none is taken. A frame this script can read is
@@ -281,16 +290,24 @@ const PAGE_READ = String.raw`(input) => {
       let multiline = false;
       let boxes = 0;
       let searches = 0;
+      const numbers = [];
+      const companions = [];
       for (const field of own) {
         if (/(^|\s)cc-/.test(attr(field, "autocomplete").toLowerCase())) card = true;
         const read = fieldOf(field);
         if (!read) continue;
+        // A value that is itself a card number makes this a card form, whatever the field is called.
+        if (read.luhn) card = true;
+        if (read.signs && read.signs.number) numbers.push(field);
+        if (read.signs && read.signs.companion) companions.push(field);
         if (read.kind) boxes += 1;
         if (read.kind === "search") searches += 1;
         if (read.kind === "multiline") multiline = true;
         if (read.type === "radio" && !field.checked) continue;
         fields.push(read.entry);
       }
+      // The two signs must be on two fields: one field called "Card number or CVC" is one sign.
+      if (numbers.some((number) => companions.some((companion) => companion !== number))) card = true;
       if (!form) {
         // No form says what goes with this control. What would go is what is
         // typed around it: the filled, visible fields of the nearest dialog

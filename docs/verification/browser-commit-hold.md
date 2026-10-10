@@ -57,6 +57,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | A8a | A ref with a trailing space, for a Pay button inside a frame, is held. |
 | A8b | `agent_browser_select` on a list whose `onchange` submits its form is held. |
 | A8c | A form with controls named `tagName`, `elements`, `action`, `id`, `closest` and `querySelectorAll` is still read: its submit is held and its field is on the card. |
+| A10 | A card form with no autofill hints (card number, expiry, CVC by label) is held as money on "Continue". A form with a card number typed into a field called `ref` is too. A library card number with a PIN signs in with no card. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |

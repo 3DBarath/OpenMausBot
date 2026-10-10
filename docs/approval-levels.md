@@ -141,7 +141,7 @@ it refuses the call or asks. It never lets it through unseen.
 | Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
 | Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
 | Clicks one whose label pairs a word for committing or sending (place, complete, confirm, finish, make, authorize, process, or any Send word) with what money is spent on (order, purchase, payment, money, booking, reservation, donation, checkout): "Place your order", "Confirm booking", "Make a payment", "Send money", "Submit order" | Money |
-| Submits a form that has a card field | Money |
+| Submits a card form | Money |
 | Presses Enter in a message or comment box | Send |
 | Submits a form that has a multi-line text field, whatever its button says | Send |
 | Reloads the page after one of the above went through | The same as that one |
@@ -158,6 +158,14 @@ because "book" is on the list.
 A click that only puts the cursor in a text box, or ticks a checkbox, is
 never held. **Search is never a send**: a search field, anything inside a
 search region, or a form whose only text field is a search field.
+
+What counts as a card form: one with a field marked for autofill as part of a
+card (`cc-number` and the rest); or one with two signs by name, a field called
+a card number and another called a security code (CVC, CVV) or an expiry
+date; or one where any field holds a value that is itself a card number (13
+to 19 digits that pass the Luhn check). The name is read from the field's
+name, id, label and placeholder. One sign alone is not a card form: a library
+card number with a PIN, or a gift card code, is left as it is.
 
 What counts as submitting a form:
 
@@ -296,6 +304,10 @@ past it.
   judged by the name the last snapshot gave the element. The card shows no
   fields and no picture, and the approval is bound to that name and the
   address, not to the element itself. Enter there is not checked.
+- A card form with no autofill hints and only one sign (a field called "Card
+  number" and nothing called a security code or an expiry, with no card
+  number typed in yet) is not read as a card form. A library or membership
+  card form that also asks for an expiry date is.
 - A one-line box outside any form that sends on Enter is not recognised.
 - A page whose text around the button keeps changing by itself (a countdown
   in the same row) voids every approval: each Allow raises a new card.

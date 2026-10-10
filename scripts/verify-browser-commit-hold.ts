@@ -78,6 +78,9 @@ const CASE_PAGES: Record<string, string> = {
     <input aria-label="Code from your phone" autocomplete="one-time-code" value="246810"><input type="text" id="password" aria-label="Sign-in secret" value="correct-horse-battery">
     <input aria-label="Reference" value="5555 5555 5555 4444"><input aria-label="PIN" value="4821"><input aria-label="Name on card" autocomplete="cc-name" value="ADA LOVELACE">
     <input aria-label="City" value="Baramati"><button>Pay</button></form>`),
+  "/plain-card-form": doc("Card form", `<form id="order"><input aria-label="Name on card" value="Ada Lovelace"><input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="Expiry (MM/YY)" value="12/30"><input aria-label="CVC" value="123"><button>Continue</button></form>
+    <form id="lookup"><input name="ref" aria-label="Reference" value="4242 4242 4242 4242"><button>Look up</button></form>
+    <form id="library"><input aria-label="Library card number" value="20451900"><input aria-label="PIN" value="4821"><button>Log in</button></form>`),
 };
 let paid = 0;
 const site = createServer((req, res) => {
@@ -384,6 +387,17 @@ try {
       await visit("/clobbered");
       const card = await heldThenDenied("agent_browser_click", { selector: "#go" }, { title: "Send on your behalf?", label: /^Go$/ });
       assert.match(card.subtitle, /Feedback: Great/);
+    } },
+    { id: "A10", title: "a card form with no autofill hints is money: two signs by name, or one value that is a card number", run: async () => {
+      const page = await visit("/plain-card-form");
+      const card = await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      assert.match(card.subtitle, /Card number: 19 characters, not shown/);
+      assert.match(card.subtitle, /CVC: 3 characters, not shown/);
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Look up"') }, { title: "Spend money?", label: /^Look up$/ });
+      // One sign alone is not a card form: a library card number and a PIN sign in with no card.
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Log in"') });
+      assert.equal(await log(), "submitted:library");
+      return { subtitle: card.subtitle };
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

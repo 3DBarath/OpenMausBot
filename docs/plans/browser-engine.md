@@ -144,6 +144,9 @@ recording controls are intentionally not added to the live browser chrome.
   is returned. A page that shows one is not screenshotted. Hold screenshots
   are listed in `browser-hold-shots.json` under the data directory and any
   left listed are deleted at server start (`server/browser-commit-shots.ts`).
+- A card form is one with a `cc-*` autofill hint, or a card-number field
+  beside a security-code or expiry field by name, or any value that passes
+  the Luhn check.
 - The page script reads elements through the accessors on their prototype
   chain, because a form control named `tagName` or `elements` shadows the
   form's own property of that name.

@@ -2,6 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { browserPageReader, pageReadScript, parsePageTarget, type EngineQuery } from "./browser-commit-page.ts";
+import { classifyCommit, type CommitTarget } from "../shared/browser-commit.ts";
 
 /** The server's types carry no DOM. This is all of happy-dom the test touches. */
 interface PageElement { focus(): void }
@@ -435,6 +436,52 @@ describe("a page that must not be pictured", () => {
     expect(framed('name="__privateStripeFrame5" src="https://pay.example/x"', null)).toBe(true);
     expect(framed('src="https://accounts.example/signin/challenge"', null)).toBe(true);
     expect(framed('title="Secure card number input frame" style="display:none"', null)).toBe(false);
+  });
+});
+
+describe("a card form with no autofill hints", () => {
+  const input = (label: string, value = "", attrs = "") => `<input aria-label="${label}" value="${value}" ${attrs}>`;
+  const form = (fields: string, button = "Continue") => `<form id="f">${fields}<button id="go">${button}</button></form>`;
+  /** The class a click on the form's button gets, from the read alone. */
+  const classOf = (html: string) => {
+    const read = clickIn(html, "go");
+    return { card: read.card, class: classifyCommit({ via: "click", ...(read as unknown as Omit<CommitTarget, "via">) }) };
+  };
+
+  it.each([
+    // Two signs by name: a card number, and a security code or an expiry.
+    ["a card number, an expiry and a CVC", "money", form(input("Name on card", "Ada Lovelace") + input("Card number") + input("Expiry (MM/YY)") + input("CVC"))],
+    ["a card number and a security code, by id and placeholder only", "money", form(`<input id="cardNumber"><input placeholder="Security code">`)],
+    ["a card number and expiry lists", "money", form(`<input name="ccnum"><select name="exp_month"><option>01</option></select><select name="exp_year"><option>2030</option></select>`)],
+    ["a credit card field and a CVV", "money", form(input("Credit card") + input("CVV"))],
+    // One value that is a card number, whatever its field is called.
+    ["a Luhn-valid number in a field called ref", "money", form(`<input name="ref" id="ref" value="4242 4242 4242 4242">`)],
+    // The autofill hint alone, as before.
+    ["a field with the cc-number hint", "money", form(`<input autocomplete="cc-number" aria-label="Number">`)],
+    // One sign is not a card form.
+    ["a library card number and a PIN", null, form(input("Library card number", "20451900") + input("PIN", "4821"), "Log in")],
+    ["a gift card code", null, form(input("Gift card code", "GFT-8842-XKQ2"), "Check balance")],
+    ["a card number alone", null, form(input("Card number"))],
+    ["a CVC alone", null, form(input("CVC"))],
+    ["an expiry date alone", null, form(input("Expiry date"))],
+    ["sixteen digits that are no card number, in an order number", null, form(input("Order number", "1234567890123456"), "Track")],
+    ["an experience field beside a membership card number", null, form(input("Membership card number") + input("Experience"))],
+  ] as const)("reads a form with %s as %s", (_what, kind, html) => {
+    expect(classOf(html)).toEqual({ card: kind === "money", class: kind });
+  });
+
+  it("needs the two signs on two fields, and counts only fields that are shown", () => {
+    expect(classOf(form(input("Card number or CVC"))).class).toBeNull();
+    expect(classOf(form(input("Card number") + `<input aria-label="CVC" style="display:none">`)).class).toBeNull();
+    expect(classOf(form(input("Card number") + `<input type="hidden" name="cvc" value="1">`)).class).toBeNull();
+  });
+
+  it("reads Enter in such a form's field as money too, and a click into one of its fields as nothing", () => {
+    const html = form(`<input id="num" aria-label="Card number"><input aria-label="CVC">`);
+    const entered = focusIn(html, "num");
+    expect(classifyCommit({ via: "enter", ...(entered as unknown as Omit<CommitTarget, "via">) })).toBe("money");
+    const clicked = clickIn(html, "num");
+    expect(classifyCommit({ via: "click", ...(clicked as unknown as Omit<CommitTarget, "via">) })).toBeNull();
   });
 });
 
