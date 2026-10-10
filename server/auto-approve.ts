@@ -169,6 +169,7 @@ export function autoVerdict(
  * and so do the free-text apply errors that have no key at all. */
 export const HELD_NOTE = {
   "approval.held.outbound": "This sends something on your behalf, so it always asks first.",
+  "approval.held.money": "This spends money, so it always asks first.",
   "approval.held.native": "The provider requires your approval for this action.",
   "approval.held.sandbox":
     "This changes the provider sandbox, so only Full access can approve it automatically.",

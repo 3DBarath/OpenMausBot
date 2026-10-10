@@ -8,6 +8,7 @@
  * server/store.ts; the wire projection is typed so a new server field
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
+import type { BrowserCommitCard } from "./browser-commit.ts";
 import type { DataBroadcast } from "./data-surface.ts";
 import type { ApprovalMode } from "./approval-mode.ts";
 import type { ToolScope } from "./tool-scope.ts";
@@ -529,6 +530,10 @@ export interface OptionCardData {
   /** calls: one per outbound call the card covers, in subtitle order. Absent
    * on cards from older computers. */
   outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
+  /** A held browser click or Enter press (server/browser-commit-gate.ts):
+   * what it would send or pay for. Always beside outboundRequest; a client
+   * that does not know it still has the subtitle. */
+  browserCommit?: BrowserCommitCard;
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   title: string;
   subtitle: string;
