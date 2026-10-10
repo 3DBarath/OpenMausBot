@@ -3,6 +3,8 @@ import { CircleHelp } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { createAboutMeDraft } from "./about-me-draft";
+import { ContextImportDialog } from "./ContextImportDialog";
+import { ImportedNotes } from "./ImportedNotes";
 
 const drafts = new WeakMap<object, ReturnType<typeof createAboutMeDraft>>();
 
@@ -23,6 +25,22 @@ export function AboutMeSettings() {
   const { flush } = controller;
   useEffect(() => { controller.confirm(confirmed); }, [controller, confirmed]);
   useEffect(() => () => { void flush(); }, [flush]);
+  // Importing writes About me and the shared notes, which are the owner's
+  // alone. The server decides who that is: it refuses everyone else.
+  const [canImport, setCanImport] = useState(false);
+  const [importing, setImporting] = useState(false);
+  // bumped when an import saved or was taken back, so the lists below read again
+  const [imported, setImported] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api("/api/context-import").then(() => { if (alive) setCanImport(true); }).catch(() => { if (alive) setCanImport(false); });
+    return () => { alive = false; };
+  }, []);
+  const aboutMeChanged = (aboutMe: string) => {
+    controller.confirm(aboutMe);
+    dispatch({ type: "profileSaved", profile: { aboutMe } });
+    setImported((count) => count + 1);
+  };
 
   return (
     <div className="flex flex-col gap-2">
@@ -43,7 +61,15 @@ export function AboutMeSettings() {
         onBlur={() => void flush()}
         className="min-h-[120px] w-full resize-y rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink focus:outline-none"
       />
-      <LearnedFacts onChanged={(aboutMe) => { controller.confirm(aboutMe); dispatch({ type: "profileSaved", profile: { aboutMe } }); }} />
+      {canImport && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button type="button" className="ui-button" onClick={() => { void flush().then(() => setImporting(true)); }}>{t("contextImport.open")}</button>
+          <span className="min-w-0 flex-1 text-[12px] text-ink-secondary">{t("contextImport.openHint")}</span>
+        </div>
+      )}
+      <LearnedFacts refresh={imported} onChanged={(aboutMe) => { controller.confirm(aboutMe); dispatch({ type: "profileSaved", profile: { aboutMe } }); }} />
+      {canImport && <ImportedNotes refresh={imported} onAboutMeChanged={aboutMeChanged} />}
+      {importing && <ContextImportDialog onClose={() => setImporting(false)} onSaved={(result) => aboutMeChanged(result.aboutMeText)} />}
       <div className="min-h-4 text-[12px]" role="status">
         {status === "saving" && <span className="text-ink-secondary">{t("settings.profile.saving")}</span>}
         {status === "saved" && <span className="text-success">{t("settings.profile.saved")}</span>}
@@ -65,7 +91,7 @@ interface LearnedFact {
 /** What bots with Memory upkeep added to About me on their own, newest
  * first, each with Remove: About me reaches every bot, so the person can
  * always see and take back what was added for them. */
-function LearnedFacts({ onChanged }: { onChanged: (aboutMe: string) => void }) {
+function LearnedFacts({ refresh, onChanged }: { refresh: number; onChanged: (aboutMe: string) => void }) {
   const [facts, setFacts] = useState<LearnedFact[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(false);
@@ -76,7 +102,7 @@ function LearnedFacts({ onChanged }: { onChanged: (aboutMe: string) => void }) {
       .then((result) => { if (!cancelled) setFacts(result.learned); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, []);
+  }, [refresh]);
 
   const remove = async (id: string) => {
     setBusy(id);
