@@ -57,7 +57,7 @@ const CASE_PAGES: Record<string, string> = {
   // first thing in the frame: the engine measures an element in a frame from
   // the frame's own corner, so it gives both fields the same box.
   "/frame-checkout": doc("Checkout", `<div><input id="before" aria-label="Email" value="ada@example.com"></div><iframe id="payframe" title="Secure payment" src="${frameOrigin}/pay-frame" width="420" height="120"></iframe>`),
-  "/inner-checkout": doc("Checkout", `<div><input id="before" aria-label="Email" value="ada@example.com"></div><iframe id="inner" title="Order" src="/inner-pay" width="420" height="120"></iframe>`),
+  "/inner-checkout": doc("Checkout", `<div><input id="before" aria-label="Email" value="ada@example.com"></div><iframe id="inner" title="Billing" src="/inner-pay" width="420" height="120"></iframe>`),
   "/inner-pay": `<!doctype html><html lang="en"><meta charset="utf-8"><title>Order frame</title><form id="pay" onsubmit="event.preventDefault(); parent.note('submitted:inner');">
     <input id="card" aria-label="Card number" autocomplete="cc-number" value="4242424242424242"><button>Pay</button></form></html>`,
   "/plain-card-form": doc("Card form", `<form id="order"><input aria-label="Name on card" value="Ada Lovelace"><input aria-label="Card number" value="1234 5678 9012 3456"><input aria-label="Expiry (MM/YY)" value="12/30"><input aria-label="CVC" value="123"><button>Continue</button></form>
