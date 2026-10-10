@@ -593,4 +593,58 @@ describe("a zip is read from its list of contents", () => {
     expect(elements.at(-1)).toEqual({ id: 999 });
     expect(report.refused).toEqual(["5 more conversation lists than the 1,000 one import reads: not read"]);
   });
+
+  it("reads lists that are nearly all whitespace in bounded time, without holding the server up", async () => {
+    // three lists of 256 MB of spaces each: under a megabyte as a zip
+    const blank = Buffer.alloc(256 * 1024 * 1024, " ");
+    const parts = ["a", "b", "c"].map((id): Part => {
+      const raw = Buffer.concat([Buffer.from("["), blank, Buffer.from(`{"id":"${id}"}`), blank.subarray(0, 1024), Buffer.from("]")]);
+      return { name: `${id}/conversations.json`, method: 8, packed: deflateRawSync(raw), unpacked: raw.length, crc: crc32(raw) };
+    });
+    const path = writeZip("blank.zip", parts);
+    let longest = Infinity;
+    let cpu = Infinity;
+    let turns = 0;
+    // the best of three: another process may hold this one up, but not three times in a row
+    for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 2_200); attempt += 1) {
+      let gap = 0;
+      let seen = 0;
+      let last = performance.now();
+      const beat = setInterval(() => {
+        const at = performance.now();
+        gap = Math.max(gap, at - last);
+        last = at;
+        seen += 1;
+      }, 1);
+      const started = process.cpuUsage();
+      const { elements, report } = await read(path);
+      clearInterval(beat);
+      const spent = process.cpuUsage(started);
+      expect(elements).toEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
+      expect(report.read).toHaveLength(3);
+      longest = Math.min(longest, gap);
+      cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
+      turns = Math.max(turns, seen);
+    }
+    // Other work got a turn at a bounded interval: a timer can fire once per
+    // step at most, and 768 MB unpacked in steps of about a megabyte is
+    // hundreds of steps (it was 16 MB a step: fewer than fifty).
+    expect(turns).toBeGreaterThan(150);
+    expect(longest).toBeLessThan(250);
+    // and the whole read took a couple of seconds of processor time, not several
+    expect(cpu).toBeLessThan(2_200);
+  }, 120_000);
+
+  it("stops unpacking once the lists of one zip have unpacked to four times the limit for one", async () => {
+    // six lists of about 3 KB each, with a limit of 4 KB for one: the budget for all is 16 KB
+    const one = (id: string) => JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `${id}${index}`, text: "x".repeat(70) })));
+    const many: Record<string, Uint8Array> = {};
+    for (const id of ["a", "b", "c", "d", "e", "f", "g"]) many[`${id}/conversations.json`] = strToU8(one(id));
+    const { elements, report } = await read(file("budget.zip", zipSync(many)), { entryMaxBytes: 4_096 });
+    expect(report.read.length).toBeLessThanOrEqual(5);
+    expect(report.read.length).toBeGreaterThanOrEqual(4);
+    expect(elements.length).toBeLessThanOrEqual(6 * 30);
+    expect(report.refused.at(-1)).toMatch(/conversations\.json: left unread: the lists of this zip unpack to more than 0 GB in all$/);
+    expect(report.refused.length).toBeGreaterThanOrEqual(2);
+  });
 });

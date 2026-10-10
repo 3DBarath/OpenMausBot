@@ -99,4 +99,24 @@ describe("splitting a JSON list", () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   }, 180_000);
+
+  it("passes over a long run of whitespace quickly, wherever it is", () => {
+    // 192 MB of spaces and line breaks around three small elements: nothing to keep, so nothing to dwell on
+    const blank = Buffer.alloc(8 * 1024 * 1024, " \n\t\r");
+    const elements: unknown[] = [];
+    const splitter = createArraySplitter({ onElement: (element) => elements.push(JSON.parse(element.toString("utf8"))), onOversized: () => undefined });
+    const started = process.cpuUsage();
+    splitter.push(Buffer.from("["));
+    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
+    splitter.push(Buffer.from('{"a":1},'));
+    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
+    splitter.push(Buffer.from('"two" ,'));
+    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
+    splitter.push(Buffer.from("3 ]"));
+    const spent = process.cpuUsage(started);
+    expect(elements).toEqual([{ a: 1 }, "two", 3]);
+    expect(splitter.closed()).toBe(true);
+    // processor time, so a busy machine does not decide: a quarter of a second for 192 MB
+    expect((spent.user + spent.system) / 1000).toBeLessThan(250);
+  });
 });

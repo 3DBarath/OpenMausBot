@@ -7,6 +7,9 @@
 const QUOTE = 0x22, BACKSLASH = 0x5c, OPEN_BRACE = 0x7b, CLOSE_BRACE = 0x7d, OPEN_BRACKET = 0x5b, CLOSE_BRACKET = 0x5d, COMMA = 0x2c;
 const BOM = [0xef, 0xbb, 0xbf];
 const isSpace = (byte: number) => byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+/** The same, as a table: 1 for a byte that is whitespace between JSON values. */
+const SPACE = new Uint8Array(256);
+for (const byte of [0x20, 0x0a, 0x0d, 0x09]) SPACE[byte] = 1;
 
 /** A single conversation past this is skipped and counted, never held. */
 export const MAX_ELEMENT_BYTES = 32 * 1024 * 1024;
@@ -84,7 +87,15 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
           continue;
         }
         if (!inElement) {
-          if (isSpace(byte) || byte === COMMA) continue;
+          if (SPACE[byte]) {
+            // A run of whitespace between elements is passed over in one
+            // tight loop: a list can be gigabytes of it and nothing else.
+            let next = i + 1;
+            while (next < chunk.length && SPACE[chunk[next]!]) next += 1;
+            i = next - 1;
+            continue;
+          }
+          if (byte === COMMA) continue;
           if (byte === CLOSE_BRACKET) {
             closed = true;
             return;

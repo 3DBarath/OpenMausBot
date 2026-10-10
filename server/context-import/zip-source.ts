@@ -33,6 +33,10 @@ export const ZIP_MAX_DIRECTORY_BYTES = ZIP_MAX_ENTRIES * 1024;
  * has one, or a few numbered parts; the rest of a zip that names more are
  * counted and left. */
 export const ZIP_MAX_LISTS = 1_000;
+/** All the conversation lists of one zip together may unpack to this many
+ * times the limit for one: packed whitespace unpacks a thousandfold, and
+ * without this a zip of a few megabytes could keep a read busy for hours. */
+export const ZIP_UNPACKED_ENTRIES = 4;
 /** Refused entries are listed up to this many; one more line counts the rest. */
 export const REFUSED_MAX_LINES = 20;
 /** The conversation lists an export carries: conversations.json, or numbered
@@ -40,6 +44,9 @@ export const REFUSED_MAX_LINES = 20;
 const KNOWN_ENTRY = /(?:^|[\\/])conversations(?:-\d+)?\.json$/i;
 /** Small reads bound how much one chunk of a zip can unpack to at once. */
 const ZIP_READ_BYTES = 16 * 1024;
+/** …and smaller ones, down to this, while one read unpacks to more than a step should hold. */
+const ZIP_READ_MIN_BYTES = 512;
+const STEP_UNPACKED_BYTES = 1024 * 1024;
 const JSON_READ_BYTES = 64 * 1024;
 /** The list of contents is read this much at a time. */
 const DIRECTORY_READ_BYTES = 64 * 1024;
@@ -376,15 +383,22 @@ function inflater(): (chunk: Uint8Array, last: boolean) => Uint8Array | null {
 async function unpack(file: FileHandle, data: { at: number; packed: number; method: number }, push: (chunk: Uint8Array) => boolean, signal: AbortSignal | undefined): Promise<boolean> {
   const inflate = data.method === 8 ? inflater() : null;
   let idle = 0;
+  // How much packed data one step takes. Each step is a read of the file, so
+  // other work runs between two steps; a step must also be short. Packed
+  // whitespace unpacks a thousandfold, megabytes from one small read, so
+  // the read shrinks while a step gives too much and grows back after.
+  let step = ZIP_READ_BYTES;
   for (let at = data.at, left = data.packed; left > 0; ) {
     aborted(signal);
     // a new buffer each time: whoever takes the bytes may keep a piece of it
-    const chunk = await bytesAt(file, at, Math.min(ZIP_READ_BYTES, left));
+    const chunk = await bytesAt(file, at, Math.min(step, left));
     if (!chunk) return false;
     at += chunk.length;
     left -= chunk.length;
     const out = inflate ? inflate(chunk, left === 0) : chunk;
     if (!out) return false;
+    if (out.length > STEP_UNPACKED_BYTES) step = Math.max(ZIP_READ_MIN_BYTES, step >> 1);
+    else if (out.length < STEP_UNPACKED_BYTES / 4) step = Math.min(ZIP_READ_BYTES, step << 1);
     if (out.length) {
       idle = 0;
       if (!push(out)) return true;
@@ -480,6 +494,10 @@ export async function readExport(
     // points many lines at the same bytes runs out of this, and those bytes
     // are not unpacked again for each line.
     let room = directory.start;
+    // what all the lists together have unpacked to, against the most they may
+    const budget = limit * ZIP_UNPACKED_ENTRIES;
+    const tooMuch = `left unread: the lists of this zip unpack to more than ${Math.round(budget / 1024 ** 3)} GB in all`;
+    let unpacked = 0;
     // the whole list is walked before any entry is opened: a zip that is refused whole hands over nothing first
     const { wanted, left } = await listEntries(file, directory, report, opts.signal);
     listsLeft = left;
@@ -487,11 +505,17 @@ export async function readExport(
       aborted(opts.signal);
       const target = list(entry.label, limit);
       const fits = !entry.place || LOCAL_HEADER_BYTES + entry.place.packed <= room;
-      const data = fits ? await openEntry(file, entry, directory, limit) : UNPACK;
+      const data = unpacked >= budget ? tooMuch : fits ? await openEntry(file, entry, directory, limit) : UNPACK;
       if (typeof data === "string") target.refuse(data);
       else {
         room -= LOCAL_HEADER_BYTES + data.packed;
-        if (!(await unpack(file, data, target.push, opts.signal))) target.refuse(UNPACK);
+        const push = (chunk: Uint8Array) => {
+          // the entry's own limit first; what it took counts against what all may take
+          if (!target.push(chunk)) return false;
+          unpacked += chunk.length;
+          return unpacked > budget ? target.refuse(tooMuch) : true;
+        };
+        if (!(await unpack(file, data, push, opts.signal))) target.refuse(UNPACK);
       }
       target.end();
     }
