@@ -88,7 +88,7 @@ export interface ImportScanSummary {
     oversized: number;
     /** Archive entries refused, as `name: reason`. Names only, never content. */
     entries: string[];
-    /** Messages left out, unread by any model, because they held a password, a card number or an identity or bank number. */
+    /** Messages that held a password, a card number or an identity or bank number: that value was cut out before any model read them. */
     secrets: number;
     /** Conversations past the most one scan keeps: counted, never read. */
     overLimit: number;

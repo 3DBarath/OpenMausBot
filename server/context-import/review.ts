@@ -3,10 +3,11 @@
 // contradiction step Memory upkeep has (server/memory-tidy.ts); the newer
 // fact wins and the older one stays in the list, unticked, pointing at it.
 // Core, which goes to About me, holds at most 30 facts. Pure here.
-import { cleanFactText, cleanSubject, FALLBACK_SUBJECT } from "./extract.ts";
+import { cleanFactText, cleanSubject, FALLBACK_SUBJECT, TEXT_MAX } from "./extract.ts";
 import { holdsCodeOrLink, holdsSecret, readsAsInstruction, usableAlias } from "./screen.ts";
 import type { MemoryEntryLine } from "../memory-entries.ts";
 import type { Contradiction } from "../memory-tidy.ts";
+import { foldedFactText } from "../shared-notes.ts";
 import { CORE_MAX, IMPORT_SUBJECTS_MAX, type CandidatePatch, type ImportCandidate } from "../../shared/context-import.ts";
 
 /** contradictionPrompt lists at most this many lines (PROMPT_ENTRIES in memory-tidy.ts). */
@@ -70,8 +71,11 @@ function screenedSubject(raw: string): string {
 /** One import files its facts under a bounded number of subjects, so a
  * model that names a subject per fact cannot fill the shared notes with
  * hundreds of one-line notes. The subjects with the most facts stay; the
- * rest are folded into the general one, and each folded fact keeps the name
- * of the subject it had as an alias, so asking about it still finds it. */
+ * rest are folded into the general one. A folded fact keeps the subject it
+ * had in front of its own text ("Asha: lives in Delhi"), which is what
+ * recall looks for in the general note (server/recall.ts): a note has room
+ * for a dozen aliases, and an import can fold many more subjects than that.
+ * The subject is kept as an alias too, for as long as there is room. */
 export function foldSubjects(candidates: readonly ImportCandidate[], max = IMPORT_SUBJECTS_MAX): ImportCandidate[] {
   const counts = new Map<string, number>();
   for (const candidate of candidates) counts.set(candidate.subject.toLowerCase(), (counts.get(candidate.subject.toLowerCase()) ?? 0) + 1);
@@ -82,7 +86,7 @@ export function foldSubjects(candidates: readonly ImportCandidate[], max = IMPOR
     const subject = candidate.subject.toLowerCase();
     if (subject === general || stay.has(subject)) return candidate;
     const aliases = usableAlias(candidate.subject) && !candidate.aliases.includes(candidate.subject) ? [candidate.subject, ...candidate.aliases] : candidate.aliases;
-    return { ...candidate, subject: FALLBACK_SUBJECT, aliases };
+    return { ...candidate, text: foldedFactText(candidate.subject, candidate.text, TEXT_MAX), subject: FALLBACK_SUBJECT, aliases };
   });
 }
 

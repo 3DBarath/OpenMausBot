@@ -25,6 +25,55 @@ import type { SharedNoteInfo } from "../shared/shared-notes.ts";
 export const SHARED_NOTES_MAX_FILES = 200;
 export const SHARED_NOTE_MAX_BYTES = 64 * 1024;
 
+/** The subject facts are filed under when they have none of their own, and
+ * the one an import folds its rarest subjects into. */
+export const GENERAL_SUBJECT = "General";
+
+/** Words that turn up in questions about anything. A shared note is never
+ * found by one of them, in its name, its title or an alias, and an import
+ * does not keep one as an alias: a note that answers to "today" or "help"
+ * is recalled for unrelated messages. */
+const COMMON_WORDS = new Set((
+  "the and for are but not you all any can had her was one our out day get has him his how man new now old see two way who boy did its let put say she too use " +
+  "that with have this will your from they know want been good much some time very when come here just like long make many more only over such take than them well were " +
+  "what about after again also another always anything around because before being best better between both could does doing done each even every everything " +
+  "first found give goes going great help into keep last least less little look made mean might more most must need never next nothing often other " +
+  "people person please point question questions answer answers really right same should show since small something sometimes still stuff tell thank thanks their then there these " +
+  "thing things think those through today tomorrow yesterday tonight under until used user using want wants week where which while whole would year years " +
+  "able above across actually almost already although anyone anywhere away back became become below called came cannot certain " +
+  "different during either else enough ever everyone few find got however idea important information info inside instead kind know later let lot " +
+  "may maybe mine myself near none now off once others own part per perhaps quite rather said seem several short simply someone soon sure " +
+  "than thought together took toward try turn upon various via way ways went whether within without yes yet general misc notes note fact facts details " +
+  "assistant chat chats conversation conversations message messages reply replies response remember recall ask asked asking").split(/\s+/));
+
+export function isCommonWord(word: string): boolean {
+  return COMMON_WORDS.has(word.toLowerCase());
+}
+
+/** A fact as it is filed under the general subject when its own subject was
+ * folded away (an import files under a bounded number of subjects): the
+ * subject it had stays in front of its text, so asking about that subject
+ * still finds the entry, whatever the note's few aliases are. */
+export function foldedFactText(subject: string, text: string, max: number): string {
+  const tag = subject.replace(/[:·\n]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!tag || text.toLowerCase().startsWith(`${tag.toLowerCase()}: `)) return text;
+  return `${tag}: ${text}`.slice(0, max).trimEnd();
+}
+
+/** The subjects that entries of the general note are tagged with, as words:
+ * what such a note answers to beyond its own name and aliases. */
+export function foldedSubjectWords(body: string): string[] {
+  const words = new Set<string>();
+  for (const line of body.split("\n")) {
+    const tag = /^\s*[-*•]\s+(?:\d{4}-\d{2}-\d{2}\s+·\s+)?([^:·\n]{1,40}):\s/.exec(line)?.[1];
+    if (!tag) continue;
+    for (const word of tag.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+      if ((word.length >= 3 || /^\d{2,}$/.test(word)) && !COMMON_WORDS.has(word)) words.add(word);
+    }
+  }
+  return [...words];
+}
+
 /** ` (imported · ChatGPT)` at the end of an entry's text, before any ` · until` mark. */
 const IMPORTED_IN_LINE = / \(imported · [^()\n]{1,40}\)(?= · |$)/;
 /** The marks an import itself writes, exactly: ` (imported · ChatGPT)`,

@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR } from "../config.ts";
 import { contradictionPrompt, parseContradictions } from "../memory-tidy.ts";
 import { listLearnedFacts } from "../profile-learned.ts";
+import { sharedNotePassages } from "../recall.ts";
 import { listSharedNotes, readSharedNote, SHARED_NOTES_MAX_FILES, sharedNotesDir } from "../shared-notes.ts";
 import { CORE_MAX, IMPORT_SUBJECTS_MAX, type ImportCandidate } from "../../shared/context-import.ts";
 import { parseImportCandidates } from "./extract.ts";
@@ -190,10 +191,35 @@ describe("save", () => {
     for (const subject of ["work", "food", "travel", "general"]) expect(subjects.has(subject), subject).toBe(true);
     // nothing is lost, and a folded fact still answers to the subject it had
     expect(folded).toHaveLength(2_015);
-    const moved = folded.find((entry) => entry.text === "Lone fact 1999")!;
+    const moved = folded.find((entry) => entry.text === "Topic 1999: Lone fact 1999")!;
     expect(moved).toMatchObject({ subject: "General", aliases: ["Topic 1999", "own"] });
     // few subjects: nothing changes
     expect(foldSubjects(grouped)).toEqual(grouped);
+  });
+
+  it("still finds a fact by the subject it had after that subject was folded away", async () => {
+    // 60 subjects of one fact each, and one with many: most are folded into the general note
+    const names = [
+      "Asha", "Bruno", "Cello", "Pottery", "Badminton", "Lagaan", "Tokyo", "Kyoto", "Osaka", "Baramati", "Vercel", "Obsidian", "Tailscale", "Ubuntu", "Raspberry",
+      "Tomatoes", "Chillies", "Hindustani", "Pomodoro", "Creta", "Metro", "Dentist", "Accountant", "Retriever", "Berlin", "Delhi", "Marathi", "Japanese", "Trilogy", "Formula",
+      "McLaren", "Yoga", "Gym", "Coffee", "Tea", "Irani", "Changelog", "Invoices", "Agencies", "Incubator", "Grant", "Designer", "Meetup", "Conference", "Shelter",
+      "Balcony", "Whiteboard", "Standing", "Newsletter", "Mascot", "Pricing", "Licence", "Recruitment", "Airport", "Monsoon", "Trekking", "Sitar", "Chess", "Origami", "Kayak",
+    ];
+    expect(new Set(names.map((name) => name.toLowerCase())).size).toBe(60);
+    const lone = names.map((name, index) => candidate(`The person's plan number ${index + 100} is settled`, { subject: name, date: "2025-06-01" }));
+    const grouped = Array.from({ length: 8 }, (_, index) => candidate(`Work fact ${index}`, { subject: "Work" }));
+    const folded = foldSubjects([...lone, ...grouped]);
+    expect(new Set(folded.map((entry) => entry.subject.toLowerCase())).size).toBe(IMPORT_SUBJECTS_MAX);
+    const general = folded.filter((entry) => entry.subject === "General");
+    expect(general.length).toBeGreaterThan(20);
+    // the subject it had is in the fact's own text, where the review shows it and the entry keeps it
+    expect(general.every((entry) => names.some((name) => entry.text.startsWith(`${name}: The person's plan number`)))).toBe(true);
+    await saveImportedFacts("chatgpt", folded, deps);
+    // more subjects were folded than a note has room for aliases: asking by name finds every one all the same
+    const missed = names.filter((name, index) => !sharedNotePassages(`what do you know about ${name}?`).some((passage) => passage.snippet.includes(`plan number ${index + 100} is settled`)));
+    expect(missed).toEqual([]);
+    // folding again changes nothing
+    expect(foldSubjects(folded)).toEqual(folded);
   });
 
   it("writes each note once and lets other work run between two notes", async () => {

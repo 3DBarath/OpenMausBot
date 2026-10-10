@@ -18,7 +18,7 @@ import { recallMessages, recallTerms, type MemoryHit, type RecallHit } from "./m
 import { parseTopicHeader, readTopicHead, topicBody, topicWords } from "./memory-topics.ts";
 import { listMemoryTopics, memoryDate, readMemoryTopic, searchMemoryFiles, workspaceDir } from "./workspace.ts";
 import { withoutExpired } from "./memory-entries.ts";
-import { listSharedNotes, readSharedNote } from "./shared-notes.ts";
+import { foldedSubjectWords, GENERAL_SUBJECT, isCommonWord, listSharedNotes, readSharedNote, sharedNoteFileName } from "./shared-notes.ts";
 import { join } from "node:path";
 
 /** Below this many characters a message is a nod, not a question. */
@@ -215,12 +215,14 @@ function noteEntries(body: string): string[] {
 }
 
 /** The part of a shared note that answers the message: the entries that
- * share a word with it, best first then in the note's order, as many as fit
- * the passage. A note that only its name or an alias matched gives its head. */
+ * share a word with it, as many as fit the passage, the ones that share the
+ * most words first and otherwise in the note's order. A note that only its
+ * name or an alias matched gives its head. */
 function sharedNoteSnippet(body: string, terms: readonly string[]): string {
   const clipped = (text: string) => (text.length > TOPIC_PASSAGE_CHARS ? `${text.slice(0, TOPIC_PASSAGE_CHARS)}…` : text);
   const scored = noteEntries(body).map((entry, index) => {
-    const words = entry.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+    // a number of two or more digits is a word here ("project 57"); one digit says too little
+    const words = entry.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3 || /^\d{2,}$/.test(word));
     return { entry, index, score: terms.filter((term) => words.some((word) => sameWord(term, word))).length };
   }).filter((item) => item.score > 0);
   if (!scored.length) return clipped(body);
@@ -232,22 +234,35 @@ function sharedNoteSnippet(body: string, terms: readonly string[]): string {
     chosen.push(item);
     used += cost;
   }
-  return clipped(chosen.sort((a, b) => a.index - b.index).map((item) => item.entry).join("\n"));
+  return clipped(chosen.map((item) => item.entry).join("\n"));
 }
 
 /** Shared notes whose name, title or aliases share a word with the message:
- * the same rule as topicPassages, over the folder every bot shares. What is
- * returned of a note is the entries that answer the message, not its head:
- * an import files many facts under one subject. */
+ * the same rule as topicPassages, over the folder every bot shares, with two
+ * differences. A common word ("today", "help") never finds a note, whatever
+ * its header says: a model named these subjects, and a note that answers to
+ * such a word is recalled for unrelated messages. And the general note, into
+ * which an import folds its rarest subjects, also answers to the subject
+ * each of its entries carries in front of its text. What is returned of a
+ * note is the entries that answer the message, not its head: an import files
+ * many facts under one subject. */
 export function sharedNotePassages(query: string): RecallPassage[] {
   const terms = recallTerms(query);
   if (!terms.length) return [];
   const out: RecallPassage[] = [];
   try {
+    const general = sharedNoteFileName(GENERAL_SUBJECT).toLowerCase();
+    const found = (words: readonly string[]) => terms.some((term) => words.some((word) => sameWord(term, word)));
+    const bodyOf = (name: string) => topicBody(withoutExpired(readSharedNote(name) ?? "", memoryDate()).text);
     for (const note of listSharedNotes()) {
-      const words = topicWords(note.name, note.header);
-      if (!terms.some((term) => words.some((word) => sameWord(term, word)))) continue;
-      const body = topicBody(withoutExpired(readSharedNote(note.name) ?? "", memoryDate()).text);
+      let body: string | undefined;
+      if (!found(topicWords(note.name, note.header).filter((word) => !isCommonWord(word)))) {
+        // one more read, of one note: the subjects its entries were folded from
+        if (note.name.toLowerCase() !== general) continue;
+        body = bodyOf(note.name);
+        if (!found(foldedSubjectWords(body))) continue;
+      }
+      body ??= bodyOf(note.name);
       if (!body) continue;
       out.push({ source: "shared", label: `shared/${note.name}`, snippet: sharedNoteSnippet(body, terms) });
       if (out.length >= MEMORY_HITS) break;

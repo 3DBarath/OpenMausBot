@@ -692,7 +692,7 @@ describe("limits that hold for any input", () => {
 });
 
 describe("what is never sent or stored", () => {
-  it("leaves a message that holds a password or a card number out of the prompt and the batches file, and counts it", async () => {
+  it("cuts a password or a card number out of a message before the prompt and the batches file, reads the rest, and counts it", async () => {
     const prompts: string[] = [];
     const job = make(scripted(prompts));
     const id = await upload(job, [
@@ -709,22 +709,26 @@ describe("what is never sent or stored", () => {
       expect(text).not.toContain("4821");
     }
     expect(prompts[0]).toContain("Person: I live in Pune.");
+    // the message is still read, without the secret
+    expect(prompts[0]).toContain("Person: My Netflix password is [removed], remember it.");
+    expect(prompts[0]).toContain("Person: Pay with card [removed] please.");
     expect(prompts[0]).toContain('"Untitled"');
   });
 
-  it("leaves a pasted line that holds a secret out of what is stored and sent", async () => {
+  it("cuts a secret out of a pasted line before it is stored or sent, and keeps the line", async () => {
     const prompts: string[] = [];
     const job = make(scripted(prompts));
     const { id } = job.create("paste");
     const view = job.receiveText(id, "- I am vegetarian\n- My bank account number is 50100123456789\n- I live in Pune\n");
     expect(view.scan).toMatchObject({ skipped: { secrets: 1 } });
-    expect(readFileSync(join(DIR, "tmp", `${id}.paste.txt`), "utf8")).toBe("- I am vegetarian\n- I live in Pune\n");
+    expect(readFileSync(join(DIR, "tmp", `${id}.paste.txt`), "utf8")).toBe("- I am vegetarian\n- My bank account number is [removed]\n- I live in Pune\n");
     job.extract(id, { botId: "bot-1" });
     await job.idle();
     expect(prompts.join("\n")).not.toContain("50100123456789");
     await job.cancel(id);
     const other = job.create("paste");
-    expect((await rejection(() => job.receiveText(other.id, "password is hunter2")))).toMatchObject({ status: 400 });
+    expect(job.receiveText(other.id, "my wifi password is hunter2")).toMatchObject({ status: "scanned", scan: { skipped: { secrets: 1 } } });
+    expect(readFileSync(join(DIR, "tmp", `${other.id}.paste.txt`), "utf8")).toBe("my wifi password is [removed]");
   });
 
   it("drops a proposed fact that holds a secret or reads like an instruction, and counts both", async () => {

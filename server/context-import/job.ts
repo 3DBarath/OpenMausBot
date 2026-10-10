@@ -4,7 +4,7 @@
 //
 //   job.json                 status, progress and the proposed facts
 //   tmp/<id>.upload          the export as uploaded
-//   tmp/<id>.paste.txt       pasted text, without the lines the screen left out
+//   tmp/<id>.paste.txt       pasted text, without the secrets the screen cut out
 //   tmp/<id>.rows.json       the scan's row per conversation (no text)
 //   tmp/<id>.batches.json    the cut text of the conversations being read
 //
@@ -23,8 +23,9 @@
 // that would not fit is refused whole rather than cut short.
 //
 // What is sent to a model and written to the batches file has been through
-// the import's screen first (screen.ts): a message that holds a password, a
-// card number or an identity or bank number is left out and counted.
+// the import's screen first (screen.ts): the value of a password, a card
+// number or an identity or bank number is cut out of the message that holds
+// it, and such messages are counted.
 //
 // Model calls are paced for subscription engines whose limits nobody has
 // measured: one call at a time, a pause between calls, one retry after a
@@ -409,7 +410,7 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
         const hash = conversationHash(parsed.conversation);
         const index = order.get(hash);
         if (index === undefined || found[index]) return;
-        // screened before anything is batched: what the screen leaves out reaches neither the model nor the batches file
+        // screened before anything is batched: what the screen cuts out reaches neither the model nor the batches file
         const text = conversationText(screenMessages(parsed.conversation.messages).messages);
         if (text) found[index] = { hash, title: screenTitle(parsed.conversation.title), date: day(parsed.conversation.updatedAt), updatedAt: parsed.conversation.updatedAt, text };
       }, { signal }).catch((error: unknown) => { throw readFailure(error); });
@@ -687,12 +688,11 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
       if (mine.status !== "created") throw new ImportError("This import already has its text.", 409);
       if (!text.trim()) throw new ImportError("Paste some text first.", 400);
       if (text.length > PASTE_MAX_CHARS) throw new ImportError(`Pasted text can be at most ${PASTE_MAX_CHARS.toLocaleString("en-US")} characters. Paste it in parts, one import each.`, 413);
-      // screened before it is stored: a line that holds a secret is left out and counted
+      // screened before it is stored: the value of a secret is cut out of its line, and the lines are counted
       const screened = screenLines(text);
-      if (!screened.text.trim()) throw new ImportError("Every line of that text held a password, a card number or an identity or bank number, so nothing was left to read.", 400);
       writeTmp(id, "paste.txt", screened.text);
       const result = scanPaste(screened.text, now().getTime());
-      result.summary.skipped.secrets = screened.dropped;
+      result.summary.skipped.secrets = screened.cut;
       writeTmp(id, "rows.json", JSON.stringify(result.rows));
       rows = result.rows;
       mine.scan = result.summary;

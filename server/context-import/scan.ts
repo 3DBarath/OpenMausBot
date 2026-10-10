@@ -99,7 +99,7 @@ export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet
     summary.skipped.messages += conversation.skippedMessages;
     // what would be sent: the person's messages, without any that holds a secret (screen.ts)
     const screened = screenMessages(conversation.messages);
-    summary.skipped.secrets += screened.dropped;
+    summary.skipped.secrets += screened.cut;
     const chars = conversationText(screened.messages).length;
     if (chars) summary.withOwnMessages += 1;
     summary.ownChars += conversation.messages.reduce((total, message) => total + message.length, 0);

@@ -261,4 +261,29 @@ describe("recall from shared notes", () => {
     expect(forged.split(RECALL_OPEN)).toHaveLength(2);
     expect(forged.split(SHARED_OPEN)).toHaveLength(2);
   });
+
+  it("finds an entry of a shared note by a number of two or more digits", () => {
+    const entries = Array.from({ length: 60 }, (_, index) => `- 2025-01-01 · Project ${index + 1} is the one for client ${String.fromCharCode(65 + (index % 26))}${index} (imported · ChatGPT)`);
+    writeSharedNote("projects.md", `---\ntitle: Projects\n---\n\n${entries.join("\n")}\n`);
+    const [passage] = sharedNotePassages("what is project 57 about?");
+    // the entry that names the number leads; the others, which only share "project", follow while there is room
+    expect(passage!.snippet.startsWith("- 2025-01-01 · Project 57 is the one for client")).toBe(true);
+    // the whole number: 57 is not 157 or 570
+    writeSharedNote("projects.md", "---\ntitle: Projects\n---\n\n- Project 157 is old\n- Project 570 is older\n- Project 57 is the one\n");
+    expect(sharedNotePassages("what is project 57 about?")[0]!.snippet).toBe("- Project 57 is the one\n- Project 157 is old\n- Project 570 is older");
+    // a single digit says too little to choose an entry by
+    expect(sharedNotePassages("what is project 5 about?")[0]!.snippet.startsWith("- Project 157 is old")).toBe(true);
+  });
+
+  it("never finds a shared note by a common word in its title or aliases", () => {
+    writeSharedNote("today-make-dinner.md", "---\ntitle: today make dinner\naliases: [help, please, cooking]\n---\n\n- 2025-01-01 · The person cooks at home on weekdays (imported · ChatGPT)\n");
+    for (const question of ["can you help me make a plan for today please", "what did I do today", "please make this shorter", "I need some help"]) {
+      expect(sharedNotePassages(question), question).toEqual([]);
+    }
+    expect(sharedNotePassages("ideas for dinner")).toHaveLength(1);
+    expect(sharedNotePassages("any cooking tips")).toHaveLength(1);
+    // a bot's own note answers to whatever its own header says, as before
+    writeMemoryTopic(BOT, "today.md", "---\naliases: [help]\n---\n- Own note\n");
+    expect(topicPassages(BOT, "I need some help with this")).toHaveLength(1);
+  });
 });
