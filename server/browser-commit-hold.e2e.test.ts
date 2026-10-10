@@ -3,9 +3,11 @@
 // launcher. The browser is an inert executable that answers the engine's
 // commands from a file the test writes, so no page, account or user data
 // is opened; the model is the repository's fake engine, parked mid-turn.
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { launchVerificationServer, type VerificationServer } from "../scripts/control-omb.ts";
@@ -269,6 +271,33 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     expect((await tool("agent_browser_open", { url: "https://mail.example.com/inbox" })).status).toBe(200);
     expect((await tool("agent_browser_reload")).body.result.isError).not.toBe(true);
     expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_open", "agent_browser_snapshot", "agent_browser_reload"]);
+  }, 60_000);
+
+  // The engine reaches the route through the stdio proxy, and abandons a
+  // call by sending notifications/cancelled. The real proxy, the real route.
+  it("ends the hold when the engine cancels the call through its MCP proxy, and a late Allow sends nothing", async () => {
+    page({ target: SEND });
+    const before = engineCalls().length;
+    const proxy = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), "browser"], {
+      env: { OMB_HARNESS_URL: session.info.url, OMB_MCP_TOKEN: token, OMB_MCP_CALL_TIMEOUT_MS: "570000" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    let answered = "";
+    proxy.stdout.on("data", (chunk) => { answered += chunk; });
+    try {
+      proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "agent_browser_click", arguments: { selector: "@e4" } } })}\n`);
+      const card = await pending();
+      proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 41, reason: "the engine stopped waiting" } })}\n`);
+      await expect.poll(async () => (await cards()).find((row) => row.card.requestId === card.card.requestId).card.answered, { timeout: 5_000 }).toBe("unavailable");
+      expect((await respond(card, "allow")).body).toMatchObject({ outcome: "unavailable" });
+      // The browser is the bot's again, and the cancelled call was never made.
+      page({ target: target() });
+      expect((await click("#details")).status).toBe(200);
+      expect(engineCalls().slice(before)).toEqual([{ name: "agent_browser_click", arguments: { selector: "#details" } }]);
+      expect(answered).toBe("");
+    } finally {
+      proxy.kill();
+      await new Promise<void>((resolve) => proxy.once("close", () => resolve()));
+    }
   }, 60_000);
 
   it("closes the card and frees the browser when the turn is stopped mid-hold", async () => {

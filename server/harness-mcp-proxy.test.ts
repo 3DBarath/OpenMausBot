@@ -10,13 +10,19 @@ let status = 200;
 let payload: unknown = { result: { tools: [{ name: "agent_browser_snapshot" }] } };
 let delayMs = 0;
 const requests: Array<{ path: string | undefined; auth: string | undefined; body: unknown }> = [];
+/** Calls whose connection closed before the server had answered, by tool name. */
+const abandoned: string[] = [];
 beforeAll(async () => {
   server = createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
-      requests.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
+      const parsed = JSON.parse(body) as { params?: { name?: string } };
+      requests.push({ path: req.url, auth: req.headers.authorization, body: parsed });
+      // What the browser route watches to end a commit hold nobody waits for.
+      res.once("close", () => { if (!res.writableEnded) abandoned.push(parsed.params?.name ?? ""); });
       setTimeout(() => {
+        if (res.destroyed) return;
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(payload));
       }, delayMs);
@@ -100,6 +106,84 @@ describe("harness MCP capability proxy", () => {
     } finally { delayMs = 0; }
   });
 
+  // Node's fetch gives up when a response's headers have not come within
+  // 300 seconds, whatever its own signal allows (measured: a nine-minute
+  // hold returned at 303 s). A dispatcher with a one-second limit stands in
+  // for that here: the proxy must not go through it.
+  it("outlasts the HTTP client's own wait for headers when the server grants longer", async () => {
+    const key = Symbol.for("undici.globalDispatcher.1");
+    const globals = globalThis as unknown as Record<symbol, { constructor: new (options: { headersTimeout: number }) => unknown } | undefined>;
+    const dispatcher = globals[key];
+    expect(dispatcher, "Node's fetch no longer keeps its dispatcher here; find the new stand-in").toBeDefined();
+    globals[key] = new dispatcher!.constructor({ headersTimeout: 1_000 }) as typeof dispatcher;
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "clicked after approval" }] } };
+    delayMs = 2_500;
+    try {
+      // The stand-in really does cut a fetch at its limit...
+      await expect(fetch(`${url}/api/internal/browser/mcp`, { method: "POST", body: "{}", signal: AbortSignal.timeout(10_000) })).rejects.toThrow(/fetch failed/);
+      // ...and the proxy's own call is not cut by it.
+      await expect(harnessMcpRequest(frame("tools/call", { name: "agent_browser_click" }), { ...connection(), timeoutMs: 10_000 }))
+        .resolves.toMatchObject({ result: { content: [{ text: "clicked after approval" }] } });
+    } finally {
+      delayMs = 0;
+      globals[key] = dispatcher;
+    }
+  }, 20_000);
+
+  it("keeps every other family on the short limit, and cuts a browser call at the limit it was granted", async () => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "late" }] } };
+    delayMs = 600;
+    try {
+      for (const kind of ["computer", "data", "browser"] as const) {
+        const cut = await harnessMcpRequest(frame("tools/call", { name: `slow_${kind}` }), { ...connection(kind), timeoutMs: 100 }) as { result: { isError: boolean; content: Array<{ text: string }> } };
+        expect(cut.result.isError, kind).toBe(true);
+        expect(cut.result.content[0]!.text, kind).toContain("connection was interrupted");
+      }
+    } finally { delayMs = 0; }
+  });
+
+  it("says the connection was interrupted when the server cannot be reached, and never follows a redirect", async () => {
+    const dead = createServer();
+    await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+    const gone = `http://127.0.0.1:${(dead.address() as { port: number }).port}`;
+    await new Promise<void>((resolve) => dead.close(() => resolve()));
+    const refused = await harnessMcpRequest(frame("tools/call", { name: "agent_browser_click" }), { url: gone, token: "scoped-capability", kind: "browser" }) as { result: { isError: boolean; content: Array<{ text: string }> } };
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.content[0]!.text).toContain("Browser connection was interrupted");
+    // A redirect is an answer the proxy does not act on: the capability goes nowhere else.
+    const elsewhere: string[] = [];
+    const other = createServer((req, res) => { elsewhere.push(req.headers.authorization ?? ""); res.end("{}"); });
+    await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+    const redirect = createServer((_req, res) => { res.writeHead(307, { location: `http://127.0.0.1:${(other.address() as { port: number }).port}/api/internal/browser/mcp` }); res.end("{}"); });
+    await new Promise<void>((resolve) => redirect.listen(0, "127.0.0.1", resolve));
+    try {
+      const sent = await harnessMcpRequest(frame("tools/call", { name: "agent_browser_click" }), { url: `http://127.0.0.1:${(redirect.address() as { port: number }).port}`, token: "scoped-capability", kind: "browser" }) as { result: { isError: boolean } };
+      expect(sent.result.isError).toBe(true);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => other.close(() => resolve()));
+      await new Promise<void>((resolve) => redirect.close(() => resolve()));
+    }
+  });
+
+  // The engine abandons a call by sending notifications/cancelled. The hold
+  // behind that call must end with it, or a later Allow sends for nobody.
+  it("closes its request to the server when the call is cancelled, and answers nothing for it", async () => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "clicked" }] } };
+    delayMs = 3_000;
+    const cancel = new AbortController();
+    try {
+      const call = harnessMcpRequest(frame("tools/call", { name: "cancelled_in_flight" }), { ...connection(), timeoutMs: 10_000 }, cancel.signal);
+      await expect.poll(() => requests.some((request) => (request.body as { params?: { name?: string } }).params?.name === "cancelled_in_flight")).toBe(true);
+      cancel.abort();
+      await expect(call).resolves.toBeUndefined();
+      await expect.poll(() => abandoned, { timeout: 1_000 }).toContain("cancelled_in_flight");
+    } finally { delayMs = 0; }
+  });
+
   it("takes a longer limit only for the browser, only from a whole number above the default", () => {
     expect(harnessCallTimeoutMs("browser", { OMB_MCP_CALL_TIMEOUT_MS: "570000" })).toBe(570_000);
     expect(harnessCallTimeoutMs("computer", { OMB_MCP_CALL_TIMEOUT_MS: "570000" })).toBe(130_000);
@@ -147,6 +231,41 @@ describe("harness MCP capability proxy", () => {
       await new Promise<void>((resolve) => child.once("close", () => resolve()));
     }
   });
+
+  it("ends a call the engine cancels, goes on serving, and never answers the cancelled one", async () => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "clicked" }] } };
+    delayMs = 2_000;
+    const child: ChildProcessWithoutNullStreams = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), "browser"], {
+      env: { OMB_HARNESS_URL: url, OMB_MCP_TOKEN: "entrypoint-capability", OMB_MCP_CALL_TIMEOUT_MS: "570000" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const lines: Array<{ id: number }> = [];
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      for (let newline = output.indexOf("\n"); newline !== -1; newline = output.indexOf("\n")) {
+        lines.push(JSON.parse(output.slice(0, newline)));
+        output = output.slice(newline + 1);
+      }
+    });
+    try {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "cancelled_over_stdio" } })}\n`);
+      await expect.poll(() => requests.some((request) => (request.body as { params?: { name?: string } }).params?.name === "cancelled_over_stdio"), { timeout: 5_000 }).toBe(true);
+      // A cancel for a call that is not in flight changes nothing.
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 99, reason: "stale" } })}\n`);
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "the turn was stopped" } })}\n`);
+      await expect.poll(() => abandoned, { timeout: 1_500 }).toContain("cancelled_over_stdio");
+      delayMs = 0;
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "after_the_cancel" } })}\n`);
+      await expect.poll(() => lines.map((line) => line.id), { timeout: 5_000 }).toContain(8);
+      await new Promise((resolve) => setTimeout(resolve, 2_200));
+      expect(lines.map((line) => line.id)).toEqual([8]);
+    } finally {
+      delayMs = 0;
+      child.kill();
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+    }
+  }, 20_000);
 
   it("refuses to start without a known tool family", async () => {
     const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), "shell"], {

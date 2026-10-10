@@ -149,6 +149,14 @@ recording controls are intentionally not added to the live browser chrome.
   form's own property of that name.
 - The proxy's per-call limit for the browser is the hold window plus a
   margin, capped by `mcp.callTimeoutMinutes` (`OMB_MCP_CALL_TIMEOUT_MS`).
+  The proxy relays with `node:http`, not `fetch`: Node's fetch drops a
+  response whose headers have not arrived in 300 seconds, which cut a
+  nine-minute hold at five. Each call has its own connection. On
+  `notifications/cancelled` the proxy closes the cancelled call's
+  connection, and the route ends the hold behind it.
+- A hold is released in a `finally`: whatever fails after the browser was
+  taken, the browser is free again, the request is forgotten, the
+  screenshot is deleted and the card is closed as unavailable.
 - Not verified on Windows: the gate's reads use `get box`, `get url` and
   `eval -b` from the engine CLI, checked on 0.37.0. The Windows pin is
   `0.36.0-omb.1`. Run the [commit hold recipe](../verification/browser-commit-hold.md)

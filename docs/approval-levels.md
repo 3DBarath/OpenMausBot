@@ -236,7 +236,10 @@ request has gone away by then, nothing is clicked either.
 
 The bot's call waits up to nine minutes, the same as a connected-app send, or
 up to the configured MCP call timeout when that is shorter. Then the card
-closes and the bot is told nobody answered. On Deny the bot is told not to
+closes and the bot is told nobody answered. The card also closes, and the
+browser is the bot's again, as soon as the call behind it is gone: the turn
+was stopped, the engine cancelled the call, or the hold itself failed
+part-way. A card that has closed cannot be allowed afterwards. On Deny the bot is told not to
 retry and to ask you what you want instead. Each hold and each answer is in
 the bot's activity log and the decision log, with the site and the label.
 
@@ -263,6 +266,10 @@ wall**: a script written to hide what it does gets past a check of its text.
 ### Limits
 
 - The word lists are English. Other languages rely on the two form rules.
+- Under **Allow a daily amount**, the shared count goes up for every browser
+  press the rules read as a send, and some of those send nothing: Enter that
+  only adds a line in a notes box, or a "Reply" button that only opens a box
+  to type in. The daily number is used up sooner than the sends alone would.
 - Space on a focused button clicks it, and is not checked.
 - Inside an embedded frame, such as a payment or comment widget, a click is
   judged by its label alone and the card shows no fields; Enter there is not

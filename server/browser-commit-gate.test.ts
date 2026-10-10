@@ -48,6 +48,8 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     policy: options.policy as OutboundPolicy | undefined,
     active: true,
     reads: [] as Array<{ selector: string | null; enter: boolean }>,
+    /** Throws to make one of the gate's own writes fail: "post", "patch", "log:card-shown"… */
+    fail: undefined as ((step: string) => void) | undefined,
     /** Runs as each read of the page starts, with how many there have been. */
     onRead: undefined as ((count: number) => void) | undefined,
     dispatched: [] as unknown[],
@@ -64,10 +66,10 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     },
     requests, counts, holdMs: options.holdMs ?? 5_000, handBackMs: options.handBackMs ?? 1_000,
     policy: () => state.policy ?? null,
-    post: ({ card }) => { const id = `card-${cards.size + 1}`; cards.set(id, card); return id; },
-    patch: (_threadId, id, change) => { const card = cards.get(id); if (card) cards.set(id, change(card)); },
-    resume: () => { state.resumed += 1; },
-    log: (row) => { rows.push(row); },
+    post: ({ card }) => { state.fail?.("post"); const id = `card-${cards.size + 1}`; cards.set(id, card); return id; },
+    patch: (_threadId, id, change) => { state.fail?.("patch"); const card = cards.get(id); if (card) cards.set(id, change(card)); },
+    resume: () => { state.fail?.("resume"); state.resumed += 1; },
+    log: (row) => { state.fail?.(`log:${row.decision}`); rows.push(row); },
     dropShot: (path) => { state.dropped.push(path); },
   });
   const abort = new AbortController();
@@ -494,6 +496,77 @@ describe("the bot's request closes after the answer", () => {
     f.runtime.release("s", "person");
     expect(text(await held)).toMatch(/nobody answered the approval in time/);
     expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+  });
+});
+
+describe("a hold that fails part-way", () => {
+  /** Whatever happened, the browser is free again and nothing is left waiting. */
+  const free = (f: ReturnType<typeof fixture>) => {
+    expect(f.runtime.ownerKind("s")).toBeNull();
+    expect(f.requests.pending("thread-1")).toEqual([]);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.state.dropped).toEqual(["/data/attachments/shot.jpg"]);
+  };
+  const broken = (step: string, times = 1) => {
+    let left = times;
+    return (at: string) => { if (at === step && left > 0) { left -= 1; throw new Error(`disk full at ${step}`); } };
+  };
+
+  // A hold that is never released refuses every action in that browser
+  // until the server restarts.
+  it("frees the browser when the card could not be posted", async () => {
+    const f = fixture();
+    f.state.fail = broken("post");
+    await expect(f.call(click())).rejects.toThrow(/disk full at post/);
+    free(f);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("frees the browser and closes the card when the decision could not be logged", async () => {
+    const f = fixture();
+    f.state.fail = broken("log:card-shown");
+    await expect(f.call(click())).rejects.toThrow(/disk full at log:card-shown/);
+    free(f);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect([...f.cards.values()][0]!.browserCommit).not.toHaveProperty("shot");
+    // The next call is not locked out.
+    f.state.fail = undefined;
+    f.state.target = element();
+    await expect(f.call(click("#details"))).resolves.toBe(CLICKED);
+  });
+
+  it("frees the browser and closes the card when the bot could not be set working again after the answer", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    f.state.fail = broken("resume");
+    await f.answer("allow");
+    await expect(held).rejects.toThrow(/disk full at resume/);
+    free(f);
+    // Allow was given, nothing was sent: the card must not go on saying "Allowed".
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+  });
+
+  it("frees the browser when the card could not be written back after the answer", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    f.state.fail = broken("patch", 5);
+    await f.answer("deny");
+    await expect(held).rejects.toThrow(/disk full at patch/);
+    free(f);
+  });
+
+  it("frees the browser when the page read throws after Allow", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    f.state.fail = broken("log:auto-denied");
+    f.state.target = "unreadable";
+    await f.answer("allow");
+    await expect(held).rejects.toThrow(/disk full at log:auto-denied/);
+    free(f);
     expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
   });
 });

@@ -378,60 +378,72 @@ export class BrowserCommitGate {
     for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0 || !call.active()) return refusal(UNANSWERED);
-      const held = this.deps.requests.open({ botId: call.botId, threadId: call.threadId, tool: name, timeoutMs: remaining });
-      if (!this.deps.runtime.hold(call.session, held.requestId)) {
-        this.deps.requests.forget(held.requestId);
-        return refusal(ALREADY_WAITING);
+      const answer = await this.ask(call, intent, seen, row, remaining);
+      if (answer.next === "refuse") return refusal(answer.why);
+      if (answer.next === "send") {
+        // The hold is released and the card settled: the call goes out as it was judged.
+        this.remember(call.session, seen);
+        return call.dispatch(intent.params);
       }
-      const release = () => this.deps.runtime.releaseHold(call.session, held.requestId);
-      let messageId: string;
-      let shot: string | undefined;
-      try {
-        shot = seen.picture ? await call.shot().catch(() => undefined) : undefined;
-        messageId = this.deps.post({ botId: call.botId, threadId: call.threadId, card: this.card(seen, name, held.requestId, shot) });
-      } catch (error) {
-        this.deps.requests.forget(held.requestId);
-        release();
-        if (shot) this.deps.dropShot(shot);
-        throw error;
-      }
+      seen = answer.seen;
+    }
+  }
+
+  /** One card for what was seen, and the person's answer to it: send the
+   * call, refuse it with a reason, or ask again because the page changed.
+   * Whatever happens in here, an answer, a timeout or a throw, the hold on
+   * the browser, the waiting request and the screenshot are gone when it
+   * returns, and the card is not left looking answerable. A hold that
+   * outlived a failure would refuse every action in that browser until the
+   * server restarted. */
+  private async ask(
+    call: CommitCall, intent: Intent, seen: Sighting, row: Pick<DecisionRow, "threadId" | "botId" | "botName" | "tool">, timeoutMs: number,
+  ): Promise<{ next: "send" } | { next: "refuse"; why: string } | { next: "ask"; seen: Sighting }> {
+    const tool = row.tool ?? "";
+    const held = this.deps.requests.open({ botId: call.botId, threadId: call.threadId, tool, timeoutMs });
+    if (!this.deps.runtime.hold(call.session, held.requestId)) {
+      this.deps.requests.forget(held.requestId);
+      return { next: "refuse", why: ALREADY_WAITING };
+    }
+    const close = (outcome: string) => this.deps.log({ ...row, requestId: held.requestId, decision: "auto-denied", source: "outbound", rule: commitRule(seen.class, outcome) });
+    const unavailable = () => ({ answered: "unavailable" as const, dismissed: true });
+    let messageId: string | undefined;
+    let shot: string | undefined;
+    /** The card was given its last state (or the attempt was made). */
+    let settled = false;
+    const settle = (change: (card: OptionCardData) => Partial<OptionCardData> = () => ({}), pageChanged = false) => {
+      settled = true;
+      if (messageId === undefined) return;
+      this.deps.patch(call.threadId, messageId, (card) => {
+        const last = { ...cardWithoutPicture(card), ...change(card) };
+        return pageChanged && last.browserCommit ? { ...last, browserCommit: { ...last.browserCommit, pageChanged: true } } : last;
+      });
+    };
+    try {
+      shot = seen.picture ? await call.shot().catch(() => undefined) : undefined;
+      messageId = this.deps.post({ botId: call.botId, threadId: call.threadId, card: this.card(seen, tool, held.requestId, shot) });
       this.deps.log({ ...row, requestId: held.requestId, summary: this.summary(seen), decision: "card-shown", source: "outbound", rule: commitRule(seen.class) });
 
       const answer = await this.answerOrGone(held.answer, call);
-      this.deps.requests.forget(held.requestId);
-      // The screenshot is evidence for the decision, not a record: it goes
-      // once the card is settled.
-      if (shot) this.deps.dropShot(shot);
-      const settle = (change: (card: OptionCardData) => Partial<OptionCardData> = () => ({}), pageChanged = false) => {
-        this.deps.patch(call.threadId, messageId, (card) => {
-          const settled = { ...cardWithoutPicture(card), ...change(card) };
-          return pageChanged && settled.browserCommit ? { ...settled, browserCommit: { ...settled.browserCommit, pageChanged: true } } : settled;
-        });
-      };
-      const kind = seen.class;
-      const close = (outcome: string) => this.deps.log({ ...row, requestId: held.requestId, decision: "auto-denied", source: "outbound", rule: commitRule(kind, outcome) });
       if (call.active()) this.deps.resume(call.botId, call.threadId);
 
       if (answer === "deny") {
-        release();
         settle();
-        return refusal(DENIED);
+        return { next: "refuse", why: DENIED };
       }
       if (answer !== "allow") {
         // Nobody can answer this card any more: close it, as a connector hold's is.
-        release();
-        settle((card) => (card.answered ? {} : { answered: "unavailable", dismissed: true }));
+        settle((card) => (card.answered ? {} : unavailable()));
         close("unanswered");
-        return refusal(UNANSWERED);
+        return { next: "refuse", why: UNANSWERED };
       }
 
       // The person may be using the browser. Wait for it to come back, then
       // look again: the approval covers the page they were shown, no other.
       if (!await this.deps.runtime.personReleased(call.session, this.deps.handBackMs ?? 60_000)) {
-        release();
         settle();
         close("browser-in-use");
-        return refusal(STILL_HELD);
+        return { next: "refuse", why: STILL_HELD };
       }
       const now = await this.look(call, intent).catch(() => "unreadable" as const);
       if (now && typeof now !== "string" && now.digest === seen.digest) {
@@ -439,26 +451,33 @@ export class BrowserCommitGate {
         // the person had the browser or the page was read again. Then
         // nobody is waiting for this click, and it is not made.
         if (this.gone(call)) {
-          release();
-          settle(() => ({ answered: "unavailable", dismissed: true }));
+          settle(unavailable);
           close("gone");
-          return refusal(UNANSWERED);
+          return { next: "refuse", why: UNANSWERED };
         }
         settle();
-        release();
-        this.remember(call.session, seen);
-        return call.dispatch(intent.params);
+        return { next: "send" };
       }
-      release();
       if (typeof now === "string") {
-        settle(() => ({ answered: "unavailable", dismissed: true }));
+        settle(unavailable);
         close("unreadable");
-        return refusal(BLIND[now]);
+        return { next: "refuse", why: BLIND[now] };
       }
-      settle(() => ({ answered: "unavailable", dismissed: true }), true);
+      settle(unavailable, true);
       close("page-changed");
-      if (!now) return refusal(PAGE_CHANGED);
-      seen = now;
+      return now ? { next: "ask", seen: now } : { next: "refuse", why: PAGE_CHANGED };
+    } finally {
+      this.deps.requests.forget(held.requestId);
+      this.deps.runtime.releaseHold(call.session, held.requestId);
+      // The screenshot is evidence for the decision, not a record: it goes
+      // once the card is settled.
+      if (shot) this.deps.dropShot(shot);
+      if (!settled) {
+        // Something above threw. The error goes on to the caller; the card
+        // must not stay open, or go on saying Allowed, for a call that was
+        // never sent.
+        try { settle(unavailable); close("failed"); } catch { /* the first failure is the one reported */ }
+      }
     }
   }
 
