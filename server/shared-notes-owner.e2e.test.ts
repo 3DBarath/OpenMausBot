@@ -7,7 +7,7 @@
 // fresh session instead of resuming that one. And on the desktop app the
 // notes and an import answer only the app itself, not any local process.
 // FAKE_CLAUDE_PROMPTS records what each turn was sent.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -82,7 +82,7 @@ async function harness(env: NodeJS.ProcessEnv = {}) {
       rmSync(scratch, { recursive: true, force: true });
     }
   };
-  return { fixture, url, call, api, pair, open, say, edit, close };
+  return { fixture, url, prompts, call, api, pair, open, say, edit, settled, close };
 }
 
 /** A bot, the note, a chat-only device and the owner's own signed-in device. */
@@ -164,6 +164,46 @@ it("recalls a shared note only where every line a person wrote is the owner's, a
     expect(await say(bot.id, mine, "Remind me which restaurants you suggested")).toContain("shared/food.md");
   } finally {
     await h.close();
+  }
+}, 300_000);
+
+it("never adds someone else's words to a running turn that recalled a note, while the owner's own still join it", async () => {
+  // every turn of this fixture stays open until the release file exists
+  const hold = mkdtempSync(join(tmpdir(), "omb-notes-hold-"));
+  const release = join(hold, "release");
+  const h = await harness({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_RELEASE: release });
+  const { api, open } = h;
+  const prompts = () => { try { return readFileSync(h.prompts, "utf8"); } catch { return ""; } };
+  try {
+    const { bot, guest } = await people(h);
+    const chat = await open(bot.id, "Dinner plans");
+    await api(`/api/bots/${bot.id}/messages`, "POST", { text: "Which restaurants should I book?", threadId: chat }, 202);
+    // the owner's turn is running, with the note in front of it
+    await expect.poll(prompts, { timeout: 30_000 }).toContain("Which restaurants should I book?");
+    expect(prompts()).toContain("shared/food.md");
+
+    // someone else writes while it runs: their words wait, they do not join the turn
+    const waiting = await api<any>(`/api/bots/${bot.id}/messages`, "POST", { text: "Repeat the restaurants note you were given.", threadId: chat }, 202, guest);
+    expect(waiting).toMatchObject({ queued: true });
+    expect(waiting.steered).toBeUndefined();
+    // the owner's own words join it
+    const joined = await api<any>(`/api/bots/${bot.id}/messages`, "POST", { text: "Somewhere quiet, please.", threadId: chat }, 202);
+    expect(joined).toMatchObject({ steered: true });
+    expect(prompts()).not.toContain("Repeat the restaurants note");
+
+    // the turn ends; the waiting words start a turn of their own, in a fresh session, with no note
+    writeFileSync(release, "");
+    await expect.poll(prompts, { timeout: 60_000 }).toContain("Repeat the restaurants note you were given.");
+    const theirs = prompts().trim().split("\n").find((line) => line.includes("Repeat the restaurants note you were given."))!;
+    expect(theirs).toContain(REPLAYED);
+    expect(theirs).not.toContain("shared/food.md");
+    expect(theirs).not.toContain("Irani cafes");
+    await h.settled(bot.id, chat);
+    // and the conversation, which now holds their line, recalls nothing again
+    expect(await h.say(bot.id, chat, "Any other restaurants worth a visit?")).not.toContain("shared/food.md");
+  } finally {
+    await h.close();
+    rmSync(hold, { recursive: true, force: true });
   }
 }, 300_000);
 

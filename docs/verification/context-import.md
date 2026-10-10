@@ -37,6 +37,7 @@ Evidence covers:
 
 - A device paired with chat-only access edits its own message, and then the owner's message, and regenerates it: none of those turns is sent a shared note. The owner's own edit, at the computer and from a device paired with full access, still is.
 - Someone else writes in a conversation that recalled a note: their turn is sent no note and starts a fresh engine session with the conversation replayed, instead of resuming the session that holds the note; the owner's next message there recalls nothing. The same for a conversation someone else wrote in first or edited a message in. A conversation only the owner wrote in still recalls.
+- While the owner's turn that recalled a note is still running (the fake engine holds it open), a chat-only device's message waits in the queue instead of being added to that turn, and then runs as its own turn in a fresh session with no note; the owner's own message is added to the running turn.
 - Run as the desktop app runs it (`OMB_TEST_DESKTOP_OWNER_TOKEN`), the shared-notes and import routes answer the app's own capability and refuse a local request without it, reads included, while `/api/health` and `/api/bots` still answer.
 
 `server/context-import-failures.e2e.test.ts` covers what an import may never do to the server:

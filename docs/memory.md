@@ -377,8 +377,9 @@ it saves goes to the owner's About me and shared notes.
    default is the last 12 months, newest first, at most 500 conversations; you
    can change the dates and the number (up to 2,000). A zip is read from its
    list of contents, so the photos and other files in it are never unpacked.
-   One scan keeps at most 100,000 conversations and a zip may hold at most
-   100,000 files; past either, the dialog says so.
+   One scan keeps at most 100,000 conversations, and a zip may hold at most
+   100,000 files, of which the first 1,000 conversation lists are read; past
+   any of these, the dialog says so.
 3. **Read.** You pick which bot's engine reads it. Only your own messages are
    sent, with each conversation's title and date: each message cut at 1,500
    characters, code blocks dropped, 6,000 characters a conversation, about
