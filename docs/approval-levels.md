@@ -585,6 +585,10 @@ catch:
   `agent_browser_fill` and press Enter.
 - **More than 5,000 fields in one form or region:** a commitment there is
   refused, not held. The approval could not be bound to all of them.
+- **A reading script that fills a result it did not start empty.** `const
+  row = { id: 1 }; row.value = cell.innerText`, a second name in one
+  declaration (`const a = {}, b = []; b.value = …`), and a result declared
+  with `let` or `var` are refused as writes. Start from `const out = {}`.
 - A number that changes in the text around the button (a price, a count)
   voids an approval like any other change. On a page where that keeps
   happening, two cards are void before the third one stops minding the text
