@@ -8,7 +8,7 @@ import { Header } from "tar";
 import { SessionRegistry } from "./sessions.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  applyPendingWorkspaceRestore, commitPendingWorkspaceRestore, createWorkspaceBackup,
+  applyPendingWorkspaceRestore, commitPendingWorkspaceRestore, createWorkspaceBackup, omittedFromWorkspaceBackup,
   readLastWorkspaceRestore, readPendingWorkspaceRestoreMetadata, readStagedWorkspaceBackup,
   removeWorkspaceBackupJob, stageWorkspaceBackup,
 } from "./workspace-backup.ts";
@@ -274,16 +274,28 @@ describe("encrypted full workspace backups", () => {
     }
   });
 
-  it("backs up shared notes like any other data", async () => {
+  it("backs up shared notes and the record of past imports, and never an import in progress", async () => {
     const source = directory();
     mkdirSync(join(source, "shared-notes"), { mode: 0o700 });
     writeFileSync(join(source, "shared-notes", "food.md"), "- 2025-03-02 · The person is vegetarian (imported · ChatGPT)\n", { mode: 0o600 });
+    json(join(source, "context-imports.json"), { imports: [{ id: "job-1", origin: "chatgpt", at: 1, hashes: ["abc"] }] });
+    mkdirSync(join(source, "context-import", "tmp"), { recursive: true, mode: 0o700 });
+    json(join(source, "context-import", "job.json"), { id: "job-2", candidates: [{ text: "UNREVIEWED_FACT" }] });
+    writeFileSync(join(source, "context-import", "tmp", "job-2.upload"), "UPLOADED_EXPORT_BYTES", { mode: 0o600 });
+    writeFileSync(join(source, "context-import", "tmp", "job-2.batches.json"), '[[{"text":"CUT_CONVERSATION_TEXT"}]]', { mode: 0o600 });
     const exported = await createWorkspaceBackup(source, { password: PASSWORD });
     const staged = await stageWorkspaceBackup(source, exported.path, { password: PASSWORD });
     const staging = join(source, ".backups", staged.id, "staged");
     const paths: string[] = readJson(join(staging, "manifest.json")).entries.map((entry: { path: string }) => entry.path);
-    expect(paths).toEqual(expect.arrayContaining(["shared-notes", "shared-notes/food.md"]));
-    expect(readFileSync(join(staging, "data", "shared-notes", "food.md"), "utf8")).toContain("The person is vegetarian");
+    expect(paths).toEqual(expect.arrayContaining(["shared-notes", "shared-notes/food.md", "context-imports.json"]));
+    expect(paths.filter((path) => path === "context-import" || path.startsWith("context-import/"))).toEqual([]);
+    expect(existsSync(join(staging, "data", "context-import"))).toBe(false);
+    for (const path of paths) {
+      if (statSync(join(staging, "data", path)).isFile()) expect(readFileSync(join(staging, "data", path), "utf8")).not.toMatch(/UNREVIEWED_FACT|UPLOADED_EXPORT_BYTES|CUT_CONVERSATION_TEXT/);
+    }
+    expect(omittedFromWorkspaceBackup("context-import/tmp/job-2.upload")).toBe(true);
+    expect(omittedFromWorkspaceBackup("shared-notes/food.md")).toBe(false);
+    expect(omittedFromWorkspaceBackup("context-imports.json")).toBe(false);
   });
 
   it("leaves the Organization library's downloaded catalog and release files out, and keeps what the runtime added", async () => {

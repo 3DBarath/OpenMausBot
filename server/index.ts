@@ -141,7 +141,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall, sharedNotesAllowed } from "./recall.ts";
 import { ownerLine, ownerRequest, type OwnerFacts } from "./shared-notes-owner.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
-import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
+import { createMemoryUpkeep, upkeepEnabled, type UpkeepEngine } from "./memory-upkeep.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -649,6 +649,8 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createSharedNotesRoutes } from "./routes/shared-notes.ts";
+import { createContextImportRoutes } from "./routes/context-import.ts";
+import { createContextImport } from "./context-import/job.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
@@ -6469,6 +6471,39 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+/** A bot's engine for a one-shot background text call (memory upkeep, a
+ * context import), or null when it may not receive the person's text. Every
+ * call checks the budget and books its usage to the bot. */
+function backgroundTextEngine(botId: string): UpkeepEngine | null {
+  const bot = store.bot(botId);
+  const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
+  // an engine the organisation disallows never receives memory text
+  if (!bot || !instance || policyModelRefusal(instance)) return null;
+  // generateMemoryText: the ACP engines' upkeep-only one-shot, on their own provider
+  const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
+  return generate ? {
+    generateText: async (prompt, options) => {
+      // Check every capture, organize, contradiction and import call,
+      // including consecutive calls within one pass.
+      assertWithinBudget(cfg, DATA_DIR);
+      const threadId = `memory-${randomUUID()}`;
+      return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
+        botId: bot.id,
+        botName: bot.name,
+        threadId,
+        instanceId: instance.instanceId,
+        driverKind: instance.driverKind,
+        model: usage.model,
+        input: usage.input ?? 0,
+        output: usage.output ?? 0,
+        ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
+        costUsd: usage.costUsd ?? null,
+        trigger: { kind: "bot", botId: bot.id },
+      }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
+    },
+  } : {};
+}
+
 /** Save About me the way Settings does, and tell every open window. */
 function saveAboutMe(aboutMe: string): void {
   saveConfig({ profile: { ...cfg.profile, aboutMe } });
@@ -6481,35 +6516,7 @@ function saveAboutMe(aboutMe: string): void {
 const memoryUpkeep = createMemoryUpkeep({
   bots: () => store.bots,
   bot: (id) => store.bot(id) ?? undefined,
-  engine: (botId) => {
-    const bot = store.bot(botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
-    // an engine the organisation disallows never receives memory text
-    if (!bot || !instance || policyModelRefusal(instance)) return null;
-    // generateMemoryText: the ACP engines' upkeep-only one-shot, on their own provider
-    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
-    return generate ? {
-      generateText: async (prompt, options) => {
-        // Check every capture, organize and contradiction call, including
-        // consecutive calls within one upkeep pass.
-        assertWithinBudget(cfg, DATA_DIR);
-        const threadId = `memory-${randomUUID()}`;
-        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
-          botId: bot.id,
-          botName: bot.name,
-          threadId,
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          model: usage.model,
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
-          costUsd: usage.costUsd ?? null,
-          trigger: { kind: "bot", botId: bot.id },
-        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
-    } : {};
-  },
+  engine: backgroundTextEngine,
   busy: (botId) => botHasActiveTurn(botId),
   addToAboutMe: (from, texts) => {
     const current = cfg.profile?.aboutMe ?? "";
@@ -6539,6 +6546,17 @@ const memoryUpkeep = createMemoryUpkeep({
   tidyHour: () => tidyHour(cfg),
   log: (line) => console.log(line),
 });
+
+// Context import (server/context-import/job.ts): reads a ChatGPT or Claude
+// export with the engine of the bot the person picks. A job a previous run
+// left comes back here, paused if it was running.
+const contextImport = createContextImport({
+  engine: backgroundTextEngine,
+  aboutMe: () => cfg.profile?.aboutMe ?? "",
+  saveAboutMe,
+  log: (line) => console.log(line),
+});
+contextImport.start();
 
 // OMB Cloud home: the first bot turn that finishes here is the setup
 // checklist's sign the Cloud has been used (firstCloudTurnPatch). The server writes
@@ -16218,8 +16236,8 @@ const workspaceBackupAccess = {
       teamComputers.list().every(computer => !teamComputerInUse(computer)) &&
       store.bots.every((bot) => !botHasActiveTurn(bot.id) && !routines?.activeRunForBot(bot.id) && !botComputerControlSnapshot(bot.id).held) &&
       store.groups.every((group) => !groupIsWorking(group)),
-    pause: () => { routines?.stop(); calendarCalls?.stop(); watchdog.stop(); memoryUpkeep.pause(); },
-    resume: () => { routines?.start(); calendarCalls?.start(); watchdog.start(); memoryUpkeep.resume(); },
+    pause: () => { routines?.stop(); calendarCalls?.stop(); watchdog.stop(); memoryUpkeep.pause(); contextImport.hold(); },
+    resume: () => { routines?.start(); calendarCalls?.start(); watchdog.start(); memoryUpkeep.resume(); contextImport.release(); },
     flush: async () => {
       await Promise.all([flushAllProfileHistory(), flushAllMemoryJournals(), flushUsageLedger(DATA_DIR), flushDecisionLog(DATA_DIR), flushAdminActivity(DATA_DIR)]);
       // With writers gated and work idle, release our WAL connection for the
@@ -16294,8 +16312,14 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
-// Shared notes every bot can recall from (server/shared-notes.ts); owner only.
+// Shared notes every bot can recall from (server/shared-notes.ts), and the
+// import that fills them from a ChatGPT or Claude export; owner only.
 ROUTES.push(createSharedNotesRoutes({ owner: (auth) => ownerRequest(auth, notesOwnerFacts()), aboutMe: () => cfg.profile?.aboutMe ?? "", saveAboutMe }));
+ROUTES.push(createContextImportRoutes({
+  owner: (auth) => ownerRequest(auth, notesOwnerFacts()),
+  imports: contextImport,
+  engines: () => store.bots.map((bot) => ({ botId: bot.id, name: bot.name, available: Boolean(backgroundTextEngine(bot.id)?.generateText) })),
+}));
 ROUTES.push(createDeciderRoutes({ decider }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({

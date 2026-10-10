@@ -39,6 +39,10 @@ const EXCLUDED = new Set([
   // A Cloud home's record of who its owner was (server/cloud-owner.ts): this
   // machine's own, kept in place by a restore, which settles what it brought.
   "cloud-owner.json",
+  // A context import in progress (server/context-import/job.ts): the uploaded
+  // export, its cut text and facts nobody has reviewed yet. What an import
+  // saved is ordinary data and is backed up: shared-notes/, context-imports.json.
+  "context-import",
 ]);
 const EXCLUSION_NOTES = [
   "Device pairing, server identity, live leases and runtime files (existing destination identities are preserved).",
