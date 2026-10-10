@@ -139,7 +139,8 @@ import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall, sharedNotesAllowed } from "./recall.ts";
-import { ownerLine, ownerRequest, type OwnerFacts } from "./shared-notes-owner.ts";
+import { ownerContinuesTurn, ownerLine, ownerRequest, ownerStartsTurn, personWrittenLine, type OwnerFacts, type TurnStart } from "./shared-notes-owner.ts";
+import { OwnerThreads } from "./shared-notes-threads.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled, type UpkeepEngine } from "./memory-upkeep.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
@@ -272,7 +273,7 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
+import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing, type RecallHit } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
@@ -795,6 +796,17 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
 }
 // Who each thread is for, when a signed-in person can be named (server-private).
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
+// Which conversations are provably the owner's alone, and which hold a
+// recalled shared note in their engine session (server/shared-notes-threads.ts).
+const ownerThreads = new OwnerThreads(join(DATA_DIR, "shared-notes-threads.json"), (line) => console.warn(line));
+/** Messages waiting in the queue that the owner's own request sent, by queue
+ * id, until they are written to their conversation. In memory only: after a
+ * restart nothing vouches for a waiting line, so it is not the owner's. */
+const ownerQueued = new Set<string>();
+function noteOwnerQueued(queueId: string): void {
+  ownerQueued.add(queueId);
+  while (ownerQueued.size > 5_000) ownerQueued.delete(ownerQueued.values().next().value!);
+}
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
 const HOSTED_WORKSPACE = hostedWorkspaceConfigured();
@@ -1574,13 +1586,17 @@ function notesOwnerFacts(): OwnerFacts {
   return { hosted: HOSTED_WORKSPACE, loopbackIsOwner: LOOPBACK.trust === "owner", admins: signInAllowList().admins };
 }
 
-/** Whether the installation's owner sent the message that started this turn:
- * the harness's own record of which message started this exact turn, read
- * the way lent computers are (sharedComputerPrincipal), so a routine, a
- * webhook, a stopped request or anything unprovable is nobody's. */
+/** Whether the installation's owner started this turn: the request that
+ * started this exact turn was proven the owner's when it was admitted
+ * (`ownerProven`, from that request's own authentication; see the table in
+ * server/shared-notes-owner.ts), and the harness's record of which message
+ * started it still names an owner's line, read the way lent computers are
+ * (sharedComputerPrincipal). A routine, a webhook, a stopped request, a
+ * resumed turn or anything unprovable is nobody's. */
 function ownerStartedTurn(threadId: string, generation: string | undefined): boolean {
   const request = directRequestOwners.get(threadId);
-  if (!generation || !request?.messageId || request.stopped || request.automation || !request.generations.has(generation)) return false;
+  if (!generation || !request?.ownerProven || request.generation !== generation) return false;
+  if (!request.messageId || request.stopped || request.automation || !request.generations.has(generation)) return false;
   return ownerLine(store.messagesFor(threadId).find((message) => message.id === request.messageId), {
     ...notesOwnerFacts(),
     // a signed-in device is the owner's when it has admin access; a Cloud home's owner has one key
@@ -1588,6 +1604,16 @@ function ownerStartedTurn(threadId: string, generation: string | undefined): boo
       ? cloudProvenOwnerPerson(person)
       : sessions.list().some((session) => session.scopes.includes("admin") && personKey(session) === person),
   });
+}
+
+/** Whether every line a person wrote in this conversation is the owner's.
+ * On a Cloud home every line carries its writer's key, and that key
+ * decides. Elsewhere a line at the computer carries nothing, so the record
+ * of which lines the owner's own requests wrote decides
+ * (server/shared-notes-threads.ts): a line nobody vouched for is not theirs. */
+function notesOwnerOnlyThread(threadId: string): boolean {
+  if (CLOUD_HOME) return cloudOwnerOnlyThread(threadId);
+  return ownerThreads.ownerOnly(threadId, store.messagesFor(threadId).filter(personWrittenLine).map((message) => message.id));
 }
 
 /** The automatic-recall block for a turn (server/recall.ts), or "". Notes
@@ -1614,25 +1640,30 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
       .filter((id) => id !== threadId && (!CLOUD_HOME || cloudOwnerOnlyThread(id)))
     : [];
   try {
-    const recalled = buildRecall({
+    const sharedNotes = sharedNotesAllowed({
+      personStarted: opts.conversations,
+      ownerStarted: () => ownerStartedTurn(threadId, opts.generation),
+      ownerOnlyThread: () => notesOwnerOnlyThread(threadId),
+    });
+    const recallInput = {
       botId: bot.id,
       message,
       threadIds,
-      sharedNotes: sharedNotesAllowed({
-        personStarted: opts.conversations,
-        ownersLine: () => ownerStartedTurn(threadId, opts.generation),
-        cloudHome: Boolean(CLOUD_HOME),
-        ownerOnlyThread: () => cloudOwnerOnlyThread(threadId),
-      }),
-      label: (id) => {
+      label: (id: string) => {
         const room = roomByThread.get(id);
         if (room) return `room ${JSON.stringify(room.name)}`;
         const task = store.taskByThread(bot.id, id);
         if (task) return `chat ${JSON.stringify(task.title)}`;
         return id === bot.threadId ? "your main chat" : "an earlier chat";
       },
-      author: (hit) => (hit.role === "user" ? hit.peer ?? opts.userName : hit.from ?? bot.name),
-    });
+      author: (hit: RecallHit) => (hit.role === "user" ? hit.peer ?? opts.userName : hit.from ?? bot.name),
+    };
+    let recalled = buildRecall({ ...recallInput, sharedNotes });
+    // A shared note put in front of this turn stays in the engine's session.
+    // That is recorded before the note is sent, so a line someone else writes
+    // here later starts a fresh session; where it cannot be recorded, the
+    // note is left out.
+    if (recalled?.shared && !ownerThreads.noteRecalled(threadId)) recalled = buildRecall({ ...recallInput, sharedNotes: false });
     if (recalled) console.log(`auto-recall: ${bot.name} (${bot.id}) got ${recalled.notes} note and ${recalled.conversations} conversation passage(s) in ${threadId}`);
     return recalled?.text ?? "";
   } catch (err) {
@@ -2698,6 +2729,9 @@ const directRequestOwners = new Map<string, {
   /** Set when a routine run or a webhook started this request (lending
    * provenance on a Cloud home: server/cloud-lending.ts). */
   automation?: RoutineRunTrigger;
+  /** The request that started this turn was proven the installation
+   * owner's (server/shared-notes-owner.ts). Absent means not proven. */
+  ownerProven?: true;
 }>();
 // Stop revokes credentials before completion, but the receipt must retain its
 // exact provider-turn owner until that completion or explicit failure cleanup.
@@ -9246,10 +9280,18 @@ function drainQueuedSends() {
     // from duplicating the last one, and excludeIds drops every drained
     // line from the transcript-replay so they are not also in `prompt`.
     new Promise<void>((resolve, reject) => {
+      // The lines just written are the owner's only where the owner's own
+      // request queued them, and the turn only when every one of them is.
+      const written = new Set(excludeIds);
+      const lines = store.messagesFor(threadId).filter((message) => written.has(message.id));
+      const byOwner = lines.length > 0 && lines.every((message) => message.queueId !== undefined && ownerQueued.has(message.queueId));
+      for (const message of lines) {
+        if (message.queueId !== undefined && ownerQueued.delete(message.queueId)) ownerThreads.prove(threadId, message.id);
+      }
       // The drained turn is booked to whoever sent the first waiting line.
       void startTurn(botId, prompt, {
         threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve,
-        trigger: queuedTurnTrigger(head),
+        trigger: queuedTurnTrigger(head), byOwner,
       }).catch((err) => {
         store.appendMessage(threadId, {
           role: "bot", kind: "activity",
@@ -9291,6 +9333,8 @@ function drainAsideLane() {
       if (!bot?.busy) return "refused";
       const instance = runningTurnInstance(bot, threadId);
       if (!instance?.adapter.capabilities.queueing || !instance.adapter.steer) return "refused";
+      // another bot's words never join a turn whose session holds a recalled shared note
+      if (ownerThreads.recalled(threadId)) return "refused";
       return instance.adapter.steer(threadId, prompt).catch((): SteerOutcome => "indeterminate");
     },
     run: (botId, threadId, prompt, userMessage, excludeIds, head) =>
@@ -9322,7 +9366,7 @@ function drainAsideLane() {
 
 /** Keep a person's words off the transcript until a direct-thread slot is
  * available. Reuse the existing cancellable, idempotent composer queue. */
-async function startOrQueueDirectMessage(botId: string, threadId: string, text: string, replyTo?: Message, sendId?: string, sender?: ResolvedSender, trigger?: UsageTrigger, via?: "call", dataContext?: DataContext) {
+async function startOrQueueDirectMessage(botId: string, threadId: string, text: string, replyTo?: Message, sendId?: string, sender?: ResolvedSender, trigger?: UsageTrigger, via?: "call", dataContext?: DataContext, byOwner?: boolean) {
   const decision = admit("direct", {}, {
     // A room turn holds the bot exactly like the sibling opened-thread queue
     // below: the drain's own block check waits it out, so the words queue
@@ -9343,9 +9387,10 @@ async function startOrQueueDirectMessage(botId: string, threadId: string, text: 
       trigger,
       via,
     });
+    if (byOwner) noteOwnerQueued(queued.id);
     return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: decision.reason };
   }
-  const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger, via, dataContext });
+  const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger, via, dataContext, byOwner });
   return { ok: true as const, threadId, message };
 }
 
@@ -9403,10 +9448,14 @@ async function acceptDirectSend(
     /** A person is proven present (a paired session, or the desktop's owner
      * capability): steering their words in clears the unattended mark. */
     personPresent: boolean;
+    /** The sending request was proven the installation owner's
+     * (ownerRequest, server/shared-notes-owner.ts). Absent: not the owner. */
+    byOwner?: boolean;
   },
   guardedStart?: (currentAtStart: BotRecord) => Promise<DirectSendReceipt>,
 ): Promise<DirectSendReceipt> {
   const { botId, threadId, text, sendId, replyTo, sender, trigger, via, dataContext, personPresent } = input;
+  const byOwner = input.byOwner === true;
   const refused = directSendRefusal(botId, threadId);
   if (refused) throw refused;
   return sendSequencer.run(
@@ -9473,8 +9522,10 @@ async function acceptDirectSend(
           engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
         });
         // steer was offered only when a live instance could take it;
-        // the second check carries that fact to the type system.
-        if (busyAdmission.action === "steer" && instance?.adapter.steer) {
+        // the second check carries that fact to the type system. Words
+        // that are not proven the owner's never join a turn whose session
+        // holds a recalled shared note: they wait and start their own turn.
+        if (busyAdmission.action === "steer" && instance?.adapter.steer && (byOwner || !ownerThreads.recalled(threadId))) {
           steered = await instance.adapter
             .steer(threadId, promptWithReply(promptWithDataContext(text, dataContext), replyTo, cfg.profile?.name?.trim() || "User"))
             .catch((): SteerOutcome => "indeterminate");
@@ -9516,12 +9567,13 @@ async function acceptDirectSend(
             sender,
             ...(via ? { via } : {}),
           });
+          if (byOwner) ownerThreads.prove(threadId, message.id);
           // Offered to the next turn again unless the person stops this one.
           handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
           return { ok: true as const, steered: true as const, threadId, message };
         }
         if (!current.busy) {
-          return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, dataContext);
+          return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, dataContext, byOwner);
         }
         const queued = queueSteeredMessage(current.id, threadId, text, {
           replyToId: replyTo?.id,
@@ -9532,9 +9584,10 @@ async function acceptDirectSend(
           trigger,
           via,
         });
+        if (byOwner) noteOwnerQueued(queued.id);
         return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
       }
-      return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, dataContext);
+      return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, dataContext, byOwner);
     },
   );
 }
@@ -9611,7 +9664,7 @@ async function deliverLateQuestionAnswer(
       startGroupTurn(current.id, text, cardMessage, sendId, "chat", undefined, { threadId, sender, trigger });
       return { queued: false };
     }
-    const direct = await startOrQueueDirectMessage(owner.id, threadId, text, cardMessage, sendId, sender, trigger, via);
+    const direct = await startOrQueueDirectMessage(owner.id, threadId, text, cardMessage, sendId, sender, trigger, via, undefined, ownerRequest(auth, notesOwnerFacts()));
     return { queued: "queued" in direct && Boolean(direct.queued) };
   });
 
@@ -9860,6 +9913,10 @@ async function startTurn(
     editedMessageId?: string;
     /** The person who sent this, when not the desktop owner. */
     sender?: ResolvedSender;
+    /** Harness-only, never a client option: the request whose message
+     * starts this turn was proven the installation owner's (ownerRequest,
+     * server/shared-notes-owner.ts). Absent means "not the owner". */
+    byOwner?: boolean;
     /** Who the usage ledger books this turn to: the sender of the message
      * that starts it, captured when that message was accepted. Absent on
      * continuations, which stay with the ask they continue. */
@@ -10060,15 +10117,24 @@ async function startTurn(
     );
   }
 
+  // Whether the owner's own request starts this turn (server/shared-notes-owner.ts).
+  const turnStart: TurnStart = {
+    byOwner: opts?.byOwner, peerAsk: opts?.peerAsk, relayed: opts?.relayed, automationSource: opts?.automationSource,
+    unattended: opts?.unattended, commsDepth, cardContinuation: opts?.cardContinuation,
+  };
+  const startedByOwner = ownerStartsTurn(turnStart);
   // an edit hands us its already-branched user message; a plain send appends
   let userMessage = opts?.userMessage;
+  let wroteLine = false;
   if (opts?.editedMessageId) {
     const edited = store.branchMessage(threadId, opts.editedMessageId, text, opts.sendId, opts.sender, opts.dataContext);
     if (!edited) throw Object.assign(new Error("only a user text message can be edited"), { status: 400 });
     store.patchTask(bot.id, threadId, { rewound: true });
     userMessage = edited;
+    wroteLine = true;
   }
   if (!userMessage) {
+    wroteLine = !opts?.cardContinuation;
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
       : store.appendMessage(threadId, {
@@ -10083,6 +10149,17 @@ async function startTurn(
           ...(opts?.via ? { via: opts.via } : {}),
           ...(opts?.relayed ? { relayed: true } : {}),
         });
+  }
+  // The line this call wrote is the owner's only when their own request
+  // wrote it: that is recorded now, the one moment it is known. (Lines that
+  // waited in the queue were recorded when they were written: drainQueuedSends.)
+  if (wroteLine && startedByOwner) ownerThreads.prove(threadId, userMessage.id);
+  // Words that are not proven the owner's (a guest's, another bot's, a
+  // routine's, a relay's) must not resume an engine session that holds a
+  // recalled shared note: this turn starts a fresh session and replays the
+  // conversation, which never held the note.
+  if (!startedByOwner && (wroteLine || Boolean(opts?.userMessage && opts.excludeMessageIds?.length)) && ownerThreads.recalled(threadId)) {
+    store.patchTask(bot.id, threadId, { rewound: true });
   }
   const recoveryUserMessageId = opts?.coordination
     ? store.activePath(threadId).findLast(m => m.role === "user" && m.kind === "text")?.id
@@ -10120,8 +10197,12 @@ async function startTurn(
     ? previousRequest.generations : new Set<string>();
   if (requestGenerations.size >= 500) { requestGenerations.clear(); requestMessageId = undefined; }
   requestGenerations.add(dispatchClaimId);
+  // Proven the owner's by the request that starts it, or kept from the same
+  // request continued (another surface, a backup engine); never gained.
+  const ownerProven = startedByOwner || ownerContinuesTurn(previousRequest, requestMessageId, turnStart);
   directRequestOwners.set(threadId, { generation: dispatchClaimId, messageId: requestMessageId,
-    generations: requestGenerations, turnId: null, ...(opts?.automationSource ? { automation: opts.automationSource } : {}) });
+    generations: requestGenerations, turnId: null, ...(opts?.automationSource ? { automation: opts.automationSource } : {}),
+    ...(ownerProven ? { ownerProven: true as const } : {}) });
   // On a Cloud home, a turn that is not provably the owner's leaves this
   // bot's memory "pending" until it ends (server/lending-memory.ts).
   if (CLOUD_HOME && cloudHomeLendingRefusal(cloudLendingTurn({ botId, threadId, generation: dispatchClaimId })) !== null) noteForeignTurn(botId, threadId, dispatchClaimId);
@@ -10224,6 +10305,11 @@ async function startTurn(
       // cleared only once the turn is actually dispatched — clearing it here
       // would cost the next attempt its history if this dispatch fails.
       const rewound = Boolean(task.rewound);
+      // A rewound turn resumes no earlier session, and the flag stays until a
+      // turn is dispatched: the sessions that held a recalled shared note are
+      // out of reach from here on. (This turn marks the thread again if it
+      // recalls one itself: autoRecallPrompt.)
+      if (rewound) ownerThreads.sessionDropped(threadId);
       // A fresh engine — the user switched this bot's model mid-thread — has no
       // current session here either, so it gets the same replay. Distinct from
       // rewound: the OTHER instances' cursors are left alone (a rewind wipes
@@ -16395,6 +16481,7 @@ const liveCalls = new LiveCallController({
       via: "call",
       // a person is on the call: these are their words
       personPresent: true,
+      byOwner: ownerRequest(auth, notesOwnerFacts()),
     });
     if ("queued" in receipt) return { kind: "queued", queueId: receipt.queueId };
     return { kind: receipt.steered ? "steered" : "started", messageId: receipt.message.id };
@@ -23008,6 +23095,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           // owner capability, which every mutation there has already shown)
           // clears the mark.
           personPresent: auth.kind === "session" || DESKTOP_MANAGED,
+          // whose request this is, for the shared notes; a guarded relay sends for someone else
+          byOwner: !guarded && ownerRequest(auth, notesOwnerFacts()),
         }, guardedStart);
         return json(res, 202, receipt);
       } catch (error) {
@@ -23049,6 +23138,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         restoreHeldSteeredQueue(held);
         return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
       }
+      // Words that are not proven the owner's never join a turn whose session
+      // holds a recalled shared note: they keep waiting for a turn of their own.
+      if (ownerThreads.recalled(bot.threadId) && !held.items.every((item) => ownerQueued.has(item.messageId))) {
+        restoreHeldSteeredQueue(held);
+        return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
+      }
       const currentAtStart = store.projectBotForTask(bot.id, bot.threadId);
       const instance = currentAtStart?.busy ? runningTurnInstance(currentAtStart, bot.threadId) : undefined;
       const prompt = held.items.map((item) => item.prompt).join("\n\n");
@@ -23085,6 +23180,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           sender: item.sender,
           ...(item.via ? { via: item.via } : {}),
         }));
+        // each line is the owner's where the owner's own request queued it
+        messages.forEach((message, index) => { if (ownerQueued.delete(held.items[index]!.messageId)) ownerThreads.prove(bot.threadId, message.id); });
         // Offered to the next turn again unless the person stops this one.
         for (const message of messages) handoffs.steered(bot.threadId, steerTarget, instance?.instanceId, message.id);
         const queueIds = held.items.map((item) => item.messageId);
@@ -23179,7 +23276,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const dataContext = parseDataContext(body.dataContext) ?? (text === source.text ? source.dataContext : undefined);
       // On a Cloud home an edit is its author's line, so the owner's own edit
       // keeps their conversation theirs for lending (server/cloud-lending.ts).
+      // Whose turn the rerun is comes from this request, never from the line
+      // that was edited: anyone's edit of the owner's line is their own turn.
       const message = await startTurn(bot.id, text, { threadId: bot.threadId, editedMessageId: messageId, replyTo, sendId, trigger: usageTriggerFor(auth), dataContext,
+        byOwner: ownerRequest(auth, notesOwnerFacts()),
         ...(CLOUD_HOME ? { sender: messageSender(auth) } : {}) });
       return json(res, 202, { ok: true, message });
     }
