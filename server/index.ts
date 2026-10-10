@@ -139,7 +139,7 @@ import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall, sharedNotesAllowed } from "./recall.ts";
-import { ownerContinuesTurn, ownerLine, ownerRequest, ownerStartsTurn, personWrittenLine, type OwnerFacts, type TurnStart } from "./shared-notes-owner.ts";
+import { cardProofId, ownerContinuesTurn, ownerLine, ownerProofIds, ownerRequest, ownerStartsTurn, type OwnerFacts, type TurnStart } from "./shared-notes-owner.ts";
 import { OwnerThreads } from "./shared-notes-threads.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled, type UpkeepEngine } from "./memory-upkeep.ts";
@@ -799,14 +799,7 @@ const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json")
 // Which conversations are provably the owner's alone, and which hold a
 // recalled shared note in their engine session (server/shared-notes-threads.ts).
 const ownerThreads = new OwnerThreads(join(DATA_DIR, "shared-notes-threads.json"), (line) => console.warn(line));
-/** Messages waiting in the queue that the owner's own request sent, by queue
- * id, until they are written to their conversation. In memory only: after a
- * restart nothing vouches for a waiting line, so it is not the owner's. */
-const ownerQueued = new Set<string>();
-function noteOwnerQueued(queueId: string): void {
-  ownerQueued.add(queueId);
-  while (ownerQueued.size > 5_000) ownerQueued.delete(ownerQueued.values().next().value!);
-}
+
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
 const HOSTED_WORKSPACE = hostedWorkspaceConfigured();
@@ -1361,6 +1354,14 @@ function cloudCardRefusal(auth: RequestAuth & { kind: "session" }): string | nul
  * - otherwise (one person; or a routine, webhook, Slack, owner-sent or older
  *   thread that names nobody): anyone who may chat, as before. */
 function cardAnswerRefusal(auth: RequestAuth, threadId: string, requestId: string, behavior: string): string | null {
+  // A conversation whose engine session holds a recalled shared note takes
+  // an answer from the owner's own request only: an answer's words (and a
+  // refusal's reason) go straight to the turn that asked, which has the note
+  // in front of it (server/shared-notes-owner.ts). Refused before anything
+  // is passed on, whatever the answer says.
+  if (ownerThreads.recalled(threadId) && !ownerRequest(auth, notesOwnerFacts())) {
+    return "Only the owner of this installation can answer this card: its conversation holds notes that are the owner's alone.";
+  }
   if (auth.kind === "loopback") {
     return auth.trust === "service" && behavior !== "deny"
       ? "A local service can only decline this request. Approve or answer it in OpenMausBot while signed in."
@@ -1450,6 +1451,11 @@ async function answeringCardAs(auth: RequestAuth, threadId: string, requestId: s
     const card = message?.card;
     if (message && card && !card.answeredBy && card.answered !== "unavailable" && (card.answered || card.dismissed)) {
       store.patchMessage(threadId, message.id, { card: { ...card, answeredBy: { ...cardAnswererFor(auth), ...(via ? { via } : {}) } } });
+      // An answered card counts like a line for whose the conversation is:
+      // it is the owner's when the owner's own request answered it, recorded
+      // now, and an answer nobody vouched for ends the conversation's
+      // standing as the owner's alone (notesOwnerOnlyThread).
+      if (ownerRequest(auth, notesOwnerFacts())) ownerThreads.prove(threadId, cardProofId(requestId));
     }
     if (CLOUD_HOME && open) cloudCardAnswersInFlight.delete(requestId);
   }
@@ -1609,11 +1615,12 @@ function ownerStartedTurn(threadId: string, generation: string | undefined): boo
 /** Whether every line a person wrote in this conversation is the owner's.
  * On a Cloud home every line carries its writer's key, and that key
  * decides. Elsewhere a line at the computer carries nothing, so the record
- * of which lines the owner's own requests wrote decides
- * (server/shared-notes-threads.ts): a line nobody vouched for is not theirs. */
+ * of which lines the owner's own requests wrote, and which cards they
+ * answered, decides (server/shared-notes-threads.ts): a line or an answer
+ * nobody vouched for is not theirs. */
 function notesOwnerOnlyThread(threadId: string): boolean {
   if (CLOUD_HOME) return cloudOwnerOnlyThread(threadId);
-  return ownerThreads.ownerOnly(threadId, store.messagesFor(threadId).filter(personWrittenLine).map((message) => message.id));
+  return ownerThreads.ownerOnly(threadId, ownerProofIds(store.messagesFor(threadId)));
 }
 
 /** The automatic-recall block for a turn (server/recall.ts), or "". Notes
@@ -9271,7 +9278,7 @@ bus.subscribe((event: RuntimeEvent) => {
 
 function drainQueuedSends() {
   if (!followupsReady) return;
-  drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
+  drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head, ownerLines) =>
     // A plain attended turn — no automationSource, no comms depth: exactly
     // what typing the same words into an idle bot would run. Self-opened
     // work retains `unattended` and the message's bot-origin provenance
@@ -9282,12 +9289,10 @@ function drainQueuedSends() {
     new Promise<void>((resolve, reject) => {
       // The lines just written are the owner's only where the owner's own
       // request queued them, and the turn only when every one of them is.
-      const written = new Set(excludeIds);
-      const lines = store.messagesFor(threadId).filter((message) => written.has(message.id));
-      const byOwner = lines.length > 0 && lines.every((message) => message.queueId !== undefined && ownerQueued.has(message.queueId));
-      for (const message of lines) {
-        if (message.queueId !== undefined && ownerQueued.delete(message.queueId)) ownerThreads.prove(threadId, message.id);
-      }
+      // (The proof was taken when each message was queued and is kept with
+      // its durable row, so it is still there after a restart: steer-queue.ts.)
+      const byOwner = excludeIds.length > 0 && ownerLines.length === excludeIds.length;
+      for (const id of ownerLines) ownerThreads.prove(threadId, id);
       // The drained turn is booked to whoever sent the first waiting line.
       void startTurn(botId, prompt, {
         threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve,
@@ -9386,8 +9391,8 @@ async function startOrQueueDirectMessage(botId: string, threadId: string, text: 
       sender,
       trigger,
       via,
+      byOwner,
     });
-    if (byOwner) noteOwnerQueued(queued.id);
     return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: decision.reason };
   }
   const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger, via, dataContext, byOwner });
@@ -9583,8 +9588,8 @@ async function acceptDirectSend(
           sender,
           trigger,
           via,
+          byOwner,
         });
-        if (byOwner) noteOwnerQueued(queued.id);
         return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
       }
       return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via, dataContext, byOwner);
@@ -16325,7 +16330,7 @@ const workspaceBackupAccess = {
     pause: () => { routines?.stop(); calendarCalls?.stop(); watchdog.stop(); memoryUpkeep.pause(); contextImport.hold(); },
     resume: () => { routines?.start(); calendarCalls?.start(); watchdog.start(); memoryUpkeep.resume(); contextImport.release(); },
     flush: async () => {
-      await Promise.all([flushAllProfileHistory(), flushAllMemoryJournals(), flushUsageLedger(DATA_DIR), flushDecisionLog(DATA_DIR), flushAdminActivity(DATA_DIR)]);
+      await Promise.all([flushAllProfileHistory(), flushAllMemoryJournals(), ownerThreads.flush(), flushUsageLedger(DATA_DIR), flushDecisionLog(DATA_DIR), flushAdminActivity(DATA_DIR)]);
       // With writers gated and work idle, release our WAL connection for the
       // consistent snapshot. Store reopens it lazily after maintenance.
       await closeMessageSearch();
@@ -23140,7 +23145,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       // Words that are not proven the owner's never join a turn whose session
       // holds a recalled shared note: they keep waiting for a turn of their own.
-      if (ownerThreads.recalled(bot.threadId) && !held.items.every((item) => ownerQueued.has(item.messageId))) {
+      if (ownerThreads.recalled(bot.threadId) && !held.items.every((item) => item.byOwner === true)) {
         restoreHeldSteeredQueue(held);
         return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
       }
@@ -23181,7 +23186,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           ...(item.via ? { via: item.via } : {}),
         }));
         // each line is the owner's where the owner's own request queued it
-        messages.forEach((message, index) => { if (ownerQueued.delete(held.items[index]!.messageId)) ownerThreads.prove(bot.threadId, message.id); });
+        messages.forEach((message, index) => { if (held.items[index]!.byOwner === true && !held.items[index]!.peerAsk) ownerThreads.prove(bot.threadId, message.id); });
         // Offered to the next turn again unless the person stops this one.
         for (const message of messages) handoffs.steered(bot.threadId, steerTarget, instance?.instanceId, message.id);
         const queueIds = held.items.map((item) => item.messageId);
@@ -26126,7 +26131,8 @@ for (const row of chatFollowups()) {
   if (!owned) { settleChatFollowups([row.id], "cancelled"); continue; }
   settleChatFollowups([row.id], "interrupted");
   const messages = store.messagesFor(row.threadId);
-  const recovered = messages.find((message) => message.queueId === row.id && message.role === "user") ?? store.appendMessage(row.threadId, {
+  const alreadyWritten = messages.find((message) => message.queueId === row.id && message.role === "user");
+  const recovered = alreadyWritten ?? store.appendMessage(row.threadId, {
     // Aside rows recover enveloped: the words may already have run mid-turn,
     // and the recovered line must keep saying whose context it was.
     role: "user", kind: "text", text: row.kind === "aside" ? row.payload.prompt ?? row.payload.text : row.payload.text, replyToId: row.payload.replyToId,
@@ -26140,6 +26146,9 @@ for (const row of chatFollowups()) {
         : undefined,
     } : {}),
   });
+  // The line is written now, for the first time: it is the owner's when the
+  // owner's own request queued its words, which the durable row still says.
+  if (!alreadyWritten && row.kind === "bot" && row.payload.byOwner === true && !row.payload.peerAsk) ownerThreads.prove(row.threadId, recovered.id);
   // Nor as a message a resumed session has not seen: count it as handed.
   const recoveredTask = row.kind !== "channel" ? store.taskByThread(row.ownerId, row.threadId) : undefined;
   const order = store.activePath(row.threadId).filter(isContextMessage).map((m) => m.id);
@@ -26257,6 +26266,8 @@ const gracefulShutdown = createGracefulShutdown({
     () => liveCalls.shutdown(),
     () => flushAllProfileHistory(),
     () => flushAllMemoryJournals(),
+    // which lines the owner's own requests wrote (server/shared-notes-threads.ts)
+    () => ownerThreads.flush(),
     () => flushUsageLedger(DATA_DIR),
     () => flushDecisionLog(DATA_DIR),
     () => flushAdminActivity(DATA_DIR),

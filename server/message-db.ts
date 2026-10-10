@@ -243,6 +243,11 @@ export interface FollowupPayload {
   /** Who the usage ledger books the turn these words start to. Absent on
    * rows written before this existed. */
   trigger?: UsageTrigger;
+  /** The request that queued these words was proven the installation
+   * owner's (server/shared-notes-owner.ts). Kept with the row so a restart
+   * does not lose it. Absent, on rows written before this existed and on
+   * everyone else's, means not proven. */
+  byOwner?: boolean;
   /** When the words were queued (epoch ms), so drain-time coalescing can
    * tell a contiguous burst from hours-apart texts. Rows written before
    * this existed read as queued at restore time. */

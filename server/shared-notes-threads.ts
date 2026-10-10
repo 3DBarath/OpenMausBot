@@ -23,10 +23,24 @@
 //
 // $OMB_DATA_DIR/shared-notes-threads.json, owner-only. A missing or damaged
 // file means nothing is proven: it never grants anything by being absent.
-import { createHash } from "node:crypto";
+//
+// Every message the owner sends records a proof, on every installation,
+// whether or not it has any shared note. So a proof costs nothing on the
+// request: it is kept in memory at once and the file is written a moment
+// later, off the request path, many proofs to one write, and once more when
+// the server shuts down (`flush`). A crash can lose the last moments of
+// proof, and all that costs is that those conversations recall nothing. The
+// one thing written at once is the `recalled` mark: losing that would let a
+// session that holds a note be handed on, and it is set once per
+// conversation, only where a note was actually recalled.
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { rename, rm, writeFile } from "node:fs/promises";
 
 import { writeFileAtomic } from "./atomic.ts";
+
+/** How long proofs are gathered before the file is written. */
+const WRITE_DELAY_MS = 250;
 
 const THREAD = /^[\w-]{1,128}$/;
 const SUM = /^[0-9a-f]{32}$/;
@@ -53,6 +67,11 @@ export class OwnerThreads {
   private readonly threads = new Map<string, ThreadRecord>();
   private readonly file: string;
   private readonly log: (line: string) => void;
+  /** Goes up with every change; what is on disk is as of `written`. */
+  private version = 0;
+  private written = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private writing: Promise<void> | null = null;
 
   constructor(file: string, log: (line: string) => void = () => undefined) {
     this.file = file;
@@ -84,17 +103,81 @@ export class OwnerThreads {
     return record;
   }
 
-  /** Write the record. False when it could not be saved: the caller then
-   * acts as if the fact it wanted to record were not known. */
-  private save(): boolean {
+  private text(): string {
+    const threads = Object.fromEntries([...this.threads].map(([threadId, record]) => [threadId, [record.lines, record.sum.toString("hex"), record.recalled ? 1 : 0]]));
+    return `${JSON.stringify({ version: 1, threads })}\n`;
+  }
+
+  /** Something changed: write the file soon, once for everything that changes meanwhile. */
+  private changed(): void {
+    this.version += 1;
+    this.arm();
+  }
+
+  private arm(): void {
+    if (this.timer || this.writing) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.writeLater();
+    }, WRITE_DELAY_MS);
+    this.timer.unref?.();
+  }
+
+  /** Write the file without holding the server up. Never rejects. */
+  private writeLater(): Promise<void> {
+    if (this.writing) return this.writing;
+    const version = this.version;
+    const text = this.text();
+    const scratch = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    let wrote = false;
+    const work = (async () => {
+      try {
+        await writeFile(scratch, text, { mode: 0o600 });
+        // a write made at once meanwhile (noteRecalled, flush) is newer than this one: leave it
+        if (this.written >= version) await rm(scratch, { force: true });
+        else {
+          await rename(scratch, this.file);
+          this.written = Math.max(this.written, version);
+        }
+        wrote = true;
+      } catch (error) {
+        this.log(`shared notes: could not save which conversations are the owner's: ${(error as Error).message}`);
+        await rm(scratch, { force: true }).catch(() => undefined);
+      }
+    })().finally(() => {
+      this.writing = null;
+      // Changed again while this was being written: once more. A write that
+      // failed is tried again with the next change, never in a loop.
+      if (wrote && this.version > this.written) this.arm();
+    });
+    this.writing = work;
+    return work;
+  }
+
+  /** Write the record now, on the calling request. False when it could not
+   * be saved: the caller then acts as if the fact it wanted to record were
+   * not known. */
+  private saveNow(): boolean {
+    const version = this.version;
     try {
-      const threads = Object.fromEntries([...this.threads].map(([threadId, record]) => [threadId, [record.lines, record.sum.toString("hex"), record.recalled ? 1 : 0]]));
-      writeFileAtomic(this.file, `${JSON.stringify({ version: 1, threads })}\n`, { mode: 0o600 });
+      writeFileAtomic(this.file, this.text(), { mode: 0o600 });
+      this.written = version;
       return true;
     } catch (error) {
       this.log(`shared notes: could not save which conversations are the owner's: ${(error as Error).message}`);
       return false;
     }
+  }
+
+  /** Write whatever is pending and wait for it: the server is shutting down
+   * (or a test wants the file). Never rejects. */
+  async flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    await this.writing;
+    if (this.version > this.written) this.saveNow();
   }
 
   /** The owner's own request wrote this line. Call once per line, when it is written. */
@@ -103,8 +186,9 @@ export class OwnerThreads {
     if (!record) return;
     record.lines += 1;
     xor(record.sum, lineHash(threadId, messageId));
-    // unsaved, the proof lasts until a restart and the conversation is "not proven" after it
-    this.save();
+    // In memory now, on disk in a moment: unsaved, the proof lasts until a
+    // restart and the conversation is "not proven" after it.
+    this.changed();
   }
 
   /** Whether every one of these lines, the lines people wrote in the
@@ -127,8 +211,11 @@ export class OwnerThreads {
     if (!record) return false;
     if (record.recalled) return true;
     record.recalled = true;
-    if (this.save()) return true;
+    this.version += 1;
+    // at once, and before the note is sent: this is the one fact that must not be lost
+    if (this.saveNow()) return true;
     record.recalled = false;
+    this.version += 1;
     return false;
   }
 
@@ -143,6 +230,6 @@ export class OwnerThreads {
     if (!record?.recalled) return;
     record.recalled = false;
     // unsaved, the mark comes back after a restart and one more session is dropped: the safe side
-    this.save();
+    this.changed();
   }
 }

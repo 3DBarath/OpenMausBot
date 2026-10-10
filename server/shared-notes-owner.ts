@@ -49,6 +49,14 @@
 // Words steered into a turn that is already running start no turn; the line
 // is proven or not like any other (3), and a line that is not is never
 // steered into a turn whose session holds a recalled note.
+//
+// An answer to a card (an approval, a refusal with a reason, the answer to a
+// question) starts no turn either, and its words reach the turn that asked.
+// So a card of a conversation whose session holds a recalled note takes an
+// answer from the owner's own request only (`cardAnswerRefusal` in
+// server/index.ts refuses everyone else before anything is passed on), and
+// an answered card counts for (3) like a line: a conversation with a card
+// that someone not proven the owner answered is not the owner's alone.
 
 export interface OwnerFacts {
   /** A hosted installation: its admins come from a portal, and none of them is "the" owner. */
@@ -124,4 +132,27 @@ export function ownerContinuesTurn(previous: { messageId?: string; ownerProven?:
  * line count: someone wrote them, and nothing proves it was the owner. */
 export function personWrittenLine(line: { role?: string; peerAsk?: unknown }): boolean {
   return line.role === "user" && !line.peerAsk;
+}
+
+/** A card a person answered, for "is everything here the owner's": a
+ * request card that records who answered it. The harness's own settlements
+ * (an automatic approval, a turn that ended) record nobody. */
+export function personAnsweredCard(line: { card?: { requestId?: string; answeredBy?: unknown } }): boolean {
+  return Boolean(line.card?.requestId && line.card.answeredBy);
+}
+
+/** The name an answered card is proven under (a line is proven under its own id). */
+export function cardProofId(requestId: string): string {
+  return `card:${requestId}`;
+}
+
+/** Everything in a conversation that must be proven the owner's for it to be
+ * theirs alone: every line a person wrote, and every card a person answered. */
+export function ownerProofIds(thread: ReadonlyArray<{ id: string; role?: string; peerAsk?: unknown; card?: { requestId?: string; answeredBy?: unknown } }>): string[] {
+  const ids: string[] = [];
+  for (const line of thread) {
+    if (personWrittenLine(line)) ids.push(line.id);
+    if (personAnsweredCard(line)) ids.push(cardProofId(line.card!.requestId!));
+  }
+  return ids;
 }

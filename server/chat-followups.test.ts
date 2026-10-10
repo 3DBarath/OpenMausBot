@@ -61,6 +61,8 @@ describe("durable accepted follow-ups", () => {
       "bot", "thread", `Reply context\n${text}`, store.messages[0],
       ["message-0"], true,
       { trigger: { kind: "user", email: "ada@example.test", label: "Ada's laptop" }, sender: { name: "ada@example.test" }, peerAsk: undefined },
+      // none of the lines was queued by the installation owner's own request
+      [],
     ]);
     // the drained line records the Data context its words were sent about, outside the words
     expect(store.messages).toEqual([
@@ -76,6 +78,8 @@ describe("durable accepted follow-ups", () => {
       "bot", "thread", "then summarize", store.messages[1],
       ["message-1"], false,
       { trigger: undefined, sender: undefined, peerAsk: undefined },
+      // a line with no sender proves nothing about who queued it
+      [],
     ]);
     expect(store.messages).toEqual([
       expect.objectContaining({ text, replyToId: "reply", sendId: "first", queueId: first.id }),

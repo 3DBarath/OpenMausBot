@@ -2,7 +2,7 @@
 // and nobody else's, on every kind of installation.
 import { describe, expect, it } from "vitest";
 
-import { hasSingleOwner, ownerContinuesTurn, ownerLine, ownerRequest, ownerStartsTurn, personWrittenLine, type OwnerFacts } from "./shared-notes-owner.ts";
+import { cardProofId, hasSingleOwner, ownerContinuesTurn, ownerLine, ownerProofIds, ownerRequest, ownerStartsTurn, personAnsweredCard, personWrittenLine, type OwnerFacts } from "./shared-notes-owner.ts";
 
 const DESKTOP: OwnerFacts = { hosted: false, loopbackIsOwner: true, admins: [] };
 const FAMILY: OwnerFacts = { hosted: false, loopbackIsOwner: true, admins: ["owner@example.test"] };
@@ -136,5 +136,22 @@ describe("who started a turn", () => {
     expect(personWrittenLine({ role: "user" })).toBe(true);
     expect(personWrittenLine({ role: "user", peerAsk: { botId: "b2" } })).toBe(false);
     expect(personWrittenLine({ role: "bot" })).toBe(false);
+  });
+
+  it("counts every card a person answered, and none the harness settled", () => {
+    expect(personAnsweredCard({ card: { requestId: "r1", answeredBy: { kind: "session" } } })).toBe(true);
+    expect(personAnsweredCard({ card: { requestId: "r1", answeredBy: { kind: "loopback" } } })).toBe(true);
+    // open, or closed by the harness itself: nobody's words
+    expect(personAnsweredCard({ card: { requestId: "r1" } })).toBe(false);
+    expect(personAnsweredCard({ card: { answeredBy: { kind: "session" } } })).toBe(false);
+    expect(personAnsweredCard({})).toBe(false);
+    expect(ownerProofIds([
+      { id: "m1", role: "user" },
+      { id: "b1", role: "bot", card: { requestId: "r1", answeredBy: { kind: "session" } } },
+      { id: "m2", role: "user", peerAsk: { botId: "b2" } },
+      { id: "b2", role: "bot", card: { requestId: "r2" } },
+      { id: "m3", role: "user" },
+    ])).toEqual(["m1", cardProofId("r1"), "m3"]);
+    expect(cardProofId("r1")).not.toBe("r1");
   });
 });

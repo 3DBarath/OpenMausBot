@@ -2,7 +2,7 @@
 // owner's own request wrote are on record, a conversation with any other
 // line is "not proven", and nothing is ever proven by a file being absent,
 // damaged or unwritable.
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -42,7 +42,7 @@ describe("the owner's conversations", () => {
     expect(threads.ownerOnly("t1", ["m1", "m2"])).toBe(true);
   });
 
-  it("keeps the record across a restart, with no line id and no text in the file", () => {
+  it("keeps the record across a restart, with no line id and no text in the file", async () => {
     const before = new OwnerThreads(file);
     before.prove("thread-a", "message-one");
     before.prove("thread-a", "message-two");
@@ -54,6 +54,7 @@ describe("the owner's conversations", () => {
     expect(after.ownerOnly("thread-a", ["message-one", "message-two", "later"])).toBe(false);
     expect(after.recalled("thread-a")).toBe(true);
     after.sessionDropped("thread-a");
+    await after.flush();
     expect(new OwnerThreads(file).recalled("thread-a")).toBe(false);
   });
 
@@ -91,5 +92,40 @@ describe("the owner's conversations", () => {
     threads.prove("t1", "");
     expect(threads.ownerOnly("../etc", ["m1"])).toBe(false);
     expect(threads.noteRecalled("../etc")).toBe(false);
+  });
+
+  it("writes the record off the request path: many lines become one write, and a shutdown flushes it", async () => {
+    // an installation with 20,000 conversations on record
+    const threads: Record<string, [number, string, number]> = {};
+    for (let index = 0; index < 20_000; index += 1) threads[`thread-${index}`] = [3, "0123456789abcdef0123456789abcdef", 0];
+    writeFileSync(file, JSON.stringify({ version: 1, threads }));
+    const before = readFileSync(file, "utf8");
+    const record = new OwnerThreads(file);
+    const started = process.cpuUsage();
+    for (let index = 0; index < 300; index += 1) record.prove("busy-thread", `message-${index}`);
+    const spent = process.cpuUsage(started);
+    // nothing was written while the lines were being recorded, and recording them cost next to nothing
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect((spent.user + spent.system) / 1000).toBeLessThan(300);
+    // the proof holds at once, in memory
+    expect(record.ownerOnly("busy-thread", Array.from({ length: 300 }, (_, index) => `message-${index}`))).toBe(true);
+    // a shutdown writes what is pending
+    await record.flush();
+    const after = new OwnerThreads(file);
+    expect(after.ownerOnly("busy-thread", Array.from({ length: 300 }, (_, index) => `message-${index}`))).toBe(true);
+    // and without a shutdown it is written by itself a moment later
+    record.prove("later-thread", "m1");
+    await expect.poll(() => new OwnerThreads(file).ownerOnly("later-thread", ["m1"]), { timeout: 10_000, interval: 50 }).toBe(true);
+  });
+
+  it("writes the mark that a session holds a note at once, because losing it would hand the session on", () => {
+    const record = new OwnerThreads(file);
+    record.prove("t1", "m1");
+    expect(existsSync(file)).toBe(false);
+    expect(record.noteRecalled("t1")).toBe(true);
+    // on disk before the note is sent, with the proofs made so far
+    const saved = new OwnerThreads(file);
+    expect(saved.recalled("t1")).toBe(true);
+    expect(saved.ownerOnly("t1", ["m1"])).toBe(true);
   });
 });

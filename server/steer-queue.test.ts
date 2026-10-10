@@ -137,6 +137,34 @@ describe("steer-queue module", () => {
     expect(run.mock.calls[0][3].peerAsk).toEqual(peerAsk);
   });
 
+  it("keeps the owner's proof with a queued message across a restart, per message, and never makes one", () => {
+    const bot = fakeBot("bot-owner-proof", "thread-owner-proof", true);
+    const store = fakeStore([bot]);
+    const run = vi.fn();
+    // two messages the owner's own request queued, and one nobody vouched for
+    queueSteeredMessage(bot.id, bot.threadId, "first of mine", { byOwner: true });
+    queueSteeredMessage(bot.id, bot.threadId, "second of mine", { byOwner: true });
+    const theirs = queueSteeredMessage(bot.id, bot.threadId, "someone else's", { byOwner: false });
+    restoreSteeredMessages(); // a restart reads the proof back from the durable row
+    const held = holdSteeredQueue(bot.id, bot.threadId, theirs.id);
+    expect(held?.items.map((item) => item.byOwner === true)).toEqual([true, true, false]);
+    restoreHeldSteeredQueue(held!);
+    bot.busy = false;
+    drainSteeredMessages(store, run);
+    // one turn for the three local lines; the lines that are the owner's are named, by the id each was written under
+    expect(store.messages.map((message) => message.text)).toEqual(["first of mine", "second of mine", "someone else's"]);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][7]).toEqual([store.messages[0].id, store.messages[1].id]);
+    // a row from before the proof was kept says nothing, which is not proof
+    const older = fakeBot("bot-owner-proof-old", "thread-owner-proof-old", false);
+    const olderStore = fakeStore([older]);
+    saveChatFollowup({ id: "old-row-no-proof", kind: "bot", ownerId: older.id, threadId: older.threadId, payload: { text: "queued before" } });
+    restoreSteeredMessages();
+    const later = vi.fn();
+    drainSteeredMessages(olderStore, later);
+    expect(later.mock.calls.find((call) => call[1] === older.threadId)?.[7]).toEqual([]);
+  });
+
   it("keeps who sent each queued message, so a steer of the held queue can still name them", () => {
     const botId = "bot-sender-held";
     const threadId = "thread-sender-held";

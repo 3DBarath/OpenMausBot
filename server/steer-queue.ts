@@ -62,6 +62,11 @@ interface QueueEntry {
     /** The words were spoken in a Live call, not typed: the drained line
      * says so, like an immediate send would. */
     via?: "call";
+    /** The request that queued the words was proven the installation
+     * owner's (server/shared-notes-owner.ts). A queue is a delay, not a
+     * change of author, and the durable row keeps this across a restart.
+     * Absent means not proven. */
+    byOwner?: boolean;
   }>;
 }
 
@@ -130,7 +135,7 @@ export function queueSteeredMessage(
   botId: string,
   threadId: string,
   text: string,
-  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; sender?: ResolvedSender; trigger?: UsageTrigger; via?: "call" } = {},
+  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; sender?: ResolvedSender; trigger?: UsageTrigger; via?: "call"; byOwner?: boolean } = {},
 ): QueuedSteer {
   const id = newId();
   const entry = queues.get(threadId) ?? { botId, items: [] };
@@ -151,6 +156,8 @@ export function queueSteeredMessage(
     trigger: options.trigger,
     queuedAt: Date.now(),
     via: options.via,
+    // only ever a yes; a bot's own queued words are never the owner's
+    ...(options.byOwner === true && !options.peerAsk ? { byOwner: true } : {}),
   };
   saveChatFollowup({ id, kind: "bot", ownerId: botId, threadId, payload: item });
   entry.items.push(item);
@@ -209,6 +216,9 @@ export function drainSteeredMessages(
     excludeIds: string[],
     unattended: boolean,
     head: SteerQueueHead,
+    /** The ids of the lines just written whose queued words the owner's own
+     * request sent (the item's `byOwner`). */
+    ownerLines: string[],
   ) => void | Promise<void>,
   isBlocked?: (botId: string, threadId: string) => boolean,
 ): void {
@@ -235,6 +245,7 @@ export function drainSteeredMessages(
     else queues.delete(threadId);
     changed();
     const appended: Message[] = [];
+    const ownerLines: string[] = [];
     for (const item of group) {
       // queueId is the pending-chip identity from the 202; append still
       // assigns a fresh transcript id so replay/exclude keep using message.id.
@@ -252,6 +263,7 @@ export function drainSteeredMessages(
           ...(item.via ? { via: item.via } : {}),
         }),
       );
+      if (item.byOwner === true && !item.peerAsk) ownerLines.push(appended.at(-1)!.id);
     }
     const last = appended.at(-1);
     if (!last) continue;
@@ -271,6 +283,7 @@ export function drainSteeredMessages(
       group.some((item) => item.unattended === true),
       // the first waiting line is the one that starts this turn
       { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk },
+      ownerLines,
     );
     void Promise.resolve(running).then(
       () => settleChatFollowups(ids, null),
