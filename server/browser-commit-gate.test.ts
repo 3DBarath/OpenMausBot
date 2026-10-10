@@ -11,7 +11,7 @@ import { removeTempDir } from "./testing/cleanup.ts";
 
 import type { OutboundPolicy } from "../shared/outbound.ts";
 import type { OptionCardData } from "../shared/wire.ts";
-import type { PageTarget } from "./browser-commit-page.ts";
+import type { PageBlind, PageTarget } from "./browser-commit-page.ts";
 import type { DecisionRow } from "./decision-log.ts";
 
 const scratch: string[] = [];
@@ -43,12 +43,14 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
   const rows: Array<Omit<DecisionRow, "at">> = [];
   const refs = new Map<string, BrowserRef>();
   const state = {
-    target: SEND as PageTarget | "missing" | "hidden" | "unreadable",
+    target: SEND as PageTarget | PageBlind,
     url: "https://mail.example.com/compose?draft=1#body" as string | null,
     policy: options.policy as OutboundPolicy | undefined,
     active: true,
     reads: [] as Array<{ selector: string | null; enter: boolean }>,
     dispatched: [] as unknown[],
+    /** What the engine answers, when not the usual result. */
+    result: undefined as unknown,
     dropped: [] as string[],
     resumed: 0,
   };
@@ -76,7 +78,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     admit: () => {},
     active: () => state.active,
     signal: abort.signal,
-    dispatch: async () => { state.dispatched.push(params); return CLICKED; },
+    dispatch: async (sent) => { state.dispatched.push(sent); return state.result ?? CLICKED; },
     ...extra,
   });
   /** The newest open card, once it is in the thread. */
@@ -488,13 +490,45 @@ describe("what the page read cannot see", () => {
     f.refs.set("e27", { role: "button", name: "Pay" });
     f.refs.set("e28", { role: "textbox", name: "Message" });
     await expect(f.call(click("@e28"))).resolves.toBe(CLICKED);
-    await expect(f.call(click("@e31"))).resolves.toBe(CLICKED);
-    await expect(f.call(click("#pay-in-frame"))).resolves.toBe(CLICKED);
     expect(f.cards.size).toBe(0);
     const held = f.call(click("@e27"));
     expect(await f.pending()).toMatchObject({ title: "Spend money?", subtitle: "mail.example.com · Pay", browserCommit: { class: "money", label: "Pay", fields: [] } });
     await f.answer("deny");
     await held;
+  });
+
+  // The engine found something there. With no description and no name for
+  // it, nothing says the click is harmless.
+  it.each(["@e31", "#pay-in-frame"])("clicks nothing at %s when the read cannot describe it and the snapshot never named it", async (selector) => {
+    const f = fixture();
+    f.state.target = "hidden";
+    f.refs.set("e27", { role: "button", name: "Pay" });
+    const result = await f.call(click(selector)) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/could not check what this would act on/);
+    expect(text(result)).toMatch(/@ref from a new snapshot/);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("refuses text typed with a line break into an element it cannot describe", async () => {
+    const f = fixture();
+    f.state.target = "hidden";
+    f.refs.set("e28", { role: "textbox", name: "Message" });
+    const result = await f.call({ name: "agent_browser_type", arguments: { selector: "@e28", text: "On my way\n" } }) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("refuses a selector the read will not hand to the engine, and says what to use instead", async () => {
+    const f = fixture();
+    f.state.target = "unusable";
+    const result = await f.call(click(`#send${",#nope".repeat(400)}`)) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/@ref from a snapshot, or a shorter selector/);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
   });
 
   it("holds when the snapshot names a commitment the page's own text does not", async () => {
@@ -515,6 +549,228 @@ describe("what the page read cannot see", () => {
     expect((await f.pending()).subtitle).toBe("this page · unlabelled button");
     await f.answer("deny");
     await held;
+  });
+});
+
+describe("the calls that are judged", () => {
+  // The engine's check and uncheck make a real click on any element, a Send
+  // button included (agent-browser 0.37.0).
+  it.each(["agent_browser_check", "agent_browser_uncheck", "agent_browser_select"])("judges %s like a click", async (name) => {
+    const f = fixture();
+    const params = { name, arguments: { selector: "@e4", ...(name === "agent_browser_select" ? { values: ["now"] } : {}) } };
+    const held = f.call(params);
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", tool: name, outboundRequest: { tool: name } });
+    expect(f.state.reads).toEqual([{ selector: "@e4", enter: false }]);
+    await f.answer("allow");
+    await expect(held).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toEqual([params]);
+    f.state.target = element({ label: "Remember me", role: "checkbox" });
+    await expect(f.call(params)).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(1);
+  });
+
+  it("holds when any element in the box is a commitment, and shows the most serious one", async () => {
+    const f = fixture();
+    f.state.target = { ...element({ label: "Cancel" }), also: [element({ label: "Next" }), SEND, PAY] };
+    const held = f.call(click("#cell"));
+    expect(await f.pending()).toMatchObject({
+      title: "Spend money?", subtitle: "mail.example.com · Continue\nCard number: 16 characters, not shown", browserCommit: { class: "money", label: "Continue" },
+    });
+    await f.answer("deny");
+    await held;
+    f.state.target = { ...element({ label: "Cancel" }), also: [SEND] };
+    const sending = f.call(click("#cell"));
+    expect((await f.pending()).browserCommit).toMatchObject({ class: "send", label: "Send" });
+    await f.answer("deny");
+    await sending;
+    f.state.target = { ...element({ label: "Cancel" }), also: [element({ label: "Next" })] };
+    await expect(f.call(click("#cell"))).resolves.toBe(CLICKED);
+  });
+
+  it("voids an approval when another element joins the box", async () => {
+    const f = fixture();
+    const held = f.call(click("#cell"));
+    const first = await f.pending();
+    f.state.target = { ...SEND, also: [PAY] };
+    await f.answer("allow");
+    const second = await f.pending();
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(second.title).toBe("Spend money?");
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  // The engine trims a selector; "@e4 " is ref e4 to it (agent-browser 0.37.0).
+  it.each(["@e4 ", " @e4", "@e4\n", "\t@e4\u00a0", "@e4\u0085", "\ufeffref=e4"])("reads %j as the ref it is, and sends on what it read", async (selector) => {
+    const f = fixture();
+    f.state.target = "hidden";
+    f.refs.set("e4", { role: "button", name: "Pay" });
+    const held = f.call(click(selector));
+    expect((await f.pending()).browserCommit).toMatchObject({ class: "money", label: "Pay" });
+    const tidy = selector.includes("ref=") ? "ref=e4" : "@e4";
+    expect(f.state.reads).toEqual([{ selector: tidy, enter: false }]);
+    await f.answer("allow");
+    await held;
+    expect(f.state.dispatched).toEqual([click(tidy)]);
+  });
+
+  it("sends a call it did not have to tidy exactly as the bot wrote it", async () => {
+    const f = fixture();
+    f.state.target = element();
+    const params = { name: "agent_browser_click", arguments: { selector: "#details", newTab: false } };
+    await f.call(params);
+    expect(f.state.dispatched[0]).toBe(params);
+  });
+
+  // agent_browser_type presses Tab for "\t" too: the focus moves, and the
+  // Enter that follows lands on whatever is next (measured: a Log in button).
+  it("refuses text typed with a tab before a line break, whatever the field is", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Log in", box: "single", submits: true });
+    const result = await f.call({ name: "agent_browser_type", arguments: { selector: "#user", text: "ada\t\n" } }) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+    await expect(f.call({ name: "agent_browser_type", arguments: { selector: "#user", text: "ada\tlovelace" } })).resolves.toBe(CLICKED);
+  });
+});
+
+describe("reload after a commitment", () => {
+  const reload = { name: "agent_browser_reload", arguments: {} };
+  const open = (url: string) => ({ name: "agent_browser_open", arguments: { url } });
+  const sent = async (f: ReturnType<typeof fixture>) => {
+    const held = f.call(click());
+    await f.pending();
+    await f.answer("allow");
+    await held;
+  };
+
+  it("passes a reload when nothing was sent from this browser", async () => {
+    const f = fixture();
+    await expect(f.call(reload)).resolves.toBe(CLICKED);
+    expect(f.state.reads).toEqual([]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  // Reloading the page a form posted to posts it again (agent-browser 0.37.0).
+  it("holds a reload after an approved commitment, with that commitment's class and what it sent", async () => {
+    const f = fixture();
+    f.state.target = PAY;
+    f.state.url = "https://shop.example.com/checkout";
+    await sent(f);
+    f.state.url = "https://shop.example.com/receipt";
+    const held = f.call(reload);
+    const card = await f.pending();
+    expect(card).toMatchObject({
+      title: "Spend money?", tool: "agent_browser_reload",
+      subtitle: "shop.example.com · Reload, which can repeat “Continue”\nCard number: 16 characters, not shown",
+      browserCommit: { class: "money", host: "shop.example.com", label: "Reload, which can repeat “Continue”" },
+    });
+    expect(card.browserCommit).not.toHaveProperty("shot");
+    await f.answer("deny");
+    expect(text(await held)).toMatch(/the user declined/);
+    expect(f.state.dispatched).toEqual([click()]);
+    // Still held the next time, and Allow reloads.
+    const again = f.call(reload);
+    await f.pending();
+    await f.answer("allow");
+    await expect(again).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toEqual([click(), reload]);
+  });
+
+  it("holds it after a send the daily allowance let through, and spends from the allowance for the reload too", async () => {
+    const f = fixture({ policy: { policy: "allow", dailyCap: 2 } });
+    await expect(f.call(click())).resolves.toBe(CLICKED);
+    await expect(f.call(reload)).resolves.toBe(CLICKED);
+    expect(f.counts.today("bot-1")).toBe(2);
+    const held = f.call(reload);
+    expect((await f.pending()).title).toBe("Send on your behalf?");
+    await f.answer("deny");
+    await held;
+    expect(f.rows.map((row) => row.rule)).toEqual([
+      "browser-commit:send:daily-allowance:1/2", "browser-commit:send:daily-allowance:2/2", "browser-commit:send",
+    ]);
+  });
+
+  it("stops holding once the bot has opened another address", async () => {
+    const f = fixture();
+    await sent(f);
+    await expect(f.call(open("https://mail.example.com/inbox"))).resolves.toBe(CLICKED);
+    await expect(f.call(reload)).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(1);
+  });
+
+  it.each([
+    ["the same address", "https://mail.example.com/compose?draft=1"],
+    ["the same address with another fragment", "https://mail.example.com/compose?draft=1#sent"],
+    ["nothing it can read as an address", "::not a url::"],
+  ])("goes on holding after an open to %s", async (_what, url) => {
+    const f = fixture();
+    await sent(f);
+    await f.call(open(url));
+    const held = f.call(reload);
+    await f.pending();
+    await f.answer("deny");
+    await held;
+  });
+
+  it("goes on holding when the open failed, or the address could not be read", async () => {
+    const f = fixture();
+    await sent(f);
+    f.state.result = { isError: true, content: [{ type: "text", text: "net::ERR_NAME_NOT_RESOLVED" }] };
+    await f.call(open("https://nowhere.example/"));
+    f.state.result = undefined;
+    f.state.url = null;
+    await f.call(open("https://mail.example.com/inbox"));
+    const held = f.call(reload);
+    await f.pending();
+    await f.answer("deny");
+    await held;
+  });
+
+  // Back returns to the page the form posted to, and a reload there posts again.
+  it.each(["agent_browser_back", "agent_browser_forward", "agent_browser_tab_switch", "agent_browser_tab_close"])("holds again after %s", async (name) => {
+    const f = fixture();
+    await sent(f);
+    await f.call(open("https://mail.example.com/inbox"));
+    await f.call({ name, arguments: {} });
+    const held = f.call(reload);
+    await f.pending();
+    await f.answer("deny");
+    await held;
+  });
+
+  it.each(["agent_browser_close", "restart_browser"])("forgets the commitment when the browser is closed with %s", async (name) => {
+    const f = fixture();
+    await sent(f);
+    await f.call({ name, arguments: {} });
+    await expect(f.call(reload)).resolves.toBe(CLICKED);
+  });
+
+  it("keeps money as the class when a send follows a payment", async () => {
+    const f = fixture();
+    f.state.target = PAY;
+    await sent(f);
+    f.state.target = SEND;
+    await sent(f);
+    const held = f.call(reload);
+    expect(await f.pending()).toMatchObject({ title: "Spend money?", browserCommit: { label: "Reload, which can repeat “Send”" } });
+    await f.answer("deny");
+    await held;
+  });
+
+  it("voids the approval when the address changed while the reload waited", async () => {
+    const f = fixture();
+    await sent(f);
+    const held = f.call(reload);
+    const first = await f.pending();
+    f.state.url = "https://mail.example.com/elsewhere";
+    await f.answer("allow");
+    expect((await f.pending()).requestId).not.toBe(first.requestId);
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([click()]);
   });
 });
 

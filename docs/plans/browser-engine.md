@@ -127,14 +127,19 @@ recording controls are intentionally not added to the live browser chrome.
   tool result for that session starts with one line telling it to re-read
   the page. A restart clears it.
 - `server/browser-commit-gate.ts` sits in the browser MCP route ahead of
-  `BrowserRuntime.agentRpc`. For a click, an Enter press, or text typed with
-  a line break, the server reads the target itself
-  (`server/browser-commit-page.ts`): `get box` for the bot's selector, then
-  one fixed script that describes the element in that box and its form, then
-  `get url`. Rules in `shared/browser-commit.ts` decide. A commitment waits
-  on the card and counter that connected-app sends use; the approval is
-  bound to a digest of address, target and fields. User-facing behaviour is
-  in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
+  `BrowserRuntime.agentRpc`. For a click, a check, an uncheck, a select, an
+  Enter press, or text typed with a line break, the server reads the target
+  itself (`server/browser-commit-page.ts`): `get box` for the bot's
+  selector, then one fixed script that describes the element in that box
+  and its form, then `get url`. Rules in `shared/browser-commit.ts` decide.
+  A commitment waits on the card and counter that connected-app sends use;
+  the approval is bound to a digest of address, target and fields. A reload
+  after a commitment is held the same way. The gate's header comment lists
+  every browser tool and why it can or cannot commit. User-facing behaviour
+  is in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
+- The page script reads elements through the accessors on their prototype
+  chain, because a form control named `tagName` or `elements` shadows the
+  form's own property of that name.
 - The proxy's per-call limit for the browser is the hold window plus a
   margin, capped by `mcp.callTimeoutMinutes` (`OMB_MCP_CALL_TIMEOUT_MS`).
 - Not verified on Windows: the gate's reads use `get box`, `get url` and

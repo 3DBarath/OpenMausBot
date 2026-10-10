@@ -10,6 +10,36 @@
 // The approval is for what the person was shown. It is bound to a digest of
 // the address, the target and the form's fields; if any of them changed by
 // the time the answer arrives, the approval is void and a new card is raised.
+//
+// When the gate cannot tell what a call would act on, it refuses or asks. It
+// never sends.
+//
+// Every tool the bot has (server/browser-tool-shape.test.ts has the list),
+// and why it can or cannot commit. Each row was run against agent-browser
+// 0.37.0 on a local page.
+//
+// | Tool | What it does to a page | Here |
+// |---|---|---|
+// | click | A real click at the centre of the element's box. | Judged. |
+// | check, uncheck | The same real click, on any element: a Send button too. | Judged as a click. |
+// | select | Sets the value and fires `change`. No click. Commits when the page submits on change. | Judged as a click on the element, and as its form's submit when an inline handler submits. |
+// | press | A real key press at the focus. Enter in any part of a chord submits or sends. | Enter is judged, in any position. Limit: Space on a focused button clicks it and is not judged. F5 and Ctrl+R do nothing in the pinned headless browser. |
+// | type | Real key presses: "\n" is Enter and "\t" is Tab. It focuses the element, it does not click it. | Text ending in one line break is judged as Enter there. Any other text with a line break is refused: the focus may have moved. |
+// | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
+// | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
+// | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, until the bot opens another address. |
+// | back, forward | Shows the page from history. Does not send a POST again, but a reload there does. | Not judged. Turns the reload hold back on. |
+// | tab_switch, tab_close | Brings another tab to the front. | Not judged. Turns the reload hold back on. |
+// | open | Navigates by GET. Refuses a `javascript:` address. | Not judged. Ends the reload hold when it goes to another address. |
+// | tab_new | Opens a tab, by GET when given an address. | Not judged. |
+// | read | Fetches an address as text by GET. The page does not move. | Not judged. |
+// | scroll | Scrolls the page or an element. No click. | Not judged. |
+// | snapshot, get_text, get_url, get_title, screenshot, tab_list, tools_profiles | Read only. | Not judged. |
+// | wait_ms, wait_for_selector, wait_for_text, wait_for_load | Wait. | Not judged. |
+// | close, restart_browser | Close the browser. | Not judged. End the reload hold. |
+//
+// Opening an address is a GET, and a GET can commit on a site built that way
+// (a one-click unsubscribe link). That is outside what this gate reads.
 import { createHash } from "node:crypto";
 
 import { COMMIT_TITLE, classifyCommit, commitRule, enterPress, scriptAction } from "../shared/browser-commit.ts";
@@ -20,7 +50,7 @@ import { HELD_NOTE } from "./auto-approve.ts";
 import type { CommitClass, CommitField, CommitTarget, ScriptAction } from "../shared/browser-commit.ts";
 import type { OutboundPolicy } from "../shared/outbound.ts";
 import type { OptionCardData } from "../shared/wire.ts";
-import type { BrowserPageReader } from "./browser-commit-page.ts";
+import type { BrowserPageReader, PageTarget } from "./browser-commit-page.ts";
 import type { BrowserRuntime } from "./browser-runtime.ts";
 import type { DecisionRow } from "./decision-log.ts";
 import type { OutboundCounts } from "./outbound-counts.ts";
@@ -53,6 +83,9 @@ const ALREADY_WAITING = "OpenMausBot did not do this: another approval is alread
 const NOT_SAVED = "OpenMausBot did not do this: the daily allowance could not be saved. Nothing was sent.";
 const UNREADABLE = "OpenMausBot did not do this: it could not read the page to check it first. Take a new snapshot and try again.";
 const TYPED_ENTER = "OpenMausBot did not type this: a line break typed with agent_browser_type presses Enter, which would send or submit here. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
+const TYPED_BLIND = "OpenMausBot did not type this: with agent_browser_type a line break presses Enter and a tab moves the focus, so it could not check where Enter would land. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
+const UNDESCRIBED = "OpenMausBot did not do this: it could not check what this would act on. The element is inside a frame or has no visible area, and the last snapshot gave it no name. Take a new snapshot and use the element's @ref from a new snapshot.";
+const BAD_SELECTOR = "OpenMausBot did not do this: it could not check that selector. Use an @ref from a snapshot, or a shorter selector that does not start with a dash.";
 
 export interface CommitGateDeps {
   runtime: Pick<BrowserRuntime, "hold" | "releaseHold" | "personReleased" | "ref" | "withAgentAction">;
@@ -92,17 +125,20 @@ export interface CommitCall {
   active(): boolean;
   /** Aborts when the bot's request went away. */
   signal: AbortSignal;
-  /** Run the call as the bot sent it. */
-  dispatch(): Promise<unknown>;
+  /** Run these tools/call params: the bot's own, or the same call with its
+   * selector tidied. What was judged is what is sent. */
+  dispatch(params: unknown): Promise<unknown>;
 }
 
 interface Intent {
-  via: "click" | "enter";
-  /** The bot's selector, or null for the focused element. */
+  via: "click" | "enter" | "reload";
+  /** The bot's selector, tidied, or null for the focused element. */
   selector: string | null;
   shift: boolean;
   /** Enter arrives inside text typed with agent_browser_type. */
   typed: boolean;
+  /** The call as it will be sent. */
+  params: unknown;
 }
 
 /** A commitment as the server saw it on the page. */
@@ -114,6 +150,29 @@ interface Sighting {
   /** Fields as the card and the log show them: redacted and bounded. */
   shown: CommitField[];
   digest: string;
+  /** The server may take its own picture of the page for the card. */
+  picture: boolean;
+  /** A reload that would repeat an earlier commitment, not a new one. */
+  repeat?: boolean;
+}
+
+/** Why a call cannot be judged: each is refused, none is sent.
+ * - "unreadable": the engine or the page did not answer.
+ * - "undescribed": the engine found an element this read cannot describe,
+ *   and the snapshot never named it.
+ * - "unusable": the selector is one the read will not hand to the engine. */
+type Blind = "unreadable" | "undescribed" | "unusable";
+const BLIND: Record<Blind, string> = { unreadable: UNREADABLE, undescribed: UNDESCRIBED, unusable: BAD_SELECTOR };
+
+/** The last commitment this gate let through in a browser session: a
+ * reload there can send it again. */
+interface Sent {
+  id: number;
+  class: CommitClass;
+  label: string;
+  shown: CommitField[];
+  /** The bot has opened another address since, so a reload repeats nothing. */
+  movedOn: boolean;
 }
 
 function refusal(text: string): { isError: true; content: Array<{ type: "text"; text: string }> } {
@@ -126,22 +185,63 @@ function toolCall(params: unknown): { name: string; args: Record<string, unknown
   return { name: typeof call.name === "string" ? call.name : "", args };
 }
 
-/** The calls that can commit. Everything else never does: fill, scroll, open,
- * every read. agent_browser_type is here only for a line break, which the
- * engine types as a real Enter key press. */
-function commitIntent(name: string, args: Record<string, unknown>): Intent | null {
-  if (name === "agent_browser_click") {
-    return typeof args.selector === "string" ? { via: "click", selector: args.selector, shift: false, typed: false } : null;
-  }
+/** The engine trims a selector before it resolves it ("@e4 " is ref e4),
+ * with Rust's notion of white space; JavaScript's differs by a character or
+ * two. Tidying with both means the engine has nothing left to trim, so the
+ * string judged here is the string it resolves. */
+const EDGES = /^[\s\u0085]+|[\s\u0085]+$/g;
+
+/** Calls that are a click on their selector's element. agent_browser_check
+ * and agent_browser_uncheck make a real click on any element, and
+ * agent_browser_select changes a control the page may submit on. */
+const CLICKS: ReadonlySet<string> = new Set(["agent_browser_click", "agent_browser_check", "agent_browser_uncheck", "agent_browser_select"]);
+/** Calls after which the page in front may again be one a form posted to. */
+const RETURNS: ReadonlySet<string> = new Set(["agent_browser_back", "agent_browser_forward", "agent_browser_tab_switch", "agent_browser_tab_close"]);
+/** Calls that close the browser, and its history with it. */
+const CLOSES: ReadonlySet<string> = new Set(["agent_browser_close", "restart_browser"]);
+
+/** The calls that can commit, as the header table has them. Null for a call
+ * that never does; "blind" for typed text whose Enter cannot be placed. */
+function commitIntent(params: unknown, name: string, args: Record<string, unknown>, reloadHeld: boolean): Intent | "blind" | null {
+  if (name === "agent_browser_reload") return reloadHeld ? { via: "reload", selector: null, shift: false, typed: false, params } : null;
   if (name === "agent_browser_press") {
     const enter = enterPress(args.key);
-    return enter ? { via: "enter", selector: null, shift: enter.shift, typed: false } : null;
+    return enter ? { via: "enter", selector: null, shift: enter.shift, typed: false, params } : null;
   }
-  if (name === "agent_browser_type" && typeof args.selector === "string" && typeof args.text === "string" && /[\r\n]/.test(args.text)) {
-    return { via: "enter", selector: args.selector, shift: false, typed: true };
+  const typed = name === "agent_browser_type";
+  if (!CLICKS.has(name) && !typed) return null;
+  if (typeof args.selector !== "string") return null;
+  if (typed) {
+    if (typeof args.text !== "string" || !/[\r\n]/.test(args.text)) return null;
+    // One Enter, at the end, lands on the selector's element. After a tab
+    // or an earlier Enter the focus is somewhere this gate has not read.
+    if (!/^[^\r\n\t]*[\r\n]$/.test(args.text)) return "blind";
   }
-  return null;
+  const selector = args.selector.replace(EDGES, "");
+  const sent = selector === args.selector ? params : { ...(params as object), arguments: { ...args, selector } };
+  return { via: typed ? "enter" : "click", selector, shift: false, typed, params: sent };
 }
+
+/** The address without its fragment, and its host as a card names it. */
+function place(url: string | null): { address: string; host: string } {
+  try {
+    const parsed = new URL(url ?? "");
+    parsed.hash = "";
+    return { address: parsed.href, host: parsed.host || "this page" };
+  } catch { return { address: "", host: "this page" }; } // an address the engine would not give is part of the digest as ""
+}
+
+/** Does opening `url` leave the document at `from`? Only a different
+ * address (the fragment aside) does; anything unreadable counts as staying. */
+function leaves(from: string | null, url: unknown): boolean {
+  if (!from || typeof url !== "string" || !url.trim()) return false;
+  // The engine opens "example.com/x" as https://example.com/x.
+  const to = [url.trim(), `https://${url.trim()}`].map((candidate) => place(candidate).address).find(Boolean);
+  const here = place(from).address;
+  return Boolean(to) && Boolean(here) && to !== here;
+}
+
+const failed = (result: unknown): boolean => (result as { isError?: unknown } | null)?.isError === true;
 
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
 
@@ -157,6 +257,9 @@ function fieldLine(field: CommitField): string {
 
 export class BrowserCommitGate {
   private readonly deps: CommitGateDeps;
+  /** Per browser session: the commitment a reload there could send again. */
+  private readonly sent = new Map<string, Sent>();
+  private sentCount = 0;
 
   constructor(deps: CommitGateDeps) {
     this.deps = deps;
@@ -168,17 +271,19 @@ export class BrowserCommitGate {
     const { name, args } = toolCall(call.params);
     if (name === "agent_browser_eval") {
       const action = typeof args.script === "string" ? scriptAction(args.script) : null;
-      if (!action) return call.dispatch();
+      if (!action) return call.dispatch(call.params);
       return refusal(`OpenMausBot did not run this script: ${SCRIPT_REFUSAL[action]}. Scripts are for reading the page. Use agent_browser_click, agent_browser_fill, agent_browser_press and agent_browser_open to act on it.`);
     }
-    const intent = commitIntent(name, args);
-    if (!intent) return call.dispatch();
+    const repeatable = this.sent.get(call.session);
+    const intent = commitIntent(call.params, name, args, Boolean(repeatable && !repeatable.movedOn));
+    if (!intent) return this.relay(call, name, args);
+    if (intent === "blind") return refusal(TYPED_BLIND);
     call.admit();
     const deadline = Date.now() + this.deps.holdMs;
     let seen = await this.look(call, intent);
     // Not knowing is not the same as nothing to hold.
-    if (seen === "unreadable") return refusal(UNREADABLE);
-    if (!seen) return call.dispatch();
+    if (typeof seen === "string") return refusal(intent.typed && seen === "undescribed" ? TYPED_BLIND : BLIND[seen]);
+    if (!seen) return call.dispatch(intent.params);
     if (intent.typed) return refusal(TYPED_ENTER);
 
     const policy = this.deps.policy(call.botId) ?? DEFAULT_OUTBOUND_POLICY;
@@ -191,7 +296,8 @@ export class BrowserCommitGate {
       catch { return refusal(NOT_SAVED); }
       if (reserved !== null) {
         this.deps.log({ ...row, summary: this.summary(seen), decision: "auto-approved", source: "outbound", rule: commitRule(seen.class, `daily-allowance:${reserved}/${policy.dailyCap}`) });
-        return call.dispatch();
+        this.remember(call.session, seen);
+        return call.dispatch(intent.params);
       }
     }
 
@@ -207,7 +313,7 @@ export class BrowserCommitGate {
       let messageId: string;
       let shot: string | undefined;
       try {
-        shot = await call.shot().catch(() => undefined);
+        shot = seen.picture ? await call.shot().catch(() => undefined) : undefined;
         messageId = this.deps.post({ botId: call.botId, threadId: call.threadId, card: this.card(seen, name, held.requestId, shot) });
       } catch (error) {
         this.deps.requests.forget(held.requestId);
@@ -255,16 +361,17 @@ export class BrowserCommitGate {
         return refusal(STILL_HELD);
       }
       const now = await this.look(call, intent).catch(() => "unreadable" as const);
-      if (now && now !== "unreadable" && now.digest === seen.digest) {
+      if (now && typeof now !== "string" && now.digest === seen.digest) {
         settle();
         release();
-        return call.dispatch();
+        this.remember(call.session, seen);
+        return call.dispatch(intent.params);
       }
       release();
-      if (now === "unreadable") {
+      if (typeof now === "string") {
         settle(() => ({ answered: "unavailable", dismissed: true }));
         close("unreadable");
-        return refusal(UNREADABLE);
+        return refusal(BLIND[now]);
       }
       settle(() => ({ answered: "unavailable", dismissed: true }), true);
       close("page-changed");
@@ -273,54 +380,93 @@ export class BrowserCommitGate {
     }
   }
 
-  /** What the call would act on right now; null when it is no commitment (or
-   * the engine has no such element and will say so itself); "unreadable"
-   * when the page could not be read. Throws what the runtime gate throws
+  /** A call that is not judged. It goes through as the bot sent it; all
+   * that is kept is whether a reload could still repeat a commitment. */
+  private async relay(call: CommitCall, name: string, args: Record<string, unknown>): Promise<unknown> {
+    const sent = this.sent.get(call.session);
+    if (!sent) return call.dispatch(call.params);
+    // Where the page is before an open moves it: only another address
+    // leaves the document a form may have posted to.
+    const from = name === "agent_browser_open" && !sent.movedOn
+      ? await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read").catch(() => null)
+      : null;
+    const result = await call.dispatch(call.params);
+    if (failed(result)) return result;
+    if (CLOSES.has(name)) this.sent.delete(call.session);
+    else if (RETURNS.has(name)) sent.movedOn = false;
+    else if (leaves(from, args.url)) sent.movedOn = true;
+    return result;
+  }
+
+  /** A commitment is about to be sent: a reload in this browser can repeat
+   * it. Money stays the class once money was spent here. */
+  private remember(session: string, seen: Sighting): void {
+    if (seen.repeat) return;
+    const before = this.sent.get(session);
+    this.sentCount += 1;
+    this.sent.set(session, { id: this.sentCount, class: before?.class === "money" ? "money" : seen.class, label: seen.label, shown: seen.shown, movedOn: false });
+  }
+
+  /** What the call would act on right now. Null when it is no commitment
+   * (or the engine has no such element and will say so itself); a Blind
+   * reason when that could not be told. Throws what the runtime gate throws
    * when a person has the browser. */
-  private async look(call: CommitCall, intent: Intent): Promise<Sighting | null | "unreadable"> {
+  private async look(call: CommitCall, intent: Intent): Promise<Sighting | null | Blind> {
+    if (intent.via === "reload") {
+      const sent = this.sent.get(call.session);
+      if (!sent || sent.movedOn) return null;
+      const { address, host } = place(await this.deps.runtime.withAgentAction(call.session, () => call.page.url(), "read"));
+      const digest = createHash("sha256").update(JSON.stringify([address, "reload", sent.id])).digest("hex");
+      // No picture: the page a form posted to was never read for secrets.
+      return { class: sent.class, host, label: `Reload, which can repeat “${clip(sent.label, 80)}”`, shown: sent.shown, digest, picture: false, repeat: true };
+    }
     const [found, url] = await this.deps.runtime.withAgentAction(
       call.session,
       () => Promise.all([call.page.target(intent.selector, intent.via === "enter"), call.page.url()]),
       "read",
     );
+    // Only "missing" says there is nothing to act on.
     if (found === "missing") return null;
-    if (found === "unreadable") return "unreadable";
+    if (found === "unreadable" || found === "unusable") return found;
     const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
     const known = ref ? this.deps.runtime.ref(call.session, ref) : undefined;
-    let target: CommitTarget;
-    let fields: CommitField[] = [];
+    let targets: Array<CommitTarget & { fields: CommitField[] }>;
     if (found === "hidden") {
-      // Inside a frame the page read cannot reach. The snapshot's own name
-      // for the ref is all there is to judge a click by.
-      if (!known || intent.via !== "click") return null;
+      // The engine found an element the page read cannot describe: it is
+      // inside a frame, or it has no area. The snapshot's own name for the
+      // ref is all there is to judge a click by; with no name, or for an
+      // Enter, nothing is.
+      if (!known || intent.via !== "click") return "undescribed";
       const box = known.role === "searchbox" ? "search" : known.role === "textbox" ? "single" : null;
-      target = { via: "click", label: known.name, role: known.role, box, submits: false, search: box === "search", card: false, multiline: false };
+      targets = [{ via: "click", label: known.name, role: known.role, box, submits: false, search: box === "search", card: false, multiline: false, fields: [] }];
     } else {
-      fields = found.fields;
-      target = { via: intent.via, shift: intent.shift, label: found.label, role: found.role, box: found.box, submits: found.submits, search: found.search, card: found.card, multiline: found.multiline };
+      // More than one element can share the box. Each is judged.
+      targets = [found, ...(found.also ?? [])].map((target: PageTarget) => ({
+        via: intent.via as "click" | "enter", shift: intent.shift, label: target.label, role: target.role, box: target.box,
+        submits: target.submits, search: target.search, card: target.card, multiline: target.multiline, fields: target.fields,
+      }));
     }
     // The snapshot's name is the browser's own; the page read's is ours. A
-    // click is held when either one names a commitment.
-    const labels = intent.via === "click" && known?.name && known.name !== target.label ? [target.label, known.name] : [target.label];
-    const classes = labels.map((label) => classifyCommit({ ...target, label }));
-    const kind: CommitClass | null = classes.includes("money") ? "money" : classes.includes("send") ? "send" : null;
-    if (!kind) return null;
-    const named = labels[classes.indexOf(kind)] || labels.find(Boolean) || `unlabelled ${target.role || "control"}`;
+    // click is held when either one names a commitment, on any element the
+    // engine might act on. The most serious one is the one shown.
+    let pick: { kind: CommitClass; target: (typeof targets)[number]; named: string } | undefined;
+    for (const target of targets) {
+      const labels = intent.via === "click" && known?.name && known.name !== target.label ? [target.label, known.name] : [target.label];
+      const classes = labels.map((label) => classifyCommit({ ...target, label }));
+      const kind: CommitClass | null = classes.includes("money") ? "money" : classes.includes("send") ? "send" : null;
+      if (!kind || (pick && (pick.kind === "money" || kind === "send"))) continue;
+      pick = { kind, target, named: labels[classes.indexOf(kind)] || labels.find(Boolean) || `unlabelled ${target.role || "control"}` };
+    }
+    if (!pick) return null;
+    const { target, named } = pick;
     const label = intent.via === "enter" && target.box === "multiline" && !target.submits ? `Enter in ${named}` : named;
 
-    let address = "";
-    let host = "this page";
-    try {
-      const parsed = new URL(url ?? "");
-      parsed.hash = "";
-      address = parsed.href;
-      host = parsed.host || host;
-    } catch { /* an address the engine would not give is part of the digest as "" */ }
+    const { address, host } = place(url);
     const digest = createHash("sha256").update(JSON.stringify([
-      address, intent.via, target.label, known?.name ?? null, target.role,
-      fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null]),
+      address, intent.via, known?.name ?? null,
+      targets.map((each) => [each.label, each.role, each.fields.map((field) => [field.name, field.type, field.value ?? null, field.length ?? null])]),
     ])).digest("hex");
-    return { class: kind, host, label: clip(label, 120), shown: fields.map(shownField), digest };
+    return { class: pick.kind, host, label: clip(label, 120), shown: target.fields.map(shownField), digest, picture: true };
   }
 
   /** Host and label first, the way every send card's subtitle starts, then

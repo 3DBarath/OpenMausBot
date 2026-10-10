@@ -17171,7 +17171,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             throw Object.assign(new Error("another thread is using this browser — pause browser work until that thread finishes"), { status: 409 });
           }
         };
-        const dispatch = () => browserRuntime.agentRpc(browser.session, browser.spec, body.method, body.params, admit);
+        const dispatch = (params: unknown = body.params) => browserRuntime.agentRpc(browser.session, browser.spec, body.method, params, admit);
         let result: unknown;
         if (body.method === "tools/call") {
           // ── the commit hold ──

@@ -130,25 +130,62 @@ under Permissions.
 
 ### What counts in the browser
 
-Fixed rules in the server decide, not the bot and not a model. Only a click
-and an Enter key press can count. Typing into a field, scrolling, opening a
-page and every kind of reading never ask.
+Fixed rules in the server decide, not the bot and not a model. A click, an
+Enter key press, ticking or unticking a box, choosing from a list, and a
+reload can count. Filling a field, scrolling, opening a page and every kind
+of reading never ask. When the server cannot tell what a call would act on,
+it refuses the call or asks. It never lets it through unseen.
 
 | What the bot does | Held as |
 | --- | --- |
 | Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
 | Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer | Money |
 | Submits a form that has a card field | Money |
-| Presses Enter in a message or comment box (Shift+Enter is a new line) | Send |
+| Presses Enter in a message or comment box | Send |
 | Submits a form that has a multi-line text field, whatever its button says | Send |
+| Reloads the page after one of the above went through | The same as that one |
 
 Labels match whole words in any letter case, in English: "Post reply"
-matches, "Posts" and "Repost" do not. The last row is what catches a send on
-a page in another language. Money wins when both match. Enter in a one-line
-field is judged as its form's submit button. A click that only puts the
-cursor in a text box, or ticks a checkbox, is never held. **Search is never a
-send**: a search field, anything inside a search region, or a form whose only
-text field is a search field.
+matches, "Posts" and "Repost" do not. The multi-line row is what catches a
+send on a page in another language. Money wins when both match. A click that
+only puts the cursor in a text box, or ticks a checkbox, is never held.
+**Search is never a send**: a search field, anything inside a search region,
+or a form whose only text field is a search field.
+
+What counts as submitting a form:
+
+- A click on its submit button, including an image button and a button tied
+  to the form from outside it.
+- **Enter** while the focus is on any of its controls except a multi-line
+  box: a one-line field, but also a checkbox, a radio button, a list or a
+  slider. It is judged as the form's first submit button. Enter with any
+  other key held (`Control+Enter`, `Enter+Alt`, in either order) is still
+  Enter. Shift+Enter is a new line only in a multi-line box, and only as
+  Shift and Enter alone.
+- Ticking a box or choosing from a list (`agent_browser_check`,
+  `agent_browser_uncheck`, `agent_browser_select`) when that control, or its
+  form, carries a handler written on the element (`onchange="…submit()"`)
+  that submits. These three tools are otherwise judged exactly like a click
+  on the same element: the engine's check and uncheck click whatever they
+  are pointed at, a Send button included.
+
+**Reload.** Reloading a page that a form was posted to posts it again. After
+a send or a payment has gone through in a browser (approved by you, or let
+through by the daily allowance), a reload there asks with the same card
+until the bot has opened another address. Going back or forward, or
+switching tabs, turns that on again, because the posted page may be in front
+once more. This asks more often than strictly needed, for instance after a
+site redirected.
+
+**Selectors.** The server reads the same element the engine would act on.
+Where two elements share one box, the one a click at its centre lands on is
+judged; where that cannot be told, all of them are, and the card shows the
+most serious. A selector with stray white space around it is tidied, and the
+tidied one is what is sent. A selector over 2,000 characters, or one that
+starts with a dash, is refused: the bot is told to use a ref from a snapshot.
+An element the engine finds but the server cannot describe (it is inside a
+frame, or has no area) is judged by the name the last snapshot gave it, and
+refused when it has none.
 
 ### What the card shows
 
@@ -181,7 +218,9 @@ request (`fetch`, `XMLHttpRequest`, `sendBeacon`, `WebSocket`), writes into a
 field, dispatches an event, or navigates. The bot is told to use the click
 and fill tools, which the rules above cover. A line break typed with
 `agent_browser_type` is a real Enter key press; it is refused the same way
-where it would send or submit.
+where it would send or submit. Typed text with a tab before the line break,
+or with anything after it, is refused wherever it is typed: a tab moves the
+focus, so the server cannot tell where that Enter would land.
 
 This is a guard against a bot acting through a script by habit. **It is not a
 wall**: a script written to hide what it does gets past a check of its text.
@@ -189,11 +228,16 @@ wall**: a script written to hide what it does gets past a check of its text.
 ### Limits
 
 - The word lists are English. Other languages rely on the two form rules.
-- Only clicks and Enter are checked. Space on a focused button is not.
+- Space on a focused button clicks it, and is not checked.
 - Inside an embedded frame, such as a payment or comment widget, a click is
   judged by its label alone and the card shows no fields; Enter there is not
   checked.
 - A one-line box outside any form that sends on Enter is not recognised.
+- A list or checkbox that submits its form from a listener added in script
+  (`addEventListener`), not from a handler written on the element, is not
+  recognised. Neither is a field that submits as it is filled.
+- Opening an address is never held. A site that acts on a plain link (a
+  one-click unsubscribe) acts when the bot opens it.
 - Below Full access some engines show their own tool card for a browser
   click first, then this one. This is the one with the evidence.
 - None of this applies to web work a bot does on a computer (a cloud

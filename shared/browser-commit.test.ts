@@ -104,7 +104,21 @@ describe("enterPress", () => {
 
   it("sees Shift in a chord", () => {
     expect(enterPress("Shift+Enter")).toEqual({ shift: true });
-    expect(enterPress("Control+Shift+Enter")).toEqual({ shift: true });
+  });
+
+  // agent-browser 0.37.0 takes the key from any part of a chord: "Enter+Shift"
+  // is Shift+Enter, "Enter+Control" is Ctrl+Enter.
+  it.each(["Enter+Control", "Enter+Alt", "Enter+Meta", "Return+Control", "\n+Alt", "Shift+Enter+Control", "NumpadEnter", "Enter+a"])("reads Enter in any position of %j", (key) => {
+    expect(enterPress(key)).toEqual({ shift: false });
+  });
+
+  // Measured: Shift+Enter and Enter+Shift type a line break in a text area
+  // and a contenteditable box. With any other modifier nothing is typed, so
+  // the press is whatever the page makes of it.
+  it("excuses Shift only as the one modifier, in either position", () => {
+    expect(enterPress("Enter+Shift")).toEqual({ shift: true });
+    expect(enterPress("Shift+Return")).toEqual({ shift: true });
+    for (const key of ["Control+Shift+Enter", "Shift+Enter+Alt", "Meta+Shift+Enter", "Shift+Enter+Enter"]) expect(enterPress(key), key).toEqual({ shift: false });
   });
 
   it.each(["Tab", "Escape", "a", "Space", "Enterprise", "", "Control+a", 13, undefined, null])("ignores %j", (key) => {

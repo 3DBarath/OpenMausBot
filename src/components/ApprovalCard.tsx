@@ -103,6 +103,10 @@ export function toolLabel(tool?: string): string {
     update_profile: "approval.tool.updateProfile",
     agent_browser_click: "approval.tool.browserClick",
     agent_browser_press: "approval.tool.browserPress",
+    agent_browser_check: "approval.tool.browserCheck",
+    agent_browser_uncheck: "approval.tool.browserUncheck",
+    agent_browser_select: "approval.tool.browserSelect",
+    agent_browser_reload: "approval.tool.browserReload",
     // An ACP driver can know the protocol's toolCall kind but not the
     // tool's name, and sends the kind as the card's tool
     // (server/drivers/acp/core.ts). Kinds are not verb phrases —

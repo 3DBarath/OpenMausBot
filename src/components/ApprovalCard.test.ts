@@ -613,6 +613,20 @@ describe("ApprovalCard for a held browser click", () => {
     expect(spokenApprovalPrompt(pending!, "Pepper")).toContain("click in the browser");
     expect(spokenApprovalPrompt({ ...pending!, tool: "agent_browser_press" }, "Pepper")).toContain("press Enter in the browser");
   });
+
+  it("speaks every browser call that can be held in words, never as its tool name", () => {
+    const [pending] = pendingApprovals([held()]);
+    for (const [tool, words] of [
+      ["agent_browser_check", "tick a box in the browser"],
+      ["agent_browser_uncheck", "untick a box in the browser"],
+      ["agent_browser_select", "choose from a list in the browser"],
+      ["agent_browser_reload", "reload a page in the browser"],
+    ] as const) {
+      const spoken = spokenApprovalPrompt({ ...pending!, tool }, "Pepper");
+      expect(spoken).toContain(words);
+      expect(spoken).not.toContain("agent browser");
+    }
+  });
 });
 
 describe("ApprovalCard for a change that applied on its own", () => {

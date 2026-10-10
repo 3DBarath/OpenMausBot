@@ -76,15 +76,25 @@ export function classifyCommit(target: CommitTarget): CommitClass | null {
   return null;
 }
 
-/** Enter, alone or in a chord, the way agent_browser_press names keys.
- * Null for every other key. */
+const ENTER_NAMES: ReadonlySet<string> = new Set(["enter", "return", "numpadenter"]);
+const isEnter = (part: string): boolean => part === "\n" || part === "\r" || part === "\r\n" || ENTER_NAMES.has(part.trim().toLowerCase());
+
+/** Enter, alone or anywhere in a chord, the way agent_browser_press names
+ * keys: the engine takes the key from any part ("Enter+Shift" is Shift+Enter,
+ * "Enter+Control" is Ctrl+Enter). Null for every other key.
+ *
+ * `shift` is true only for Shift and Enter and nothing else, in either
+ * order: the one chord the engine types as a line break in a multi-line
+ * field (checked against agent-browser 0.37.0 in a text area and a
+ * contenteditable box). With any other modifier nothing is typed, so the
+ * press is whatever the page makes of it. */
 export function enterPress(key: unknown): { shift: boolean } | null {
   if (typeof key !== "string") return null;
   const parts = key.split("+");
-  const last = parts.at(-1) ?? "";
-  const name = last === "\n" || last === "\r" || last === "\r\n" ? "enter" : last.trim().toLowerCase();
-  if (name !== "enter" && name !== "return") return null;
-  return { shift: parts.slice(0, -1).some((part) => part.trim().toLowerCase() === "shift") };
+  const enters = parts.filter(isEnter).length;
+  if (!enters) return null;
+  const shifts = parts.filter((part) => part.trim().toLowerCase() === "shift").length;
+  return { shift: enters === 1 && shifts > 0 && shifts === parts.length - 1 };
 }
 
 export type ScriptAction = "click" | "network" | "write" | "event" | "navigation";

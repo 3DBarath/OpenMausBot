@@ -36,6 +36,25 @@ It exits 0 and prints `"ok": true` with one evidence entry per step:
    `auto-denied … page-changed` rows under `browser-commit:send` and
    `browser-commit:money`, and the bot's activity lists them under Browser.
 
+After the walkthrough the script runs one **case** per way a send or a
+payment once got past the hold, each on its own local page. Every case runs
+even when an earlier one failed, and prints `"case"`, its title and
+`"ok": true` or the reason it failed; any failure makes the script exit 1.
+`OMB_VERIFY_CASES=A4,A6` runs only those.
+
+| Case | What it proves on a real page |
+| --- | --- |
+| A1 | Enter with the focus on a checkbox, a radio button, a list or a slider is held as the form's "Buy now". |
+| A2 | `agent_browser_check` on a Send button is held; `agent_browser_uncheck` on a box whose `onchange` submits is held. |
+| A3 | `Enter+Shift` in a one-line field and `Enter+Control` in a message box are held; `Enter+Shift` in the message box types a line break and passes. |
+| A4 | After an approved payment that posts a form, `agent_browser_reload` is held and Deny posts nothing; after opening another address it passes; after going back it is held again. |
+| A5 | A 2,400-character selector and one starting with a dash are refused. A button with no area is held by its snapshot name when picked by ref, and refused when picked by CSS. |
+| A6 | A visible Send and a hidden Cancel in one grid cell: the click on Send is held. |
+| A7 | Enter in a form whose only submit is `<input type="image">` is held as money; so is one whose button is tied by the `form` attribute. |
+| A8a | A ref with a trailing space, for a Pay button inside a frame, is held. |
+| A8b | `agent_browser_select` on a list whose `onchange` submits its form is held. |
+| A8c | A form with controls named `tagName`, `elements`, `action`, `id`, `closest` and `querySelectorAll` is still read: its submit is held and its field is on the card. |
+
 Keep the printed JSON and the log path as evidence.
 
 Focused automated coverage:
