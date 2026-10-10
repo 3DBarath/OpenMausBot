@@ -85,21 +85,41 @@ export interface CommitTarget {
   /** A search field, something inside role="search", or a form whose only
    * text field is a search field. */
   search: boolean;
-  /** The form has a card field (autocomplete="cc-*"). */
+  /** The control is in a card region: its form, or with no form the region
+   * of the page around it, holds a card field (by its autofill hint, or by
+   * the names of two fields), a payment frame, or a card number typed in. */
   card: boolean;
   /** The form has a multi-line text field. */
   multiline: boolean;
+  /** A control a click, Enter or Space activates: a button, a link,
+   * something with a button's role, or a plain element styled as one. */
+  button?: boolean;
+  /** A list or a tick box with a handler of its own, or its form's, that
+   * runs when it changes. */
+  changes?: boolean;
+}
+
+/** The roles a snapshot gives to what a click activates. */
+const BUTTON_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuitem"]);
+export function isButtonRole(role: string): boolean {
+  return BUTTON_ROLES.has(role);
 }
 
 /** Is this a commitment, and of which class? Money wins when both match. */
 export function classifyCommit(target: CommitTarget): CommitClass | null {
+  // A search is never a commitment of either class, whatever its button
+  // says and whatever was typed into it.
+  if (target.search) return null;
   // A click into a text box only puts the cursor there, so its label ("Message")
   // is not an action. Enter in a one-line field acts through the submit button.
-  const activates = (target.box === null || target.submits) && !PASSIVE_ROLES.has(target.role);
+  const passive = PASSIVE_ROLES.has(target.role);
+  const activates = (target.box === null || target.submits) && !passive;
   if (activates && spends(target.label)) return "money";
-  if (target.submits && target.card) return "money";
-  // Search is never a send, whatever the button says.
-  if (target.search) return null;
+  // In a card region what a control is called says nothing about what it
+  // does. Any activation of a button-like control there is money, whatever
+  // its type or label: a click, Enter or Space on it, a submit, a list or a
+  // tick box whose handler runs on change, Enter in one of its one-line fields.
+  if (target.card && (target.submits || target.changes || (target.button && target.box === null && !passive) || (target.via === "enter" && target.box === "single"))) return "money";
   if (activates && SEND.test(target.label)) return "send";
   if (target.via === "enter" && target.box === "multiline" && !target.shift) return "send";
   if (target.submits && target.multiline) return "send";
@@ -125,6 +145,14 @@ export function enterPress(key: unknown): { shift: boolean } | null {
   if (!enters) return null;
   const shifts = parts.filter((part) => part.trim().toLowerCase() === "shift").length;
   return { shift: enters === 1 && shifts > 0 && shifts === parts.length - 1 };
+}
+
+/** Space, alone or in a chord, under every name agent_browser_press takes
+ * for it ("Space" in any letter case, or the character itself). With the
+ * focus on a button it clicks it (checked against agent-browser 0.37.0,
+ * with Shift, Control or Alt held too). */
+export function spacePress(key: unknown): boolean {
+  return typeof key === "string" && key.split("+").some((part) => part === " " || ["space", "spacebar"].includes(part.trim().toLowerCase()));
 }
 
 export type ScriptAction = "click" | "network" | "write" | "event" | "navigation";
@@ -210,6 +238,12 @@ export interface BrowserCommitCard {
   fields: CommitField[];
   /** How many more fields the approval covers than `fields` shows. */
   more?: number;
+  /** Filled fields elsewhere on the page that the approval is bound to but
+   * the card does not list. */
+  others?: number;
+  /** The page changed under two approvals in a row, so this one is bound to
+   * less: the element's place, its label and the fields. */
+  changing?: boolean;
   /** The server's own screenshot, as an attachment path, while the card is open. */
   shot?: string;
   /** No screenshot was taken, while the card is open: the page shows a

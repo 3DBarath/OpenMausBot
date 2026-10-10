@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyCommit, commitRule, commitRuleClass, enterPress, scriptAction, type CommitTarget } from "./browser-commit.ts";
+import { classifyCommit, commitRule, commitRuleClass, enterPress, isButtonRole, scriptAction, spacePress, type CommitTarget } from "./browser-commit.ts";
 
 const click = (label: string, extra: Partial<CommitTarget> = {}): CommitTarget => ({
   via: "click", label, role: "button", box: null, submits: false, search: false, card: false, multiline: false, ...extra,
@@ -59,10 +59,13 @@ describe("classifyCommit", () => {
     expect(classifyCommit(click("Veröffentlichen", { multiline: true }))).toBeNull();
   });
 
-  it("never treats search as a send, but still holds money there", () => {
+  it("never treats search as a commitment of either class", () => {
     expect(classifyCommit(click("Submit", { submits: true, search: true }))).toBeNull();
     expect(classifyCommit(click("Go", { submits: true, search: true, multiline: true }))).toBeNull();
-    expect(classifyCommit(click("Buy", { submits: true, search: true }))).toBe("money");
+    expect(classifyCommit(click("Buy", { submits: true, search: true }))).toBeNull();
+    // A query that happens to be a card number does not make the search a payment.
+    expect(classifyCommit(click("Search", { submits: true, search: true, card: true, button: true }))).toBeNull();
+    expect(classifyCommit(enter({ label: "Search", role: "button", box: "search", submits: true, search: true, card: true }))).toBeNull();
   });
 });
 
@@ -100,9 +103,65 @@ describe("real button labels", () => {
     expect(classifyCommit(click("Order now", { role: "textbox", box: "single" }))).toBeNull();
   });
 
-  it("still never treats search as a send, and still holds money there", () => {
-    expect(classifyCommit(click("Submit order", { submits: true, search: true }))).toBe("money");
+  it("still never treats search as a commitment", () => {
+    expect(classifyCommit(click("Submit order", { submits: true, search: true }))).toBeNull();
     expect(classifyCommit(click("Send", { submits: true, search: true }))).toBeNull();
+  });
+});
+
+describe("a card region", () => {
+  const inRegion = (label: string, extra: Partial<CommitTarget> = {}) => click(label, { card: true, button: true, ...extra });
+
+  // A form or region with a card field, a payment frame or a card number
+  // in it. What a button there is called says nothing about what it does.
+  it.each(["Continue", "Confirm", "Next", "OK", "Weiter", "", "Show details"])("holds a click on a button-like control labelled %j as money", (label) => {
+    expect(classifyCommit(inRegion(label))).toBe("money");
+    expect(classifyCommit(inRegion(label, { role: "link" }))).toBe("money");
+    expect(classifyCommit(inRegion(label, { role: "generic" }))).toBe("money");
+  });
+
+  it("holds Enter and Space on such a control, and Enter in a one-line field there", () => {
+    expect(classifyCommit(enter({ label: "Continue", role: "button", box: null, card: true, button: true }))).toBe("money");
+    expect(classifyCommit(click("Continue", { card: true, button: true }))).toBe("money");
+    expect(classifyCommit(enter({ label: "Card number", role: "textbox", box: "single", card: true }))).toBe("money");
+  });
+
+  it("holds a list or a tick box there whose own handler runs on change", () => {
+    expect(classifyCommit(click("Plan", { role: "combobox", card: true, changes: true }))).toBe("money");
+    expect(classifyCommit(click("Save this card", { role: "checkbox", card: true, changes: true }))).toBe("money");
+  });
+
+  it("lets through what only puts the cursor somewhere, or ticks a box nothing listens to", () => {
+    expect(classifyCommit(click("Card number", { role: "textbox", box: "single", card: true }))).toBeNull();
+    expect(classifyCommit(click("Notes", { role: "textbox", box: "multiline", card: true, multiline: true }))).toBeNull();
+    expect(classifyCommit(click("Save this card", { role: "checkbox", card: true }))).toBeNull();
+    expect(classifyCommit(click("Plan", { role: "combobox", card: true }))).toBeNull();
+    // Plain text that is not a control and does not look like one.
+    expect(classifyCommit(click("Order summary", { role: "generic", card: true }))).toBeNull();
+  });
+
+  it("holds none of this outside a card region", () => {
+    for (const label of ["Continue", "Confirm", "Next"]) expect(classifyCommit(click(label, { button: true }))).toBeNull();
+    expect(classifyCommit(click("Plan", { role: "combobox", changes: true }))).toBeNull();
+  });
+});
+
+describe("Space", () => {
+  // agent-browser 0.37.0 presses the space bar for each of these, and with
+  // the focus on a button that clicks it.
+  it.each(["Space", "space", "SPACE", " ", "Shift+Space", "Space+Shift", "Control+Space", "Alt+ ", "Spacebar"])("reads %j as a Space press", (key) => {
+    expect(spacePress(key)).toBe(true);
+  });
+
+  it.each(["Enter", "a", "Backspace", "", "Tab", "Shift+a", "Spaces", 32, null, undefined])("does not read %j as one", (key) => {
+    expect(spacePress(key)).toBe(false);
+  });
+});
+
+describe("isButtonRole", () => {
+  it("is true for what a click activates, by the names a snapshot gives", () => {
+    for (const role of ["button", "link", "menuitem"]) expect(isButtonRole(role), role).toBe(true);
+    for (const role of ["textbox", "searchbox", "checkbox", "combobox", "tab", "option", "Iframe", "generic", "", "heading"]) expect(isButtonRole(role), role).toBe(false);
   });
 });
 
