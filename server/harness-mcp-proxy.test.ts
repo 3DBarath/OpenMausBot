@@ -2,12 +2,13 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { harnessMcpRequest } from "./harness-mcp-proxy.ts";
+import { harnessCallTimeoutMs, harnessMcpRequest } from "./harness-mcp-proxy.ts";
 
 let server: Server;
 let url = "";
 let status = 200;
 let payload: unknown = { result: { tools: [{ name: "agent_browser_snapshot" }] } };
+let delayMs = 0;
 const requests: Array<{ path: string | undefined; auth: string | undefined; body: unknown }> = [];
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -15,8 +16,10 @@ beforeAll(async () => {
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
       requests.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(payload));
+      setTimeout(() => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(payload));
+      }, delayMs);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -82,6 +85,28 @@ describe("harness MCP capability proxy", () => {
     payload = { error: "Browser tools are paused while a person controls this browser." };
     await expect(harnessMcpRequest(frame("tools/call"), connection())).resolves.toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("paused") }] } });
     await expect(harnessMcpRequest(frame("tools/list"), connection())).resolves.toMatchObject({ error: { code: -32603, message: expect.stringContaining("paused") } });
+  });
+
+  it("waits as long as the server grants a browser call, and no longer", async () => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "clicked after approval" }] } };
+    delayMs = 150;
+    try {
+      const cut = await harnessMcpRequest(frame("tools/call", { name: "agent_browser_click" }), { ...connection(), timeoutMs: 40 }) as any;
+      expect(cut.result.isError).toBe(true);
+      expect(cut.result.content[0].text).toContain("connection was interrupted");
+      await expect(harnessMcpRequest(frame("tools/call", { name: "agent_browser_click" }), { ...connection(), timeoutMs: 2_000 }))
+        .resolves.toMatchObject({ result: { content: [{ text: "clicked after approval" }] } });
+    } finally { delayMs = 0; }
+  });
+
+  it("takes a longer limit only for the browser, only from a whole number above the default", () => {
+    expect(harnessCallTimeoutMs("browser", { OMB_MCP_CALL_TIMEOUT_MS: "570000" })).toBe(570_000);
+    expect(harnessCallTimeoutMs("computer", { OMB_MCP_CALL_TIMEOUT_MS: "570000" })).toBe(130_000);
+    expect(harnessCallTimeoutMs("data", { OMB_MCP_CALL_TIMEOUT_MS: "570000" })).toBe(130_000);
+    for (const value of [undefined, "", "soon", "60000", "130000", "-1", "1e99", "570000.5"]) {
+      expect(harnessCallTimeoutMs("browser", { OMB_MCP_CALL_TIMEOUT_MS: value }), String(value)).toBe(130_000);
+    }
   });
 
   it.each(["https://example.com", "http://127.0.0.1.evil.test", "http://user:pass@127.0.0.1", "http://127.0.0.1/path", "http://127.0.0.1/#secret"])("never sends its capability to invalid harness URL %s", async (badUrl) => {

@@ -24,6 +24,17 @@ const RECOVERY: Record<HarnessMcpKind, string> = {
   data: " The tables already loaded are unchanged; check with data_describe or SHOW TABLES before repeating a load, and do not repeat a statement whose result is uncertain.",
 };
 
+/** How long one relayed call may take before the proxy gives up on it. */
+const CALL_TIMEOUT_MS = 130_000;
+
+/** A browser call can wait behind a person's answer to a commit hold
+ * (server/browser-commit-gate.ts), so the server tells this process how
+ * long that may take. Every other family keeps the short limit. */
+export function harnessCallTimeoutMs(kind: HarnessMcpKind, env: NodeJS.ProcessEnv = process.env): number {
+  const granted = kind === "browser" ? Number(env.OMB_MCP_CALL_TIMEOUT_MS) : NaN;
+  return Number.isSafeInteger(granted) && granted > CALL_TIMEOUT_MS ? granted : CALL_TIMEOUT_MS;
+}
+
 function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
   return value === "browser" || value === "computer" || value === "data" ? value : null;
 }
@@ -53,7 +64,7 @@ async function boundedJson(response: Response, name: string): Promise<unknown> {
 
 export async function harnessMcpRequest(
   frame: unknown,
-  connection: { url: string; token: string; kind: HarnessMcpKind },
+  connection: { url: string; token: string; kind: HarnessMcpKind; timeoutMs?: number },
 ): Promise<unknown | undefined> {
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) return failure(null, null, "Invalid request.", -32600);
   const message = frame as { id?: RpcId; jsonrpc?: unknown; method?: unknown; params?: unknown };
@@ -80,7 +91,7 @@ export async function harnessMcpRequest(
     const response = await fetch(new URL(`/api/internal/${connection.kind}/mcp`, url), {
       method: "POST", redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` },
-      body, signal: AbortSignal.timeout(130_000),
+      body, signal: AbortSignal.timeout(connection.timeoutMs ?? CALL_TIMEOUT_MS),
     });
     const payload = await boundedJson(response, name) as { result?: unknown; error?: unknown };
     if (!response.ok || !payload || typeof payload !== "object" || !Object.hasOwn(payload, "result")) {
@@ -95,7 +106,7 @@ export async function harnessMcpRequest(
 }
 
 function run(kind: HarnessMcpKind): void {
-  const connection = { url: process.env.OMB_HARNESS_URL ?? "", token: process.env.OMB_MCP_TOKEN ?? "", kind };
+  const connection = { url: process.env.OMB_HARNESS_URL ?? "", token: process.env.OMB_MCP_TOKEN ?? "", kind, timeoutMs: harnessCallTimeoutMs(kind) };
   let input = Buffer.alloc(0);
   let pending = 0;
   const output = (message: unknown) => {
