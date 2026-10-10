@@ -347,13 +347,29 @@ entries are given.
   card answer from anyone else ends its standing, and pressing the button
   again does not restore it.
 
-  What it can and cannot tell. A routine's or a webhook's conversation is
-  recognised while it still carries its run, or while that run is among the
-  2,000 the run history keeps. Older than that, and carried on by hand since,
-  its prompt looks like a message typed at the computer. So does a message a
-  paired device edited before this version, because an edit recorded no
-  sender. These are adopted as yours: that is what the button's sentence asks
-  you to be sure of.
+  Two more things are never adopted, whatever their messages look like:
+  - **A conversation that came from a backup.** One a team backup brought in
+    beside your own, and every conversation from before the whole
+    installation was last restored from a backup or copied from another
+    computer. No request made here wrote those messages, and a backup can
+    hold anyone's. What the backup's own record already proves yours keeps
+    its standing, and a conversation you start afterwards is yours as usual.
+  - **A conversation from before the record was lost.** If the record of
+    which messages are yours goes missing or cannot be read, nothing is
+    proven by that: conversations from before then recall no shared note,
+    and the button does not give them back. It says the record was lost and
+    how many conversations it could not take for that reason.
+
+  What it can and cannot tell. A routine's conversation is recognised while it
+  still carries its run, which it does until someone writes in it, or while
+  that run is among the 2,000 the run history keeps. A webhook's conversation,
+  and a routine set to run inside the bot's own conversation, carry no such
+  mark: only the run history names them. Past that history their prompts look
+  like messages typed at the computer. So does a message a paired device
+  edited before this version, because an edit recorded no sender then (it
+  does now, as a sent message does). These are adopted as yours: that is what
+  the button's sentence asks you to be sure of. The full list is under
+  [What this does not cover](#what-this-does-not-cover).
 - **A session that holds a note is not handed on.** A recalled note stays in
   the engine's own session for that conversation. When words that are not
   proven yours arrive there afterwards (someone else's message, another bot's
@@ -390,7 +406,85 @@ entries are given.
   other route.
 - **Limits.** At most 200 notes of 64 KB each. Files are owner-only (`0600`),
   written atomically, and pass the same credential scrub as bot memory.
-- **Backups.** The folder is part of a full backup, like any other data.
+- **Backups.** The folder is part of a full backup, like any other data, and
+  so is the record below. After a restore, or after copying an installation to
+  another computer, the conversations that were proven yours stay so; the
+  others can no longer be adopted (above).
+- **The record.** Which messages are yours is kept in
+  `~/.openmausbot/shared-notes-threads.json`: per conversation a count and a
+  checksum of the proven lines, never their text or ids. Beside it,
+  `shared-notes-proof.json` keeps what must outlive it: the moment proof
+  began on this installation, which conversations a backup brought in, when
+  the installation was last restored, and when either file was last found
+  missing. Both are written whole to a scratch file, synced to the disk and
+  renamed into place, so a power cut leaves the old file or the new one. A
+  proof reaches the disk a moment after the message; the mark that a session
+  holds a note, and an adoption, are written at once. Whatever order the disk
+  finishes them in, an older copy never replaces a newer one.
+
+### What this does not cover
+
+Shared notes are recalled only on proof, and the proof has edges. These are
+the known ones, in plain words.
+
+- **Old messages carry no trace of who wrote them.** Messages sent from any
+  paired device before senders were recorded (#1514, 18 September 2026), and
+  cards answered before answerers were recorded (#1717, 23 September 2026),
+  look exactly like ones typed or answered at the computer. The button adopts
+  them. Use it only if nobody else wrote in your conversations before then.
+- **An old routine or webhook run can look like your own conversation.** A
+  routine run that is older than the 2,000 runs the history keeps and that
+  someone later carried on by hand is adopted. So is a webhook's
+  conversation, or a routine that ran inside the bot's own conversation,
+  once its run has left that history: nothing else marks them.
+- **A bot that can run commands can read the notes.** A bot that runs
+  commands on the computer as your user can read the shared-notes folder,
+  like the rest of the data folder. On a server you run yourself without the
+  desktop app, where a local request counts as the owner's, such a bot can
+  also call the owner's routes, the adopt button's included, and can change
+  or delete the record files.
+- **A crash can cost a conversation its notes.** A proof is written a moment
+  after the message. If the server is killed in that moment, that line is
+  never proven and its conversation recalls no shared note from then on.
+  Start a new conversation.
+- **Both record files gone is a fresh start.** If the record and the file
+  beside it are both deleted, the next start cannot tell it from the first
+  one: proof begins again, and every existing conversation counts as older
+  and can be adopted. One of the two missing is a loss, and adopts nothing.
+- **Some of your own conversations can never be adopted.** One where you
+  wrote from a device you have since removed, or answered a card from a
+  signed-in device rather than at the computer; one that came from a backup,
+  or from before a restore or a move to another computer; and any from
+  before the record was lost.
+- **A chat-only device that answers a card ends that conversation's
+  standing.** Its approval or answer is someone else's, like a message of
+  theirs would be, and the conversation recalls no shared note afterwards.
+  Where the conversation's session already holds a recalled note, the answer
+  is refused instead.
+- **Another bot's ask replays the conversation.** The first ask from another
+  bot after a message of yours that recalled a note starts a fresh session
+  with the whole conversation sent again, which uses more input.
+- **A note is found by its subject or an alias, nothing else.** A message
+  that is about a note's content but shares no word with its name, title or
+  aliases recalls nothing from it.
+- **The engine and its provider are not under this app's control.** The
+  import deletes its own copies of your chat text. Whether the engine keeps
+  its own is the engine's doing: the dialog says so beside the engine choice
+  when it may. What the provider behind any engine does with text it is sent
+  is that provider's policy.
+- **The screens are a guard in front of your own review, not a guarantee.**
+  The checks for secrets, sensitive subjects and instruction-like facts work
+  on wording. An independent check of an earlier version of them, on
+  wordings they had not been written against, found roughly half of the
+  sensitive facts a model had left unlabelled still ticked (12 of 22) and
+  roughly four in ten secret wordings still ticked (11 of 26), and about one
+  in ten ordinary facts wrongly dropped (11 of 121). The rules were widened
+  after that and now pass the project's own written sample, but those
+  figures are approximate, the sample is small, and new wordings will get
+  through at some similar rate. Read the list before you save.
+- **Not tried.** A real ChatGPT or Claude export, a real model's answers, a
+  hosted installation, a Cloud home and Windows have not been run with this
+  feature. See `docs/verification/context-import.md`.
 
 ### Import from ChatGPT or Claude
 
@@ -416,9 +510,13 @@ it saves goes to the owner's About me and shared notes.
    One scan keeps at most 100,000 conversations, and a zip may hold at most
    100,000 files, of which the first 1,000 conversation lists are read, as
    long as together they unpack to no more than 8 GB; past any of these, the
-   dialog says so.
-3. **Read.** You pick which bot's engine reads it. Only your own messages are
-   sent, with each conversation's title and date: each message cut at 1,500
+   dialog says so. A list whose first 10,000 items hold no conversation is
+   not a list of conversations: it is left there, unread, and the dialog
+   names it.
+3. **Read.** You pick which bot's engine reads it. When that engine may keep
+   its own record of the text it is sent, the dialog says so under the choice
+   before anything is read; it does not refuse (see below). Only your own
+   messages are sent, with each conversation's title and date: each message cut at 1,500
    characters, code blocks dropped, 6,000 characters a conversation, about
    24,000 characters a call. You can pause, resume and cancel, and close the
    window while it runs. One import proposes at most 2,000 facts: it stops
@@ -506,15 +604,33 @@ those parts read again or skip them. A call may take 120 seconds, and the
 engine is told the same limit. After a restart a running import comes back
 paused.
 
-**On the Claude engine** each call is a one-shot `claude -p`. Where the
-installed Claude CLI offers them (its `--help` is read, which calls no model),
-the import's calls add `--no-session-persistence`, so the CLI keeps no session
-file of the chat text, `--tools ""`, so the call has no built-in tool, and
-`--strict-mcp-config`, so it mounts no MCP server from your own settings. A
-CLI too old to list an option makes the call without it: the text then lands
-in the CLI's own session files under its config folder, which the import's
-clean-up does not reach. Other engines make an ordinary API call and keep
-nothing here.
+**What the engine keeps.** The import deletes its own copies of your chat
+text. The engine that reads it is a separate program or service, and each one
+reports whether it can read text without keeping a record of its own. Where
+it cannot, or does not say, the dialog shows this line under the engine
+choice before reading starts, and reads with that engine all the same: "This
+engine may keep its own record of the text it is sent. OpenMausBot deletes its
+own copies either way."
+
+- **The Claude engine** makes each call as a one-shot `claude -p`. Where the
+  installed Claude CLI offers them (its `--help` is read, which calls no
+  model), the import's calls add `--no-session-persistence`, so the CLI keeps
+  no session file of the chat text, `--tools ""`, so the call has no built-in
+  tool, and `--strict-mcp-config`, so it mounts no MCP server from your own
+  settings. A CLI too old to list the first option makes the call without it:
+  the text then lands in the CLI's own session files under its config folder,
+  which the import's clean-up does not reach, and the dialog shows the line.
+  It shows it too when the CLI could not be asked.
+- **Engines called over an API** (the OpenAI-compatible ones) get one request
+  per call from this app itself. No engine program runs, so no session or
+  history of the text is written on this computer, and the line is not shown.
+- **Engines that run their own agent program** (Gemini, Qwen, Cursor, Grok
+  CLI and the others of that family) start a fresh session for each call, in
+  an empty folder with no tools. Whether that program keeps its own history
+  of the session is not known to this app, so the line is shown.
+
+None of this covers what the provider behind an engine does with the text it
+receives. That is the provider's own policy, whichever engine you pick.
 
 Nothing an import does can stop the server. A failure in the background (a
 full disk, a folder that cannot be written, a damaged file) fails that import
