@@ -53,7 +53,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | A4 | After an approved payment that posts a form, `agent_browser_reload` is held and Deny posts nothing. The card names the site and "an earlier payment" and repeats no field. After opening another address the reload is held too, and again after going back. |
 | A5 | A 2,400-character selector and one starting with a dash are refused. A button with no area is held by its snapshot name when picked by ref, and refused when picked by CSS. |
 | A6 | A visible Send and a hidden Cancel in one grid cell: the click on Send is held. |
-| A7 | Enter in a form whose only submit is `<input type="image">` is held as money; so is one whose button is tied by the `form` attribute. |
+| A7 | Enter in a form whose only submit is `<input type="image">` is held as money; Enter in one whose "Send" button is tied to it by the `form` attribute is held as a send. |
 | A8a | A ref with a trailing space, for a Pay button inside a frame, is held. |
 | A8b | `agent_browser_select` on a list whose `onchange` submits its form is held. |
 | A8c | A form with controls named `tagName`, `elements`, `action`, `id`, `closest` and `querySelectorAll` is still read: its submit is held and its field is on the card. |
@@ -71,6 +71,18 @@ even when an earlier one failed, and prints `"case"`, its title and
 | R11 | On a page with 6,000 filled fields a click that commits nothing runs with no card inside 1.5 seconds. A Send there lists only its own section's field. |
 | R12 | A search box holding a card number submits with no card. An IMEI lookup (a number that passes the Luhn check) does too. |
 | T7 | Ordinary operations, each with the outcome it must have. Pass with no card: links that say "Blog post", "Buy tickets" and "Share prices" (each opens its page), "Save changes" on a profile with an "About you" box, "Apply" on filters, "Submit" on a sign-in, "Continue" on a sign-up, Enter in a notes box, several lines typed into it, and "Confirm" alone. Held as a send: a `#` link that says "Send", Enter in a chat composer, "Comment" on a one-field form, "Send" in a mail form, "Apply" on a form with a file to attach. Held as money: "Pay now", "Upgrade", and "Continue" in a card form. |
+| 4A | With the focus in a "Pay now" form's field, a line break typed at a field in a disabled group, an inert one and a hidden one is refused; so is one typed at a search box that does not have the focus, and at a search box behind a modal whose "Buy now" has the focus. After a click on the search box the same text runs. |
+| 4B | Enter in an address finder (`type="search"`) inside a card form with "Pay now", Enter in a `role="searchbox"` promo field inside a card form, "Continue" on a card form inside `role="search"`, and Enter in the search field of a form whose button says "Buy now" are each held as money. |
+| 4C | A product page with a pay-later message frame and an express-checkout frame, both from another origin: a size list with a change handler, a quantity stepper, "Add to cart", an accordion and a link all run with no card. "Continue" inside the express frame is held as money. So is "Continue" inside a frame known only by the name `klarna-payments-main`. |
+| 4D | On a page with an advert frame, three links clicked by ref open their pages with no card: a headline over 120 characters with list words in it, a link with text hidden from the snapshot, and a picture-plus-text link. |
+| 4E | Contents links to headings on the same page ("Transfer of power", "Trade") and `#/blog` and `#!/share` routes pass. A bare `#` "Send" and a link to a place the page does not have ("Post") are held. |
+| 4F | "Continue" beside card fields in a component's open shadow root is held as money. A mail form whose fields sit in shadow roots lists them on the card; the recipient changes and the approval is void. The form also holds a closed component, and the card says part of it could not be read. |
+| 4G | A label wrapping a text area, an input and a list: the fields are named "Recovery phrase", "Password hint" and "Network", and none of the text area's words is on the card or in the log. |
+| 4H | A list gaining a row above the button every 300 ms: two approvals are void, the third card says the page keeps changing, and its approval is used. |
+| 4I | A `role="checkbox"` switched on while the card is open voids the approval. |
+| 4J | Six forms with a text area on an English page ("Save draft", "Translate", "Generate", "Check grammar", "Update profile", "Add note") submit with no card. "Speichern" on a page that declares German is held. |
+| 4K | In a card form, an option ("Use this card"), a tab and a switch are each held as money. |
+| 4L | `const el = [document.querySelector('#amount')][0]; el.value = '999'` is refused and the field keeps its value; a script that fills an object of its own runs. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
@@ -88,18 +100,22 @@ pnpm exec vitest run shared/browser-commit.test.ts server/browser-commit-page.te
   server/activity.test.ts src/lib/approval-summary.test.ts src/components/ApprovalCard.test.ts
 ```
 
-`server/browser-commit-ordinary.test.ts` is a table of more than 160 ordinary
-operations (forty of them links whose text has a word from the lists) and
-the outcome each must have: passes, held as a send, held as money, or
-refused. Each row runs through the real page read and the real gate against
-a page in happy-dom, by ref, the way a bot clicks. Add a row there before
-changing a rule or a word list.
+`server/browser-commit-ordinary.test.ts` is a table of more than 220 ordinary
+operations and the outcome each must have: passes, held as a send, held as
+money, or refused. Forty are links whose text has a word from the lists. A
+second group holds what the first table missed: same-page links and `#/`
+routes, shop pages with a payment brand's frame, text-area forms with
+everyday labels, links whose snapshot name is not their text, search fields
+in card forms, fields in web components. Each row runs through the real page
+read and the real gate against a page in happy-dom, by ref, the way a bot
+clicks. Add a row there before changing a rule or a word list.
 
 `server/browser-commit-hold.e2e.test.ts` runs the same route, respond route,
 decision log and attachment store against an inert browser executable, so it
 runs anywhere. It does not prove the page read: only the script above reads a
 real page. Run the script on Windows before a Windows release; the engine
-pinned there is older than the one these reads were checked on.
+pinned there is older than the one these reads were checked on, and the
+reads use its `eval --stdin` and `get attr`.
 
 The hold is a guard against a bot over-acting on ordinary pages, not a
 guarantee: [its limits](../approval-levels.md#limits) are part of what it

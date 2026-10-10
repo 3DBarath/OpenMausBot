@@ -131,18 +131,22 @@ recording controls are intentionally not added to the live browser chrome.
   Enter or Space press, or text typed with a line break, the server reads
   the target itself (`server/browser-commit-page.ts`): `get box` for the
   bot's selector, then a fixed script that describes the element in that box
-  (in the page or in a frame of its own origin) and its form or region.
+  (in the page, in an open shadow root, or in a frame of its own origin) and
+  its form or region.
   Rules in `shared/browser-commit.ts` decide. Only for a commitment does a
   second fixed script read the evidence (fields, the text around the
   element, hashes of what the approval is bound to), then `get url`. Both
-  scripts share one prelude and each must fit one command-line argument. A
+  scripts share one prelude and go to the engine on its input (`eval
+  --stdin`), never on its command line, so their length is not bounded by
+  the longest command line Windows will start. A
   commitment waits on the card and counter that connected-app sends use;
   the approval is bound to a digest of the address, the element's identity
   (its path in the document and a hash of its tag and the attributes that
   say what it does), the text around it with relative times evened out, the
   listed fields at full length, and the page's own salted hash of every
   control of the form or region, hidden ones and frame bodies included.
-  After two voids in a row the next card is bound to less and says so. A
+  After two voids in a row the next card is bound to less (the address, the
+  label and the controls) and says so. A
   reload after a commitment is held the same way, for as long as the
   session lives; the flag is in memory, because no per-session state
   survives a restart. The gate's header comment lists every browser tool
@@ -160,23 +164,40 @@ recording controls are intentionally not added to the live browser chrome.
   element) is refused, and so is Enter or Space with the focus inside a
   closed shadow root. The engine measures an in-frame element from the
   frame's own corner, so a ref click is judged both as the element read in
-  that box and as the element the snapshot named; when the box is found
+  that box and as the element the snapshot named. When the box is found
   nowhere and the page has a frame recognised as a payment frame, a
-  button-like ref is money.
+  button-like ref is money; when it matched an element the snapshot names
+  differently and it starts within a payment frame's own size, likewise.
+- Two kinds of payment frame, by title, name and address. A frame for
+  typing a card in (card number, expiry, security code, hosted fields,
+  payment input) is a card signal for the region around it. A frame that
+  only names a payment or a brand (a pay-later message, an express or
+  donate button) is not: only a click inside it is money.
 - A card region is a form, or for a control with no form the nearest
   dialog or landmark around it (the page when there is none), that holds a
   `cc-*` autofill hint, or a card-number field beside a security-code or
   expiry field by name, or a Luhn-valid value with a card scheme's prefix
-  or beside one of those names, or a payment frame. Any button-like control
-  there is money, by click, Enter or Space. A search form is never either
-  class.
+  or beside one of those names, or a frame for typing a card in. Fields in
+  open shadow roots count. Any button-like control there is money, by
+  click, Enter or Space; so is an option, a tab or a switch. A search
+  skips the send rules only: a money label on its button, or a card region
+  around it, still holds.
+- A link clicked by a ref the snapshot calls a link, that would be held for
+  the snapshot's name, is checked against the engine's own word: `get attr
+  <ref> href`. The ref table carries no addresses even with `includeUrls`,
+  and the snapshot text that does can be forged by a page. An address that
+  goes to another document, or a `#/` route, makes it a plain link.
 - Typed text with a line break runs only when the read resolved the
-  selector to a text field that will itself take the focus: the engine
-  types at the current focus otherwise.
+  selector to a text field that already has the focus: the engine cannot
+  always give a field the focus (a modal in front, a disabled group, an
+  inert or hidden parent), and types at the current focus when it cannot.
 - The hold is a guard with stated limits, tuned to pass ordinary browsing:
   a plain link is never a commitment by its text; a form with a multi-line
   field and a harmless label, a sign-in form, and "Apply" where nothing is
-  attached are not sends; Enter in a multi-line field is a new line unless
+  attached are not sends; on an English page a form with a multi-line field
+  and a label on neither list passes (the unknown-label rule is for pages
+  that declare another language, and labels with other letters or none);
+  Enter in a multi-line field is a new line unless
   the field is a message composer. `server/browser-commit-ordinary.test.ts`
   is the table of ordinary operations and the outcome each must have, run
   through the real reader and gate. A request-level check on payments is
@@ -195,8 +216,8 @@ recording controls are intentionally not added to the live browser chrome.
 - A hold is released in a `finally`: whatever fails after the browser was
   taken, the browser is free again, the request is forgotten, the
   screenshot is deleted and the card is closed as unavailable.
-- Not verified on Windows: the gate's reads use `get box`, `get url` and
-  `eval -b` from the engine CLI, checked on 0.37.0. The Windows pin is
+- Not verified on Windows: the gate's reads use `get box`, `get url`, `get
+  attr` and `eval --stdin` from the engine CLI, checked on 0.37.0. The Windows pin is
   `0.36.0-omb.1`. Run the [commit hold recipe](../verification/browser-commit-hold.md)
   there before a Windows release. If a read fails, the click is refused, not
   let through.

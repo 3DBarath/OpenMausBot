@@ -152,15 +152,14 @@ it refuses the call or asks. It never lets it through unseen.
 | Clicks "Apply" where something is being submitted: the form or region has a file to attach or a multi-line field, or the label says an application goes out ("Apply now", "Easy Apply", "Apply for this job") | Send |
 | Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer, deposit, withdraw, top up, add funds, upgrade, start free trial, renew, get tickets, sell, trade, place bet, sign transaction, charge; or says the same another way (purchase, check out, order now, reorder, or "Order" alone) | Money |
 | Clicks one whose label pairs a word for committing or sending (place, complete, confirm, finish, make, authorize, process, or any Send word) with what money is spent on (order, purchase, payment, money, booking, reservation, donation, checkout): "Place your order", "Confirm booking", "Make a payment", "Send money", "Submit order" | Money |
-| Clicks, or presses Enter or Space on, any button, link or menu item inside a card region (below), whatever it says; submits a form there; changes a list or tick box there that has a change handler | Money |
+| Clicks, or presses Enter or Space on, any button, link, menu item, option, tab or switch inside a card region (below), whatever it says; submits a form there; changes a list or tick box there that has a change handler | Money |
 | Presses Space on a focused button or menu item | The same as a click on it |
 | Presses Enter in a message composer (below) | Send |
-| Submits a form that has a multi-line text field, unless its button has one of the harmless labels (below) | Send |
+| Submits a form that has a multi-line text field, on a page that is not in English or with a label that is not (below) | Send |
 | Reloads the page after one of the above went through | The same as that one |
 
 Labels match whole words in any letter case, in English: "Post reply"
-matches, "Posts" and "Repost" do not. The multi-line row is what catches a
-send on a page in another language. Money wins when both match, and a money
+matches, "Posts" and "Repost" do not. Money wins when both match, and a money
 word lifts a send to money ("Submit payment"), so it asks even under a daily
 allowance. A money word that only names a thing holds nothing: "Order
 history", "Payment methods", "Purchase history", "Check out our new
@@ -171,19 +170,31 @@ they are money like everything else there.
 
 What passes, so that ordinary browsing is not interrupted:
 
-- **A plain link.** A link that loads another page is never held for what it
+- **A plain link.** A link that goes somewhere is never held for what it
   says: "Share prices", "Blog post", "Buy tickets", "Subscribe" open a page.
-  A link that acts as a button is judged as a button: one whose address is
-  `#`, a place on the same page or `javascript:`, one with a button or menu
-  item role, or one with a click handler written on it. Inside a card region
-  a link is money like any other control.
-- **A harmless label on a form with a multi-line field.** A profile with an
-  "About you" box, a note, a settings page. When the button's whole label is
-  one of: save, save changes, update, next, continue, back, cancel, close,
-  done, ok, search, filter, sort, reset, clear, add, edit, preview, upload,
-  sign in, log in, sign up, create account, register, the form is not taken
-  for a send. A label with a send or money word in it ("Save and send") is
-  still held.
+  Somewhere is another page, a place on the same page that exists (a
+  contents link to a heading), or a `#/…` or `#!…` route of a single-page
+  app. A link that acts as a button is judged as a button: one whose address
+  is a bare `#`, empty, a place the page does not have, or `javascript:`;
+  one with a button or menu item role; or one with a click handler written
+  on it. Inside a card region a link is money like any other control. For a
+  link clicked by a ref whose snapshot name is not its text (a long
+  headline, a picture with text), the server asks the engine for that
+  ref's own address and goes by it.
+- **A form with a multi-line field, on an English page.** A profile with an
+  "About you" box, a note, a draft, a settings page: "Save draft",
+  "Translate", "Generate", "Update profile". On a page in English a button
+  whose label is on neither list passes. The page is taken for English when
+  it declares English or no language at all, and the label has only basic
+  Latin letters. **The other way round:** on a page that declares another
+  language, or with a label that has other letters ("Veröffentlichen",
+  "送信") or no words at all (an icon with no name), such a form is taken
+  for a send, because the lists know nothing of its words. There only a
+  label that is wholly one of these passes: save, save changes, update,
+  next, continue, back, cancel, close, done, ok, search, filter, sort,
+  reset, clear, add, edit, preview, upload, sign in, log in, sign up, create
+  account, register. A tick box or a list whose own handler submits such a
+  form has no button to go by, and is held in any language.
 - **A sign-in.** A form, or a dialog or region with no form, that has a
   password field and no multi-line field is never a send, whatever its
   button says ("Submit", "Send code"). Money rules still apply to it.
@@ -199,34 +210,47 @@ What passes, so that ordinary browsing is not interrupted:
   multi-line field inside a card region: nothing is relaxed there.
 - A click that only puts the cursor in a text box, or ticks a checkbox with
   no handler.
-- **Search is never a send or a payment**: a search field, anything inside a
-  search region, or a form whose only text field is a search field, whatever
-  is typed in it.
+- **A search is never a send.** A search field, anything inside a search
+  region, or a form whose only text field is a search field skips the send
+  rules, and what is typed in it is never taken for a card number. It is no
+  way round a payment: a money label on its button ("Buy now") is still
+  held, and a search field inside a card region is part of that region.
 
 **A card region** is a form that holds a card signal. For a control with no
 form it is the nearest dialog, section, article, main area or other landmark
 around the control that holds one, or the whole page when there is no such
 region around it. A header, footer, navigation bar or sidebar is a region of
-its own, so its links are not part of a card form elsewhere on the page. The
-card signals are:
+its own, so its links are not part of a card form elsewhere on the page.
+Fields inside a component's open shadow root count like any others. The card
+signals are:
 
 - a field marked for autofill as part of a card (`cc-number` and the rest);
 - two signs by name on two visible fields: one called a card number and
   another called a security code (CVC, CVV) or an expiry date, in English,
   Spanish, French, German or Portuguese. The name is read from the field's
-  name, id, label and placeholder;
+  name, id, placeholder, `aria-label` and its `<label>`;
 - a value that is a card number: 13 to 19 digits that pass the Luhn check
   and start the way a card scheme's numbers do, or that pass the check
   beside one of the name signs. A number that only passes the check (an
-  IMEI, a tracking number) is not one;
-- a frame the read recognises as a payment or card frame by its title, name
-  or address, or a frame of the page's own site that holds any of the above.
+  IMEI, a tracking number) is not one, and neither is anything typed in a
+  search form;
+- **a frame for typing a card in**, from another site: one whose title, name
+  or address says card, card number, expiry, security code, hosted fields or
+  payment input (a processor's hosted card fields). A frame of the page's
+  own site counts when it holds any of the signs above.
+
+A frame that only names a payment or a payment brand (a pay-later message,
+an express-checkout or donate button, a wallet button) is **not** a card
+signal: the page around it is an ordinary shop page, and "Add to cart", a
+size list or a link there is judged like anywhere else. A click *inside*
+such a frame is still money (see "Inside a frame" below).
 
 One name sign alone is not a card region: a library card number with a PIN,
 or a gift card code, is left as it is. Inside a card region the label does
 not matter: "Continue", "Next" and "Confirm" are money there, on a button of
-any type, a link, a menu item, an element with a button role, or a plain
-element that shows a pointer cursor.
+any type, a link, a menu item, an element with a button role, a plain
+element that shows a pointer cursor, and an option, a tab or a switch ("Use
+this card").
 
 What counts as submitting a form:
 
@@ -249,9 +273,10 @@ What counts as submitting a form:
   shops take a card, cannot be read. Enter or Space with the focus inside
   one is refused, in any chord, and so is text typed there with a line
   break: the bot is told to click the frame's button by its ref from a
-  snapshot. That click is money when the frame is a payment or card frame
-  and the element is a button, link or menu item, whatever it is called;
-  in any other frame it is judged by its name. A click or typed text aimed
+  snapshot. That click is money when the frame is a payment frame of either
+  kind (for typing a card in, or a payment brand's message or button) and
+  the element is a button, link, menu item, option, tab or switch, whatever
+  it is called; in any other frame it is judged by its name. A click or typed text aimed
   at the frame element itself is refused, because it lands on whatever is
   inside.
 - **Inside a closed part of the page.** Some components keep their inside
@@ -277,15 +302,15 @@ browser stays open, because the flag is kept in memory only: no state of a
 browser session is saved across a restart to keep it in.
 
 **Typed text with a line break.** `agent_browser_type` presses Enter for a
-line break. The engine types at whatever has the focus when its selector's
-element cannot take it, or when it cannot resolve the selector at all. So
-text with a line break runs only when the server has resolved the selector
-to a text field that will itself take the text, and Enter there commits
-nothing. Several lines run into a multi-line field that is not a composer:
-a notes box takes them as lines. Into anything else (a composer, a
-paragraph, a button, an image, a selector such as `text=…` or `label=…`,
-several lines into a one-line field) it is refused, and the bot is told to
-fill the field and then press Enter or click the button.
+line break. The engine tries to give its selector's element the focus first,
+and when it cannot (the element is no field, is behind a modal, in a
+disabled group, hidden, or the selector resolves to nothing) the Enter lands
+on whatever has the focus. So text with a line break runs only when its
+target is a text field that **already has the focus**, and it is then judged
+exactly as Enter in that field. Several lines run into a focused multi-line
+field that is not a composer: a notes box takes them as lines. Anything else
+is refused, and the bot is told to click the field first and then type, or
+to fill the field and then press Enter or click the button.
 
 **Selectors.** The server reads the same element the engine would act on,
 and for a click by ref it also judges the name the last snapshot gave that
@@ -297,7 +322,11 @@ starts with a dash, is refused: the bot is told to use a ref from a snapshot.
 An element the engine finds but the server cannot describe (it is inside a
 frame from another site, or has no area) is judged by the name the last
 snapshot gave it, as money when the page has a payment frame it could be in,
-and refused when it has no name.
+and refused when it has no name. The engine measures an element inside a
+frame from the frame's own corner, so a ref can also match something else on
+the page; when the snapshot's name is not that element's and the measured
+box starts within a payment frame's own size, it is taken to be in the
+frame.
 
 **Two reads.** The server first reads only the element and its form or
 region, enough to decide. A click that is no commitment goes on at once,
@@ -320,6 +349,13 @@ a card number written inside other text. The text around the button cannot
 be shown in part: when it names a secret (a password, a code, a key) or
 holds a card number or a credential, it is left off the card, and no picture
 is taken.
+
+A field is called by its label's own words, cut to 60 characters: never by
+the text or value of a control inside the label (a text area's content, a
+list's choices). Fields inside a component's open shadow root are read like
+any others. A component that keeps its inside closed cannot be read: when
+the form or region holds one, the card says "Part of this form could not be
+read", and what is in there is neither on the card nor part of the approval.
 
 **Values the card never carries.** Some values are counted inside the page
 and never leave it: the card, the notification and both logs say only how
@@ -361,9 +397,11 @@ It is bound to the address, to the element itself (where it sits in the page,
 and the attributes that say what it does), to the text around it, and to
 every control of the form or region: each field at full length, the fields
 and the text the card had no room for, hidden fields and fields that are not
-displayed, which boxes are ticked and what each list has chosen, and the
-text inside a frame of the page's own site (a rich-text editor keeps its
-message there). When the region around a button with no form has no control
+displayed, which boxes are ticked and what each list has chosen (tick boxes,
+switches, radio buttons, options and toggle buttons that are roles on a
+plain element too, by their `aria-checked`, `aria-selected` and
+`aria-pressed`), fields inside open shadow roots, and the text inside a
+frame of the page's own site (a rich-text editor keeps its message there). When the region around a button with no form has no control
 of its own, it is bound to every control on the page. When you answer, the
 bot's selector is resolved again. If it now points at another element, or
 any of the rest changed, nothing is clicked, the card says the page changed,
@@ -377,8 +415,9 @@ now", "in 5 minutes") and clocks are evened out before comparing; any other
 number, a price included, is compared as it is. **A page that keeps changing
 by itself:** when two approvals in a row are void, the third card says the
 page keeps changing, and that approval is bound to the address, the
-element's place in the page, its label, and every control as above, but not
-to the text around it or the element's attributes.
+element's label and every control as above. It is not bound to the text
+around the element, to its attributes, or to its place in the page: a list
+that keeps gaining rows above a button moves it every time.
 
 The bot's call waits up to nine minutes, the same as a connected-app send, or
 up to the configured MCP call timeout when that is shorter. Then the card
@@ -406,8 +445,12 @@ refused, not held, when its text:
   `WebSocket`, jQuery's `$.post`, `$.ajax` and `$.get`, `axios`);
 - writes into a field, or changes what the rules above read an element by:
   its text, its role, its type, its attributes (`setAttribute`,
-  `removeAttribute`, `el.ariaLabel = …`). A script that fills an object of
-  its own (`const out = {}; out.value = el.value`) is a read and runs;
+  `removeAttribute`, `el.ariaLabel = …`), or whether an option is chosen
+  (`option.selected = …`). A script that fills a result of its own is a
+  read and runs, when that result is made as an empty object or array,
+  once, under a name used for nothing else (`const out = {}; out.value =
+  el.value`). `const el = [document.querySelector("#amount")][0]; el.value
+  = "999"` is a write to the page and is refused;
 - makes an event by hand (`dispatchEvent`, jQuery's `.trigger(…)`, or a
   handler of a person's own action called directly: `el.onchange()`,
   `el.onkeydown(…)`). `x.onload()` and `emitter.once(…)` are not that;
@@ -437,39 +480,57 @@ catch:
 - **A payment behind a button that says nothing of money, on a page with no
   card field.** "Confirm", "Continue", "Complete", "Approve" or "Authorize"
   on a one-click checkout that charges a saved card passes: there is no card
-  field, no payment frame and no money word to go by. This is the largest
-  gap. A check on the payment request itself is planned as separate work.
+  field, no frame for typing a card in and no money word to go by. This is
+  the largest gap. A check on the payment request itself is planned as
+  separate work.
+- **A page with a payment brand's button or message in a frame, and no card
+  field of its own.** The frame does not make the page a card region, so a
+  "Continue" on the page beside a wallet button is judged by its label and
+  passes. Only a click inside the frame is money.
 - A card region with no autofill hints and only one sign (a field called
   "Card number" and nothing called a security code or an expiry, with no
   card number typed in yet) is not read as one. A library or membership card
   form that also asks for an expiry date is.
+- **Card fields the read cannot name.** A card number split over several
+  boxes, and fields whose only label is text in a neighbouring table cell
+  (no `<label>`, no placeholder, no `aria-label`, no telling name or id) are
+  not recognised as card fields.
 - A button with no form is judged by the nearest region around it. One that
   sits in a different section from the card fields it pays with is judged by
   its label alone. The other way round, on a page with no regions at all,
   every button outside a form counts as inside the page's card region when
   the page holds a card signal, so an unrelated button there asks too.
-- A payment frame from another site whose title, name and address say
-  nothing of payment is not recognised as one: a button inside it is judged
-  by its name.
+- A frame for typing a card in whose title, name and address say nothing of
+  a card or a payment is not recognised: a button inside it is judged by its
+  name. A list inside a payment frame that submits when its choice changes
+  passes: nothing can be read in there, and only a button, link, menu item,
+  option, tab or switch is taken for money.
+- A plain element with the default cursor that pays when clicked, inside a
+  card region, is not taken for a control.
 - The word lists are English. A "Pagar" button outside a card region passes.
 
 **Sends**
 
+- **An English send label the lists do not know.** On an English page a
+  form with a multi-line field is not a send unless its button says so by
+  one of the listed words. "Dispatch", "Broadcast", "Ship it" or "Go" on a
+  message form passes.
 - **A link that commits when it is opened.** A plain link is never held, and
   opening an address never is: a one-click unsubscribe, or a "Send" link
-  that sends by loading a page, goes through.
-- **A form with a multi-line field and a harmless label.** A site that sends
-  a message on "Done", "Next" or "OK" is not held. Neither is anything on a
-  form with a password field and no multi-line field, or an "Apply" with no
-  file and no multi-line field (a one-click job application).
+  that sends by loading a page, goes through. So does a `#/…` route or a
+  contents link whose page acts on it by script.
+- A send on a form with a password field and no multi-line field, or an
+  "Apply" with no file and no multi-line field (a one-click job
+  application).
 - **Enter in a box the rules do not take for a composer.** A chat box that
   shares its region with another text field and has no keyboard hint, or
   whose name is not in English and has no Send button beside it, sends on
   Enter without asking. A one-line box outside any form that sends on Enter
   is not recognised either.
-- Other languages rely on the multi-line form rule and the composer rule;
-  a send button in another language on a form with no multi-line field
-  passes.
+- A page that is not in English and does not say so (no `lang`), with a send
+  button in plain Latin letters ("Enviar"), is read as English: on a form
+  with a multi-line field it passes. With no multi-line field a send button
+  in another language passes on any page.
 
 **What it cannot see**
 
@@ -478,12 +539,17 @@ catch:
   written on the element.
 - Inside an embedded frame from another site, such as a payment or comment
   widget, a click is judged by the name the last snapshot gave the element,
-  and as money when the frame is recognised as a payment or card frame. The
-  card shows no fields and no picture, and the approval is bound to that
-  name and the address, not to the element itself. Enter and Space there are
-  refused, not judged: the bot has to click the frame's button instead. The
-  same holds for a closed part of the page, and for a focused custom element
-  that does not say what it is: the refusal there can be a false alarm.
+  and as money when the frame is recognised as a payment frame. The card
+  shows no fields and no picture, and the approval is bound to that name and
+  the address, not to the element itself. Enter and Space there are refused,
+  not judged: the bot has to click the frame's button instead. The same
+  holds for a closed part of the page, and for a focused custom element that
+  does not say what it is: the refusal there can be a false alarm.
+- **Inside a component that keeps its contents closed** (a closed shadow
+  root): its fields are not listed, not counted as card fields and not part
+  of the approval. The card says part of the form could not be read when it
+  can tell: the component has no content of its own on the page and takes up
+  room. One it cannot tell from an ordinary element goes unmentioned.
 - A typed space is not judged: the engine inserts it as text, with no key
   press. Only a Space key press is.
 - A secret in a field that nothing marks as one (no type, no autofill hint,
@@ -493,17 +559,32 @@ catch:
 - After OpenMausBot restarts while a browser stays open, a reload in that
   browser is no longer held: what was sent before the restart is not
   remembered.
+- On a page that keeps changing by itself, the third card is bound to less:
+  with a selector that is not a ref, it can then be used for another element
+  with the same label and the same controls around it.
 
-**Where it asks more than it needs to**
+**Where it asks, or refuses, more than it needs to**
 
+- **Buttons that only open something.** A label on the lists is held even
+  when the button only opens a dialog or the next page: "Forward", "Share
+  screen", "Subscribe", "Renew", "Charge", "Book appointment", "Notify me
+  when in stock", "Upgrade", "Sell", "Trade", "Reply".
 - Under **Allow a daily amount**, the shared count goes up for every browser
   press the rules read as a send, and some of those send nothing: a "Reply"
   button that only opens a box to type in. The daily number is used up
   sooner than the sends alone would.
-- Inside a card region every button asks, a quantity stepper and a "Terms"
-  link included.
-- A button that says "Upgrade", "Sell", "Trade" or "Book" asks even where it
-  only opens the next page.
+- Inside a card region every button asks, a quantity stepper, a tab and a
+  "Terms" link included.
+- On a page in another language, every form with a multi-line field asks
+  unless its button has one of the listed harmless labels: "Speichern" on a
+  notes form asks.
+- **Typed text with a line break is refused unless its field already has the
+  focus.** The bot has to click the field first. On a page with a frame,
+  text with a line break typed by ref into a field the snapshot gives no
+  name (or another name than the read does) is refused even then: use
+  `agent_browser_fill` and press Enter.
+- **More than 5,000 fields in one form or region:** a commitment there is
+  refused, not held. The approval could not be bound to all of them.
 - A number that changes in the text around the button (a price, a count)
   voids an approval like any other change. On a page where that keeps
   happening, two cards are void before the third one stops minding the text
