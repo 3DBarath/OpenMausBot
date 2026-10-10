@@ -43,6 +43,14 @@ export const REFUSED_MAX_LINES = 20;
  * conversation. With none among them it is not a list of conversations, and
  * the rest of it, however many millions of small things, is not parsed. */
 export const SHAPELESS_MAX_ELEMENTS = 10_000;
+/** One list hands over this many items and no more: every item is parsed,
+ * and a list that shows one conversation could otherwise go on for hundreds
+ * of millions of tiny ones. No real export comes near it (a scan keeps
+ * 100,000 conversations). The list is then reported as read in part. */
+export const LIST_MAX_ITEMS = 2_000_000;
+/** …and all the lists of one upload together, this many: a zip can name a
+ * thousand lists. The lists after that are left unread, and said to be. */
+export const UPLOAD_MAX_ITEMS = 2 * LIST_MAX_ITEMS;
 /** The conversation lists an export carries: conversations.json, or numbered
  * parts of it, in any folder. Every other entry is skipped unread. */
 const KNOWN_ENTRY = /(?:^|[\\/])conversations(?:-\d+)?\.json$/i;
@@ -51,6 +59,10 @@ const ZIP_READ_BYTES = 16 * 1024;
 /** …and smaller ones, down to this, while one read unpacks to more than a step should hold. */
 const ZIP_READ_MIN_BYTES = 512;
 const STEP_UNPACKED_BYTES = 1024 * 1024;
+/** What one read unpacked to is handed on this much at a time, with a turn
+ * for other work in between: a megabyte of two-byte items is half a million
+ * parses, and the first read of an entry can unpack to sixteen megabytes. */
+const HAND_ON_BYTES = 256 * 1024;
 const JSON_READ_BYTES = 64 * 1024;
 /** The list of contents is read this much at a time. */
 const DIRECTORY_READ_BYTES = 64 * 1024;
@@ -107,6 +119,8 @@ export interface ExportReadReport {
   read: string[];
   /** Entries refused, as `name: reason`: the first REFUSED_MAX_LINES, then one line counting the rest. */
   refused: string[];
+  /** Lists read only in part, as `name: how far`: they stopped at the most items one list, or one upload, hands over. */
+  cut: string[];
   /** Elements that were not valid JSON on their own. */
   unparseable: number;
   /** Elements too large to hold. */
@@ -405,7 +419,13 @@ async function unpack(file: FileHandle, data: { at: number; packed: number; meth
     else if (out.length < STEP_UNPACKED_BYTES / 4) step = Math.min(ZIP_READ_BYTES, step << 1);
     if (out.length) {
       idle = 0;
-      if (!push(out)) return true;
+      for (let from = 0; from < out.length; from += HAND_ON_BYTES) {
+        if (from) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          aborted(signal);
+        }
+        if (!push(out.subarray(from, from + HAND_ON_BYTES))) return true;
+      }
     } else {
       // fflate keeps what it cannot use yet, so packed data that gives nothing out is not fed to it without end
       idle += chunk.length;
@@ -419,16 +439,21 @@ async function unpack(file: FileHandle, data: { at: number; packed: number; meth
  * `onElement`, which may answer `false` for an element that is not shaped
  * like a conversation (anything else, or nothing, says nothing about it). A
  * list whose first SHAPELESS_MAX_ELEMENTS elements were all answered `false`
- * or were not JSON at all is refused there and read no further. */
+ * or were not JSON at all is refused there and read no further. A list
+ * hands over LIST_MAX_ITEMS at most, and all of them UPLOAD_MAX_ITEMS: what
+ * was left is in the report (`cut`, `refused`). */
 export async function readExport(
   path: string,
   onElement: (value: unknown) => unknown,
   opts: { entryMaxBytes?: number; signal?: AbortSignal } = {},
 ): Promise<ExportReadReport> {
   aborted(opts.signal);
-  const report: ExportReadReport = { kind: isZip(path) ? "zip" : "json", entries: [], read: [], refused: [], unparseable: 0, oversized: 0, truncated: false };
+  const report: ExportReadReport = { kind: isZip(path) ? "zip" : "json", entries: [], read: [], refused: [], cut: [], unparseable: 0, oversized: 0, truncated: false };
   /** Entries refused past the lines the report keeps. */
   let unlisted = 0;
+  /** Items handed over so far, by all the lists of this upload. */
+  let items = 0;
+  const tooMany = `left unread: this upload holds more than ${UPLOAD_MAX_ITEMS.toLocaleString("en-US")} items in all`;
   /** Conversation lists past the number one import opens. */
   let listsLeft = 0;
 
@@ -445,20 +470,35 @@ export async function readExport(
       shapeless += 1;
       return shapeless < SHAPELESS_MAX_ELEMENTS;
     };
+    /** Items this list has handed over, and whether it stopped at the most it may. */
+    let count = 0;
+    let cut = false;
+    /** One element, looked at: false when the list is not one of conversations after all. */
+    const look = (element: Buffer): boolean => {
+      let value: unknown;
+      try {
+        value = JSON.parse(element.toString("utf8"));
+      } catch {
+        report.unparseable += 1;
+        return noConversation();
+      }
+      if (onElement(value) !== false) {
+        shaped = true;
+        return true;
+      }
+      return noConversation();
+    };
     const splitter = createArraySplitter({
       onElement: (element) => {
-        let value: unknown;
-        try {
-          value = JSON.parse(element.toString("utf8"));
-        } catch {
-          report.unparseable += 1;
-          return noConversation();
+        count += 1;
+        items += 1;
+        if (!look(element)) return false;
+        // the last item this list, or this upload, hands over: the splitter stops here
+        if (count >= LIST_MAX_ITEMS || items >= UPLOAD_MAX_ITEMS) {
+          cut = true;
+          return false;
         }
-        if (onElement(value) !== false) {
-          shaped = true;
-          return true;
-        }
-        return noConversation();
+        return true;
       },
       // too large to look at: not held against the list
       onOversized: () => {
@@ -475,7 +515,7 @@ export async function readExport(
     return {
       refuse,
       push(chunk: Uint8Array): boolean {
-        if (refused) return false;
+        if (refused || cut) return false;
         bytes += chunk.length;
         if (bytes > limit) return refuse(tooLarge(limit));
         try {
@@ -485,13 +525,18 @@ export async function readExport(
           throw error;
         }
         // the splitter stopped where it was: the rest of this chunk was not looked at, and no more is asked for
+        if (cut) {
+          report.cut.push(`${shown(name)}: stopped after its first ${count.toLocaleString("en-US")} items`);
+          return false;
+        }
         if (splitter.stopped()) return refuse(`not a list of conversations: none of its first ${SHAPELESS_MAX_ELEMENTS.toLocaleString("en-US")} items is a conversation`);
         return true;
       },
       end() {
         if (refused) return;
         report.read.push(shown(name));
-        if (!splitter.closed()) report.truncated = true;
+        // a list that was stopped is reported as read in part, not as a file that ended early
+        if (!cut && !splitter.closed()) report.truncated = true;
       },
     };
   };
@@ -533,7 +578,7 @@ export async function readExport(
       aborted(opts.signal);
       const target = list(entry.label, limit);
       const fits = !entry.place || LOCAL_HEADER_BYTES + entry.place.packed <= room;
-      const data = unpacked >= budget ? tooMuch : fits ? await openEntry(file, entry, directory, limit) : UNPACK;
+      const data = items >= UPLOAD_MAX_ITEMS ? tooMany : unpacked >= budget ? tooMuch : fits ? await openEntry(file, entry, directory, limit) : UNPACK;
       if (typeof data === "string") target.refuse(data);
       else {
         room -= LOCAL_HEADER_BYTES + data.packed;

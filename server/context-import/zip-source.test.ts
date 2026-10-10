@@ -10,7 +10,7 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deflateSync, strToU8, zipSync } from "fflate";
 
-import { ExportReadError, readExport, REFUSED_MAX_LINES, setZipEntryMaxBytesForTests, SHAPELESS_MAX_ELEMENTS, ZIP_MAX_DIRECTORY_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_LISTS } from "./zip-source.ts";
+import { ExportReadError, LIST_MAX_ITEMS, readExport, REFUSED_MAX_LINES, setZipEntryMaxBytesForTests, SHAPELESS_MAX_ELEMENTS, UPLOAD_MAX_ITEMS, ZIP_MAX_DIRECTORY_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_LISTS } from "./zip-source.ts";
 
 let scratch: string;
 beforeEach(() => { scratch = mkdtempSync(join(tmpdir(), "omb-zip-source-")); });
@@ -34,7 +34,7 @@ describe("reading an uploaded export", () => {
   it("reads a bare conversations.json whatever it is called", async () => {
     const { elements, report } = await read(file("upload.bin", LIST));
     expect(elements).toEqual([{ id: "a" }, { id: "b" }]);
-    expect(report).toEqual({ kind: "json", entries: [], read: ["conversations.json"], refused: [], unparseable: 0, oversized: 0, truncated: false });
+    expect(report).toEqual({ kind: "json", entries: [], read: ["conversations.json"], refused: [], cut: [], unparseable: 0, oversized: 0, truncated: false });
   });
 
   it("reads only the conversation lists of a zip, in any folder, and numbered parts", async () => {
@@ -418,7 +418,7 @@ describe("a zip is read from its list of contents", () => {
     const withAttachment = zipSync({ "conversations.json": strToU8(LIST), "file-1.docx": [attachment, { level: 0 }], "audio.wav": [strToU8("x".repeat(5_000)), { level: 0 }] });
     await expect(read(file("cut-after-attachment.zip", withAttachment.subarray(0, directoryOf(withAttachment) - 2_000)))).rejects.toThrow(DAMAGED);
     // a zip with nothing in it is whole: it is empty, not damaged
-    expect((await read(file("nothing.zip", zipSync({})))).report).toEqual({ kind: "zip", entries: [], read: [], refused: [], unparseable: 0, oversized: 0, truncated: false });
+    expect((await read(file("nothing.zip", zipSync({})))).report).toEqual({ kind: "zip", entries: [], read: [], refused: [], cut: [], unparseable: 0, oversized: 0, truncated: false });
   });
 
   it("refuses one part of a split zip", async () => {
@@ -734,5 +734,70 @@ describe("a zip is read from its list of contents", () => {
       expect(cpu).toBeLessThan(1_500);
       expect(longest).toBeLessThan(250);
     }, 180_000);
+  });
+
+  // One conversation at the head of a list is enough to have it read, and
+  // the rest can be hundreds of millions of tiny items, each one parsed. So
+  // a list gives two million items and no more, an upload four million in
+  // all, and what was left is said.
+  describe("a list that goes on past any real export", () => {
+    const CONVERSATION = '{"mapping":{},"title":"the real one"}';
+    const shaped = (value: unknown): boolean => typeof value === "object" && value !== null && "mapping" in value;
+    /** A conversation, then this many numbers. */
+    const padded = (numbers: number) => Buffer.concat([Buffer.from(`[${CONVERSATION}`), Buffer.alloc(numbers * 2, ",0"), Buffer.from("]")]);
+
+    it("is read up to two million items and no further, and says how far it got", async () => {
+      expect(LIST_MAX_ITEMS).toBe(2_000_000);
+      let handed = 0;
+      let conversations = 0;
+      const report = await readExport(file("long.json", padded(2_600_000)), (value) => {
+        handed += 1;
+        if (shaped(value)) conversations += 1;
+        return shaped(value);
+      });
+      expect(handed).toBe(LIST_MAX_ITEMS);
+      expect(conversations).toBe(1);
+      // it was read, in part: not refused, and not a file that ended early
+      expect(report.read).toEqual(["conversations.json"]);
+      expect(report.cut).toEqual(["conversations.json: stopped after its first 2,000,000 items"]);
+      expect(report.refused).toEqual([]);
+      expect(report.truncated).toBe(false);
+      // a list just under that is read whole and nothing is said
+      let whole = 0;
+      const under = await readExport(file("under.json", padded(1_999_998)), () => { whole += 1; });
+      expect(whole).toBe(1_999_999);
+      expect(under.cut).toEqual([]);
+      expect(under.read).toEqual(["conversations.json"]);
+    });
+
+    it("reads four million items of one upload in all, in a couple of seconds and without holding the server up, and leaves the other lists", async () => {
+      expect(UPLOAD_MAX_ITEMS).toBe(4_000_000);
+      // six lists, each one conversation and then twenty million numbers: 40 MB apiece, a few dozen kilobytes packed
+      const raw = padded(20_000_000);
+      const packed = deflateRawSync(raw);
+      const sum = crc32(raw);
+      const path = writeZip("long.zip", ["a", "b", "c", "d", "e", "f"].map((id): Part => ({ name: `${id}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })));
+      let longest = Infinity;
+      let cpu = Infinity;
+      let handed = 0;
+      let report!: Awaited<ReturnType<typeof readExport>>;
+      // the best of three: another process may hold this one up, but not three times in a row
+      for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 3_000); attempt += 1) {
+        handed = 0;
+        const started = process.cpuUsage();
+        const watched = await watch(() => readExport(path, (value) => { handed += 1; return shaped(value); }));
+        const spent = process.cpuUsage(started);
+        report = watched.result;
+        longest = Math.min(longest, watched.stall);
+        cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
+      }
+      // 120 million items took 20 seconds and more, with stalls of over a second: now a bounded read, in short steps
+      expect(cpu).toBeLessThan(3_000);
+      expect(longest).toBeLessThan(250);
+      expect(handed).toBe(UPLOAD_MAX_ITEMS);
+      expect(report.read).toEqual(["a/conversations.json", "b/conversations.json"]);
+      expect(report.cut).toEqual(["a/conversations.json: stopped after its first 2,000,000 items", "b/conversations.json: stopped after its first 2,000,000 items"]);
+      expect(report.refused).toEqual(["c", "d", "e", "f"].map((id) => `${id}/conversations.json: left unread: this upload holds more than 4,000,000 items in all`));
+    }, 300_000);
   });
 });

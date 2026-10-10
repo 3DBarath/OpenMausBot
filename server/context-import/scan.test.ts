@@ -72,6 +72,21 @@ describe("scanning an export", () => {
     expect(read).toMatchObject({ format: "chatgpt", conversations: 1, skipped: { conversations: 19_999, entries: [] } });
   });
 
+  it("says when a list was read only in part, and still counts what it read", async () => {
+    const [conversation] = sampleConversations(NOW).map(chatGptConversation);
+    const path = join(scratch, "long.json");
+    writeExportJson(path, [conversation, ...Array.from({ length: 2_100_000 }, () => 0)]);
+    const { summary } = await scanExport(path);
+    expect(summary).toMatchObject({ format: "chatgpt", conversations: 1, truncated: false });
+    expect(summary.skipped.cut).toEqual(["conversations.json: stopped after its first 2,000,000 items"]);
+    expect(summary.skipped.conversations).toBe(1_999_999);
+    expect(summary.skipped.entries).toEqual([]);
+    // an export that is read whole says nothing of the kind
+    const usual = join(scratch, "usual.json");
+    writeExportJson(usual, [conversation]);
+    expect((await scanExport(usual)).summary.skipped).not.toHaveProperty("cut");
+  });
+
   it("reads pasted text as pieces, with no hashes", () => {
     const { summary, rows } = scanPaste("- I am vegetarian\n- I live in Pune\n", NOW);
     expect(summary).toMatchObject({ format: "paste", conversations: 1, ownChars: 35, oldest: NOW, newest: NOW });

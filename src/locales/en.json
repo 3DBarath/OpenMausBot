@@ -4065,6 +4065,7 @@
   "contextImport.scan.alreadyRead": "Read by an earlier import and left out: {count}.",
   "contextImport.scan.skipped": "Skipped because this version does not know their shape: {count}.",
   "contextImport.scan.refused": "Not read: {entry}",
+  "contextImport.scan.cut": "Read in part: {entry}. The rest of that list was not read.",
   "contextImport.scan.truncated": "The file ended early, so the last conversation may be missing.",
   "contextImport.scan.readTitle": "What to read",
   "contextImport.scan.from": "From",

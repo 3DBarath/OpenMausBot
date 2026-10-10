@@ -163,6 +163,10 @@ describe("the import dialog, step by step", () => {
     expect(scanned.words).toContain("At most 86 calls, if every part has to be read twice.");
     expect(scanned.words).toContain("An import you leave unfinished is deleted, with the export, after 14 days.");
     expect(render(job({ status: "created" })).words).toContain("The upload has to arrive within 5 minutes.");
+    // a list that was read only in part is named, with how far the read got
+    const cut = render(job({ status: "scanned", scan: { ...SCAN, skipped: { ...SCAN.skipped, cut: ["conversations.json: stopped after its first 2,000,000 items"] } }, slice: { from: 0, to: 1, cap: 500 }, estimate: { conversations: 1, chars: 1, calls: 2, maxCalls: 3, minSeconds: 1, maxSeconds: 2 } }));
+    expect(cut.words).toContain("Read in part: conversations.json: stopped after its first 2,000,000 items. The rest of that list was not read.");
+    expect(scanned.words).not.toContain("Read in part");
     const over = render(job({ status: "scanned", scan: { ...SCAN, skipped: { ...SCAN.skipped, overLimit: 1_900_000 } }, slice: { from: 0, to: 1, cap: 500 }, estimate: { conversations: 1, chars: 1, calls: 2, maxCalls: 3, minSeconds: 1, maxSeconds: 2 } }));
     expect(over.words).toContain("This export holds more conversations than one import scans. Not scanned: 1,900,000.");
   });

@@ -178,6 +178,7 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
         {scan.alreadyRead > 0 && <li>{t("contextImport.scan.alreadyRead", { count: number(scan.alreadyRead) })}</li>}
         {scan.skipped.conversations + scan.skipped.oversized > 0 && <li>{t("contextImport.scan.skipped", { count: number(scan.skipped.conversations + scan.skipped.oversized) })}</li>}
         {scan.skipped.entries.map((entry) => <li key={entry}>{t("contextImport.scan.refused", { entry })}</li>)}
+        {(scan.skipped.cut ?? []).map((entry) => <li key={entry}>{t("contextImport.scan.cut", { entry })}</li>)}
         {scan.skipped.secrets > 0 && <li>{t("contextImport.scan.secretsCut", { count: number(scan.skipped.secrets) })}</li>}
         {scan.skipped.overLimit > 0 && <li>{t("contextImport.scan.overLimit", { count: number(scan.skipped.overLimit) })}</li>}
         {scan.truncated && <li>{t("contextImport.scan.truncated")}</li>}

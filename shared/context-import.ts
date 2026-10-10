@@ -88,6 +88,10 @@ export interface ImportScanSummary {
     oversized: number;
     /** Archive entries refused, as `name: reason`. Names only, never content. */
     entries: string[];
+    /** Lists that were read only in part, as `name: how far the read got`:
+     * they held more items than one list, or one upload, is read for. Absent
+     * when every list was read to its end. */
+    cut?: string[];
     /** Messages that held a password, a card number or an identity or bank number: that value was cut out before any model read them. */
     secrets: number;
     /** Conversations past the most one scan keeps: counted, never read. */

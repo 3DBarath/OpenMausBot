@@ -122,6 +122,7 @@ export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet
   summary.skipped.conversations += report.unparseable;
   summary.skipped.oversized = report.oversized;
   summary.skipped.entries = report.refused;
+  if (report.cut.length) summary.skipped.cut = report.cut;
   summary.truncated = report.truncated;
   if (formats.chatgpt || formats.claude) summary.format = formats.chatgpt >= formats.claude ? "chatgpt" : "claude";
   return { summary, rows, unknownShapes, archiveEntries: report.entries };
