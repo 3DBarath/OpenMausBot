@@ -32,9 +32,12 @@
 // (shared-notes-adopt.ts). It is written in both files and never worked out
 // again while either one still says it. The second file also holds what
 // rules a conversation out of adoption for good: the conversations an import
-// from a backup brought in, the moment the whole installation was last put
-// back from an archive, and the moment either file was last found missing or
-// unreadable (`lostAt`). After such a loss nobody can tell an older line
+// from a backup brought in (each also says so on its own record in the
+// store, TaskRecord.fromBackup, which is what holds if both files here go),
+// the moment the whole installation was last put back from an archive
+// (noted again from the restore's receipt at any start that does not know
+// it), and the moment either file was last found missing or unreadable
+// (`lostAt`, which is kept nowhere else: both files gone is a first start). After such a loss nobody can tell an older line
 // from a later one nobody vouched for, or a conversation that was already
 // adopted and lost its standing from one that never was, so nothing that
 // existed before the loss is adopted. A missing or damaged file never

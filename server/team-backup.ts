@@ -204,6 +204,10 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
           // Each imported thread follows the imported bot's model.
           threadId: i === 0 ? bot.threadId : newId(), title: task.title, createdAt: task.createdAt, resumeCursors: {},
           activity: "idle" as const, busy: false, unread: false,
+          // Whoever made the file wrote these lines, through no request
+          // here: said on the conversation itself, before its transcript is
+          // written, and for good (TaskRecord.fromBackup).
+          fromBackup: true,
           ...(task.titleFromFirstMessage ? { titleFromFirstMessage: true } : {}),
         };
         // Same rule as a message's `from`: the opener is remapped to its

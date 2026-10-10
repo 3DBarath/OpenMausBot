@@ -2,7 +2,7 @@ import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR } from "./config.ts";
-import { Store, UNTITLED_TASK } from "./store.ts";
+import { Store, toWireTask, UNTITLED_TASK } from "./store.ts";
 import { RoutineManager } from "./routines.ts";
 import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
@@ -179,6 +179,31 @@ describe("additive portable team backups", () => {
     const second = importTeamBackup(store, routines, backup, selection());
     expect(second.bots.find((bot) => bot.name === "Mira 3")).toMatchObject({ section: "Engineering 3", chiefOfStaff: true });
     expect(store.bot(importedChief.id)).toEqual(importedChief);
+  });
+
+  // The lines of an imported conversation were written by whoever made the
+  // file, through no request here. That is recorded on the conversation
+  // itself, in the store, so it outlives any other record of it
+  // (server/shared-notes-adopt.ts never adopts such a conversation).
+  it("marks every conversation it brings in as from a backup, for good, where no client sees or changes it", () => {
+    const { store, routines, chief } = fixture();
+    const backup = createTeamBackup(store, routines.listRoutines(), "My team");
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const imported = result.bots.flatMap((bot) => store.tasks(bot.id).map((task) => ({ bot, task })));
+    expect(imported.length).toBeGreaterThanOrEqual(6);
+    for (const { task } of imported) expect(task.fromBackup, task.title).toBe(true);
+    // the conversations that were here are not marked, and neither is one started with an imported bot afterwards
+    for (const task of store.tasks(chief.id)) expect(task.fromBackup, task.title).toBeUndefined();
+    const importedChief = result.bots.find((bot) => bot.name === "Mira 2")!;
+    expect(store.createTask(importedChief.id, "Started here")!.fromBackup).toBeUndefined();
+    // it is stored with the conversation: a restart reads it back
+    const reloaded = new Store(selection);
+    for (const { bot, task } of imported) expect(reloaded.taskByThread(bot.id, task.threadId)?.fromBackup, task.title).toBe(true);
+    // no client is told, and none can take it off
+    const { bot, task } = imported[0]!;
+    expect(toWireTask(task, bot.modelSelection)).not.toHaveProperty("fromBackup");
+    store.patchTask(bot.id, task.threadId, { title: "Renamed", ...({ fromBackup: undefined } as object) });
+    expect(store.taskByThread(bot.id, task.threadId)).toMatchObject({ title: "Renamed", fromBackup: true });
   });
 
   it("carries connector grants in the private backup but lands imported bots grant-less", () => {

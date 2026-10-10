@@ -99,12 +99,19 @@ export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
    * so only positively identified auto pins yield to Works on changes.
    * Clients see only whether a pin is an auto pin (WireTask.surfaceAuto). */
   surfaceSource?: "user" | "auto";
+  /** This conversation came in through a team backup
+   * (server/team-backup.ts): its lines were written by whoever made the
+   * file, through no request here. Set when the conversation is made, kept
+   * with it for good (it is no TASK_PATCH_FIELD, so nothing takes it off),
+   * and what stops the owner's "use my notes in my existing conversations"
+   * from ever taking it (server/shared-notes-adopt.ts). */
+  fromBackup?: true;
 }
 
 /** TaskRecord fields no client may see. Everything else must be on WireTask:
  * the exactness assertion below fails to compile when either side drifts,
  * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "fromBackup";
 /** WireTask fields computed by toWireTask and never stored on a TaskRecord. */
 export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
@@ -122,7 +129,7 @@ export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, ...stored } = task;
+    fromBackup: _fromBackup, surfaceSource, ...stored } = task;
   const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
   // Who pinned stays private. A client learns only whether the pin is the
   // machine's own record, so it never presents one as the person's choice.

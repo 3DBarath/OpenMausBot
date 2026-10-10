@@ -225,6 +225,16 @@ it.skipIf(process.platform === "win32")("never adopts a conversation that came i
     // a conversation the owner starts with the imported bot is their own
     const fresh = await open(copy.id, "New");
     expect(await say(copy.id, fresh, QUESTION)).toContain("shared/food.md");
+
+    // ── both record files are lost: the server cannot tell that from a first start, and proof begins again ──
+    // The mark is on the conversation itself, so it is still known to have come from a backup.
+    await restartWithout(RECORD, BESIDE);
+    const afterBoth = await adopt();
+    expect(afterBoth.skipped.restored).toBe(result.skipped.restored);
+    expect(await say(copy.id, theirs, QUESTION)).not.toContain("shared/food.md");
+    // while the owner's own conversations, now all older, can be adopted again
+    expect(afterBoth.adopted).toBeGreaterThanOrEqual(1);
+    expect(await say(bot.id, mine, QUESTION)).toContain("shared/food.md");
   } finally {
     await h.close();
   }

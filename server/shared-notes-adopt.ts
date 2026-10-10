@@ -53,7 +53,9 @@ export interface AdoptableConversation {
   room: boolean;
   /** A routine's or a webhook's run executed here, as far as what is stored says. */
   routine: boolean;
-  /** An import from a backup brought this conversation in (OwnerThreads.imported). */
+  /** An import from a backup brought this conversation in: it says so on
+   * its own record (TaskRecord.fromBackup), or the owner record names it
+   * (OwnerThreads.imported). */
   restored?: boolean;
   lines: ReadonlyArray<{
     id: string;

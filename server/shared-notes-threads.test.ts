@@ -303,6 +303,12 @@ describe("the owner's conversations", () => {
     const second = { id: "22222222-2222-4222-8222-222222222222", at: 1_700_000_065_000 };
     expect(new OwnerThreads(file, undefined, { restore: second }).restoredAt).toBe(1_700_000_065_000);
     expect(new OwnerThreads(file, undefined, { restore: { id: "33333333-3333-4333-8333-333333333333", at: 1_650_000_000_000 } }).restoredAt).toBe(1_700_000_065_000);
+    // both files gone, which the server reads as a first start: the restore's receipt still says when it was
+    rmSync(file);
+    rmSync(anchor);
+    const fresh = new OwnerThreads(file, undefined, { restore: second });
+    expect(fresh.lostAt).toBeNull();
+    expect(fresh.restoredAt).toBe(1_700_000_065_000);
     // a time the caller could not read is "now"
     vi.setSystemTime(1_700_000_080_000);
     expect(new OwnerThreads(file, undefined, { restore: { id: "44444444-4444-4444-8444-444444444444", at: Number.NaN } }).restoredAt).toBe(1_700_000_080_000);

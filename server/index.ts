@@ -1647,9 +1647,10 @@ function notesOwnerOnlyThread(threadId: string): boolean {
  * every bot is offered; rooms are counted and left. A routine's or a
  * webhook's run is recognised by what is stored and nothing else: the
  * conversation still carries its run (`routineRunId`), or a run still in the
- * run history names it. A conversation an import from a backup brought in is
- * named by the record, and one from before a restore of the whole
- * installation by its lines' times. Each conversation is read when its turn
+ * run history names it. A conversation an import from a backup brought in
+ * says so itself (TaskRecord.fromBackup) and is named by the record as well,
+ * and one from before a restore of the whole installation is told by its
+ * lines' times. Each conversation is read when its turn
  * comes and not kept loaded. Only the route calls this, for the proven
  * owner; a second click while one is under way gets the same answer. */
 let adoptingConversations: Promise<AdoptionResult> | null = null;
@@ -1668,11 +1669,13 @@ async function adoptEveryConversation(): Promise<AdoptionResult> {
     for (const threadId of [bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)]) {
       if (seen.has(threadId)) continue;
       seen.add(threadId);
+      const task = store.taskByThread(bot.id, threadId);
       offers.push({
         threadId,
         room: Boolean(store.groupByThread(threadId)),
-        routine: Boolean(store.taskByThread(bot.id, threadId)?.routineRunId) || runThreads.has(threadId),
-        restored: ownerThreads.imported(threadId),
+        routine: Boolean(task?.routineRunId) || runThreads.has(threadId),
+        // said on the conversation itself, which outlives the record files; the record names it too
+        restored: task?.fromBackup === true || ownerThreads.imported(threadId),
       });
     }
   }
