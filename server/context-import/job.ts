@@ -199,6 +199,8 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
   /** The upload being written, settled once its file is closed. */
   let uploading: Promise<void> | null = null;
   let saving = false;
+  /** A cancel that is still letting go of its files. No import starts until it is done. */
+  let cancelling = false;
   let held = false;
   let waiting: Array<() => void> = [];
   let lastError = "";
@@ -566,6 +568,9 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
     view: (id, slice) => viewOf(need(id), slice),
 
     create(origin) {
+      // A cancel deletes the folder when it has finished waiting: an import
+      // started meanwhile would be deleted with it, so none is.
+      if (cancelling) throw new ImportError("The last import is still being cancelled. Try again in a moment.", 409);
       if (job) throw new ImportError("An import is already open. Finish or cancel it first.", 409);
       if (!IMPORT_ORIGINS.includes(origin)) throw new ImportError("source must be chatgpt, claude or paste", 400);
       job = { id: randomUUID(), origin, status: "created", batches: 0, nextBatch: 0, skippedBatches: [], duplicates: 0, consolidated: false, candidates: [], readHashes: [], readFrom: null, readTo: null };
@@ -764,20 +769,27 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
       const mine = job;
       const pass = running;
       const upload = uploading;
-      job = null;
-      controller?.abort();
-      wake();
-      // let the pass in flight and the upload being written let go of their files before they are removed
-      await pass;
-      await upload;
-      forget();
-      if (removeFolder()) return;
-      // The files are still there: the import stays, failed, so the person
-      // is told and can cancel again once the folder can be changed.
-      job = mine;
-      mine.status = "failed";
-      mine.error = "This import was stopped, but its files could not be deleted from this computer. Check that OpenMausBot's data folder can be changed, then cancel again.";
-      throw new ImportError(mine.error, 507);
+      // From here until the folder is gone nothing else may start: this
+      // cancel only ever deletes the import it was called for.
+      cancelling = true;
+      try {
+        job = null;
+        controller?.abort();
+        wake();
+        // let the pass in flight and the upload being written let go of their files before they are removed
+        await pass;
+        await upload;
+        forget();
+        if (removeFolder()) return;
+        // The files are still there: the import stays, failed, so the person
+        // is told and can cancel again once the folder can be changed.
+        job = mine;
+        mine.status = "failed";
+        mine.error = "This import was stopped, but its files could not be deleted from this computer. Check that OpenMausBot's data folder can be changed, then cancel again.";
+        throw new ImportError(mine.error, 507);
+      } finally {
+        cancelling = false;
+      }
     },
 
     patch(id, patch) {

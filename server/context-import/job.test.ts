@@ -787,6 +787,36 @@ describe("an import that is left, deleted or cancelled part of the way", () => {
     expect(job.create("paste").status).toBe("created");
   });
 
+  it("never lets a cancel delete an import that was started while it ran", async () => {
+    const job = make(scripted());
+    const { id } = job.create("chatgpt");
+    let arrived: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => { arrived = resolve; });
+    const upload = job.receiveFile(id, Readable.from((async function* () {
+      yield Buffer.from("[{");
+      arrived();
+      await new Promise(() => undefined);
+    })())).catch(() => undefined);
+    await reached;
+    // the cancel is waiting for the upload's file to close when a new import is asked for
+    const cancelling = job.cancel(id);
+    const refused = await rejection(() => job.create("paste"));
+    expect(refused).toMatchObject({ status: 409 });
+    expect(refused.message).toMatch(/still being cancelled/);
+    await cancelling;
+    await upload;
+    expect(job.current()).toBeNull();
+    // once the cancel is done a new import starts, and stays
+    const next = job.create("paste");
+    job.receiveText(next.id, "- I am vegetarian\n");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(job.current()).toMatchObject({ id: next.id, status: "scanned" });
+    expect(existsSync(join(DIR, "job.json"))).toBe(true);
+    // a second cancel of the same import, and a cancel of another id, touch nothing
+    expect((await rejection(() => job.cancel(id)))).toMatchObject({ status: 404 });
+    expect(job.current()).toMatchObject({ id: next.id });
+  });
+
   it("deletes an import nobody has touched for 14 days, with its upload, at boot and on the daily look", async () => {
     let at = NOW.getTime();
     const clock = { now: () => new Date(at) };
