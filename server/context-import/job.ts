@@ -56,7 +56,7 @@ import { freshCandidates, importPrompt, parseImportCandidates, type DropTally } 
 import { appendImportRecord, importedHashes } from "./records.ts";
 import { applyContradictions, capCore, consolidationChunks, contradictionEntries, foldSubjects, patchCandidates, ReviewError } from "./review.ts";
 import { keepWhatFits, planSave, SaveError, saveImportedFacts } from "./save.ts";
-import { CALL_GAP_MS, clampSlice, conversationHash, estimateSlice, MAX_CANDIDATES, parseConversation, proposeSlice, scanExport, scanPaste, selectSlice, type ScanRow } from "./scan.ts";
+import { CALL_GAP_MS, clampSlice, conversationHash, conversationShaped, estimateSlice, MAX_CANDIDATES, parseConversation, proposeSlice, scanExport, scanPaste, selectSlice, type ScanRow } from "./scan.ts";
 import { screenLines, screenMessages, screenTitle } from "./screen.ts";
 import { readExport } from "./zip-source.ts";
 import {
@@ -406,13 +406,15 @@ export function createContextImport(deps: ContextImportDeps): ContextImport {
       const found: PreparedConversation[] = [];
       await readExport(tmp(mine.id, "upload"), (value) => {
         const parsed = parseConversation(value);
-        if (!parsed) return;
+        // the same answer the scan gave: a list it refused for holding no conversation is refused here at the same place
+        if (!parsed) return conversationShaped(value);
         const hash = conversationHash(parsed.conversation);
         const index = order.get(hash);
-        if (index === undefined || found[index]) return;
+        if (index === undefined || found[index]) return true;
         // screened before anything is batched: what the screen cuts out reaches neither the model nor the batches file
         const text = conversationText(screenMessages(parsed.conversation.messages).messages);
         if (text) found[index] = { hash, title: screenTitle(parsed.conversation.title), date: day(parsed.conversation.updatedAt), updatedAt: parsed.conversation.updatedAt, text };
+        return true;
       }, { signal }).catch((error: unknown) => { throw readFailure(error); });
       conversations = found.filter(Boolean);
     }

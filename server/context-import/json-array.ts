@@ -26,12 +26,17 @@ export interface ArraySplitter {
   push(chunk: Uint8Array): void;
   /** After the last chunk: whether the list was closed. */
   closed(): boolean;
+  /** Whether `onElement` said to stop. */
+  stopped(): boolean;
 }
 
-export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; onOversized: () => void; maxElementBytes?: number }): ArraySplitter {
+/** `onElement` may answer `false` to stop for good: the rest of the bytes it
+ * was given, and any it is given later, are not looked at. */
+export function createArraySplitter(opts: { onElement: (bytes: Buffer) => unknown; onOversized: () => void; maxElementBytes?: number }): ArraySplitter {
   const max = opts.maxElementBytes ?? MAX_ELEMENT_BYTES;
   let started = false;
   let closed = false;
+  let stopped = false;
   let bom = 0;
   // inside an element: a container (depth counts its open brackets) or a bare string, number or literal
   let inElement = false;
@@ -55,7 +60,7 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
   };
   const finish = () => {
     if (oversized) opts.onOversized();
-    else opts.onElement(Buffer.concat(parts));
+    else if (opts.onElement(Buffer.concat(parts)) === false) stopped = true;
     parts = [];
     size = 0;
     oversized = false;
@@ -65,7 +70,7 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
 
   return {
     push(chunk) {
-      if (closed) return;
+      if (closed || stopped) return;
       let from = inElement ? 0 : -1;
       for (let i = 0; i < chunk.length; i += 1) {
         const byte = chunk[i]!;
@@ -114,6 +119,7 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
           else if (byte === COMMA || byte === CLOSE_BRACKET || isSpace(byte)) {
             keep(chunk, from, i);
             finish();
+            if (stopped) return;
             from = -1;
             if (byte === CLOSE_BRACKET) {
               closed = true;
@@ -129,6 +135,7 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
           if (depth === 0) {
             keep(chunk, from, i + 1);
             finish();
+            if (stopped) return;
             from = -1;
           }
         }
@@ -136,5 +143,6 @@ export function createArraySplitter(opts: { onElement: (bytes: Buffer) => void; 
       if (inElement && from !== -1) keep(chunk, from, chunk.length);
     },
     closed: () => closed,
+    stopped: () => stopped,
   };
 }

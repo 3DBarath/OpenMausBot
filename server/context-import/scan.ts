@@ -66,6 +66,13 @@ export function parseConversation(value: unknown): { format: "chatgpt" | "claude
   return null;
 }
 
+/** Whether an element of an export is shaped like a conversation, readable
+ * or not. Told to the reader, which gives up on a list that shows none
+ * (readExport). */
+export function conversationShaped(value: unknown): boolean {
+  return isChatGptConversation(value) || isClaudeConversation(value);
+}
+
 export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet<string>; signal?: AbortSignal; maxConversations?: number } = {}): Promise<ScanResult> {
   const max = opts.maxConversations ?? SCAN_MAX_CONVERSATIONS;
   const rows: ScanRow[] = [];
@@ -80,19 +87,20 @@ export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet
     if (rows.length >= max) {
       // counted, so the person is told how many; nothing of it is parsed or kept
       summary.skipped.overLimit += 1;
-      return;
+      return true;
     }
     const parsed = parseConversation(value);
     if (!parsed) {
       summary.skipped.conversations += 1;
       const shape = isRecord(value) ? Object.keys(value).sort().slice(0, 12).map((key) => key.slice(0, 40)).join(",") || "(empty object)" : Array.isArray(value) ? "(list)" : `(${typeof value})`;
       if (Object.keys(unknownShapes).length < 20 || Object.hasOwn(unknownShapes, shape)) unknownShapes[shape] = (unknownShapes[shape] ?? 0) + 1;
-      return;
+      // a conversation that could not be read is still one; anything else is not
+      return conversationShaped(value);
     }
     const { conversation } = parsed;
     const hash = conversationHash(conversation);
     // the same conversation in two parts of an export is one conversation
-    if (seen.has(hash)) return;
+    if (seen.has(hash)) return true;
     seen.add(hash);
     formats[parsed.format] += 1;
     summary.conversations += 1;
@@ -109,6 +117,7 @@ export async function scanExport(path: string, opts: { alreadyRead?: ReadonlySet
     }
     if (opts.alreadyRead?.has(hash)) summary.alreadyRead += 1;
     rows.push({ hash, updatedAt: conversation.updatedAt, chars });
+    return true;
   }, { signal: opts.signal });
   summary.skipped.conversations += report.unparseable;
   summary.skipped.oversized = report.oversized;

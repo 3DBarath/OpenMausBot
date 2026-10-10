@@ -10,7 +10,7 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deflateSync, strToU8, zipSync } from "fflate";
 
-import { ExportReadError, readExport, REFUSED_MAX_LINES, setZipEntryMaxBytesForTests, ZIP_MAX_DIRECTORY_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_LISTS } from "./zip-source.ts";
+import { ExportReadError, readExport, REFUSED_MAX_LINES, setZipEntryMaxBytesForTests, SHAPELESS_MAX_ELEMENTS, ZIP_MAX_DIRECTORY_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_LISTS } from "./zip-source.ts";
 
 let scratch: string;
 beforeEach(() => { scratch = mkdtempSync(join(tmpdir(), "omb-zip-source-")); });
@@ -646,5 +646,93 @@ describe("a zip is read from its list of contents", () => {
     expect(elements.length).toBeLessThanOrEqual(6 * 30);
     expect(report.refused.at(-1)).toMatch(/conversations\.json: left unread: the lists of this zip unpack to more than 0 GB in all$/);
     expect(report.refused.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // A list of conversations shows a conversation early. One whose first
+  // 10,000 elements hold none is something else, however long it goes on:
+  // millions of tiny elements cost a parse each and say nothing.
+  describe("a list that holds no conversations", () => {
+    const NOT_ONE = "not a list of conversations: none of its first 10,000 items is a conversation";
+    /** What the import says of an element: false when it is not shaped like a conversation. */
+    const shaped = (value: unknown): boolean => typeof value === "object" && value !== null && "mapping" in value;
+    const taking = () => {
+      const seen: unknown[] = [];
+      return { seen, take: (value: unknown) => { seen.push(value); return shaped(value); } };
+    };
+    const zeros = (count: number) => `[${"0,".repeat(count)}0]`;
+
+    it("is refused after its first 10,000 elements, with a plain reason, and no more of it is parsed", async () => {
+      expect(SHAPELESS_MAX_ELEMENTS).toBe(10_000);
+      // a bare file of two million numbers
+      const numbers = taking();
+      const report = await readExport(file("numbers.json", zeros(2_000_000)), numbers.take);
+      expect(numbers.seen).toHaveLength(SHAPELESS_MAX_ELEMENTS);
+      expect(report.refused).toEqual([`conversations.json: ${NOT_ONE}`]);
+      expect(report.read).toEqual([]);
+      // objects that are not conversations, lists, strings: the same
+      for (const element of ['{"id":1}', "[]", '"text"', "null"]) {
+        const other = taking();
+        const refused = await readExport(file("other.json", `[${`${element},`.repeat(30_000)}${element}]`), other.take);
+        expect(other.seen, element).toHaveLength(SHAPELESS_MAX_ELEMENTS);
+        expect(refused.refused, element).toEqual([`conversations.json: ${NOT_ONE}`]);
+      }
+      // elements that are not JSON at all count towards the 10,000, and are never handed over
+      const broken = taking();
+      const torn = await readExport(file("broken.json", `[${"{oops},".repeat(30_000)}0]`), broken.take);
+      expect(broken.seen).toEqual([]);
+      expect(torn.unparseable).toBe(SHAPELESS_MAX_ELEMENTS);
+      expect(torn.refused).toEqual([`conversations.json: ${NOT_ONE}`]);
+    });
+
+    it("is read whole when a conversation is among its first 10,000 elements, and not when the first comes later", async () => {
+      const conversation = '{"mapping":{},"title":"one"}';
+      const early = taking();
+      const kept = await readExport(file("early.json", `[${"0,".repeat(9_999)}${conversation},${"0,".repeat(40_000)}0]`), early.take);
+      expect(early.seen).toHaveLength(9_999 + 1 + 40_001);
+      expect(kept.refused).toEqual([]);
+      expect(kept.read).toEqual(["conversations.json"]);
+      const late = taking();
+      const left = await readExport(file("late.json", `[${"0,".repeat(10_000)}${conversation}]`), late.take);
+      expect(late.seen).toHaveLength(SHAPELESS_MAX_ELEMENTS);
+      expect(left.refused).toEqual([`conversations.json: ${NOT_ONE}`]);
+      // a caller that does not say what an element is shaped like is never refused for it
+      const { elements, report } = await read(file("unjudged.json", zeros(30_000)));
+      expect(elements).toHaveLength(30_001);
+      expect(report.refused).toEqual([]);
+    });
+
+    it("costs little in a zip of many such lists, holds the server up for none of it, and still reads the real list among them", async () => {
+      // twelve lists of two million numbers each, a few kilobytes apiece once packed, and one real list
+      const raw = Buffer.from(zeros(2_000_000));
+      const packed = deflateRawSync(raw);
+      const sum = crc32(raw);
+      const real = Buffer.from('[{"mapping":{},"title":"the real one"}]');
+      const parts: Part[] = [
+        ...Array.from({ length: 6 }, (_, index): Part => ({ name: `a${index}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })),
+        { name: "real/conversations.json", method: 8, packed: deflateRawSync(real), unpacked: real.length, crc: crc32(real) },
+        ...Array.from({ length: 6 }, (_, index): Part => ({ name: `b${index}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })),
+      ];
+      const path = writeZip("numbers.zip", parts);
+      let longest = Infinity;
+      let cpu = Infinity;
+      // the best of three: another process may hold this one up, but not three times in a row
+      for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 1_500); attempt += 1) {
+        const all = taking();
+        const started = process.cpuUsage();
+        const { result: report, stall } = await watch(() => readExport(path, all.take));
+        const spent = process.cpuUsage(started);
+        // 10,000 elements of each of the twelve, and the one conversation
+        expect(all.seen).toHaveLength(12 * SHAPELESS_MAX_ELEMENTS + 1);
+        expect(all.seen.filter(shaped)).toEqual([{ mapping: {}, title: "the real one" }]);
+        expect(report.read).toEqual(["real/conversations.json"]);
+        expect(report.refused).toHaveLength(12);
+        expect(report.refused[0]).toBe(`a0/conversations.json: ${NOT_ONE}`);
+        longest = Math.min(longest, stall);
+        cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
+      }
+      // 24 million elements were never parsed: this is a fraction of a second of work, in short steps
+      expect(cpu).toBeLessThan(1_500);
+      expect(longest).toBeLessThan(250);
+    }, 180_000);
   });
 });

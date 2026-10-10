@@ -119,4 +119,28 @@ describe("splitting a JSON list", () => {
     // processor time, so a busy machine does not decide: a quarter of a second for 192 MB
     expect((spent.user + spent.system) / 1000).toBeLessThan(250);
   });
+
+  it("stops for good when the caller says so: nothing after that element is handed over or looked at", () => {
+    const seen: unknown[] = [];
+    const splitter = createArraySplitter({
+      onElement: (element) => {
+        seen.push(JSON.parse(element.toString("utf8")));
+        return seen.length < 3 ? undefined : false;
+      },
+      onOversized: () => undefined,
+    });
+    // the stop comes in the middle of a chunk: the rest of that chunk is not split either
+    splitter.push(Buffer.from('[1, 2, 3, 4, {"five": 5}, '));
+    expect(seen).toEqual([1, 2, 3]);
+    splitter.push(Buffer.from('6, "this would not even be valid JSON: \\'));
+    splitter.push(Buffer.from("7]"));
+    expect(seen).toEqual([1, 2, 3]);
+    // it was not read to its end, and does not claim to have been
+    expect(splitter.closed()).toBe(false);
+    expect(splitter.stopped()).toBe(true);
+    // a list that is never stopped says so
+    const whole = createArraySplitter({ onElement: () => undefined, onOversized: () => undefined });
+    whole.push(Buffer.from("[1, 2]"));
+    expect([whole.closed(), whole.stopped()]).toEqual([true, false]);
+  });
 });

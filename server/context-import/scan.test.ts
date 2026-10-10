@@ -56,6 +56,22 @@ describe("scanning an export", () => {
     expect((await scanExport(path)).summary).toMatchObject({ format: "unknown", conversations: 0, skipped: { conversations: 1 } });
   });
 
+  it("refuses a file whose first 10,000 items hold no conversation, and says so, and reads one that has a conversation among them", async () => {
+    const [conversation] = sampleConversations(NOW).map(chatGptConversation);
+    const junk = Array.from({ length: 10_000 }, (_, index) => ({ note: index }));
+    // nothing but other things: refused, the reason listed with the entries that were not read
+    const none = join(scratch, "none.json");
+    writeExportJson(none, [...junk, conversation]);
+    const refused = (await scanExport(none)).summary;
+    expect(refused).toMatchObject({ format: "unknown", conversations: 0 });
+    expect(refused.skipped.entries).toEqual(["conversations.json: not a list of conversations: none of its first 10,000 items is a conversation"]);
+    // a conversation among them: the list is read to its end, the rest counted as skipped
+    const some = join(scratch, "some.json");
+    writeExportJson(some, [...junk.slice(0, 9_999), conversation, ...junk]);
+    const read = (await scanExport(some)).summary;
+    expect(read).toMatchObject({ format: "chatgpt", conversations: 1, skipped: { conversations: 19_999, entries: [] } });
+  });
+
   it("reads pasted text as pieces, with no hashes", () => {
     const { summary, rows } = scanPaste("- I am vegetarian\n- I live in Pune\n", NOW);
     expect(summary).toMatchObject({ format: "paste", conversations: 1, ownChars: 35, oldest: NOW, newest: NOW });

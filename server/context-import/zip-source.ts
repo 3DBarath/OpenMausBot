@@ -39,6 +39,10 @@ export const ZIP_MAX_LISTS = 1_000;
 export const ZIP_UNPACKED_ENTRIES = 4;
 /** Refused entries are listed up to this many; one more line counts the rest. */
 export const REFUSED_MAX_LINES = 20;
+/** A list is given this many elements to show one that is shaped like a
+ * conversation. With none among them it is not a list of conversations, and
+ * the rest of it, however many millions of small things, is not parsed. */
+export const SHAPELESS_MAX_ELEMENTS = 10_000;
 /** The conversation lists an export carries: conversations.json, or numbered
  * parts of it, in any folder. Every other entry is skipped unread. */
 const KNOWN_ENTRY = /(?:^|[\\/])conversations(?:-\d+)?\.json$/i;
@@ -411,9 +415,14 @@ async function unpack(file: FileHandle, data: { at: number; packed: number; meth
   return true;
 }
 
+/** Read every conversation list of an upload, handing each element to
+ * `onElement`, which may answer `false` for an element that is not shaped
+ * like a conversation (anything else, or nothing, says nothing about it). A
+ * list whose first SHAPELESS_MAX_ELEMENTS elements were all answered `false`
+ * or were not JSON at all is refused there and read no further. */
 export async function readExport(
   path: string,
-  onElement: (value: unknown) => void,
+  onElement: (value: unknown) => unknown,
   opts: { entryMaxBytes?: number; signal?: AbortSignal } = {},
 ): Promise<ExportReadReport> {
   aborted(opts.signal);
@@ -427,6 +436,15 @@ export async function readExport(
   const list = (name: string, limit: number) => {
     let bytes = 0;
     let refused = false;
+    /** Elements so far, while none of them has been shaped like a conversation. */
+    let shapeless = 0;
+    let shaped = false;
+    /** One more element that is no conversation; false once that is too many, which stops the splitter. */
+    const noConversation = (): boolean => {
+      if (shaped) return true;
+      shapeless += 1;
+      return shapeless < SHAPELESS_MAX_ELEMENTS;
+    };
     const splitter = createArraySplitter({
       onElement: (element) => {
         let value: unknown;
@@ -434,11 +452,19 @@ export async function readExport(
           value = JSON.parse(element.toString("utf8"));
         } catch {
           report.unparseable += 1;
-          return;
+          return noConversation();
         }
-        onElement(value);
+        if (onElement(value) !== false) {
+          shaped = true;
+          return true;
+        }
+        return noConversation();
       },
-      onOversized: () => { report.oversized += 1; },
+      // too large to look at: not held against the list
+      onOversized: () => {
+        report.oversized += 1;
+        shaped = true;
+      },
     });
     const refuse = (reason: string) => {
       refused = true;
@@ -458,6 +484,8 @@ export async function readExport(
           if (error instanceof NotAListError) return refuse("not a list of conversations");
           throw error;
         }
+        // the splitter stopped where it was: the rest of this chunk was not looked at, and no more is asked for
+        if (splitter.stopped()) return refuse(`not a list of conversations: none of its first ${SHAPELESS_MAX_ELEMENTS.toLocaleString("en-US")} items is a conversation`);
         return true;
       },
       end() {
