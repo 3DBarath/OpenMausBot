@@ -267,6 +267,97 @@ describe("harness MCP capability proxy", () => {
     }
   }, 20_000);
 
+  /** The stdio entry point for one family, with what it wrote and a way to stop it. */
+  const proxy = (kind: string) => {
+    const child: ChildProcessWithoutNullStreams = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), kind], {
+      env: { OMB_HARNESS_URL: url, OMB_MCP_TOKEN: "entrypoint-capability", OMB_MCP_CALL_TIMEOUT_MS: "570000" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const lines: Array<{ id: number; result?: { isError?: boolean; content?: Array<{ text: string }> } }> = [];
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      for (let newline = output.indexOf("\n"); newline !== -1; newline = output.indexOf("\n")) {
+        lines.push(JSON.parse(output.slice(0, newline)));
+        output = output.slice(newline + 1);
+      }
+    });
+    const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    // It may have ended by itself by the time a test stops it.
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const stop = async () => { child.kill(); await closed; };
+    const reached = (name: string) => expect.poll(() => requests.some((request) => (request.body as { params?: { name?: string } }).params?.name === name), { timeout: 5_000 }).toBe(true);
+    return { child, lines, send, stop, reached };
+  };
+
+  // The computer and Data routes abort their work when the request closes.
+  // A cancel must not reach them: those families behave as they always did.
+  it.each(["computer", "data"])("does not close a %s call on a cancel notification, and answers it", async (kind) => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "done all the same" }] } };
+    delayMs = 900;
+    const name = `not_cancelled_${kind}`;
+    const p = proxy(kind);
+    try {
+      p.send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name } });
+      await p.reached(name);
+      p.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 5, reason: "the engine moved on" } });
+      await expect.poll(() => p.lines.map((line) => line.id), { timeout: 5_000 }).toEqual([5]);
+      expect(p.lines[0]!.result!.content![0]!.text).toBe("done all the same");
+      expect(abandoned).not.toContain(name);
+    } finally {
+      delayMs = 0;
+      await p.stop();
+    }
+  }, 20_000);
+
+  // When the engine goes away its end of the pipe closes. A commit hold
+  // behind a browser call must end then, not wait out its nine minutes.
+  it("closes in-flight browser calls when its input closes, and leaves the other families' calls to finish", async () => {
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "clicked" }] } };
+    delayMs = 2_500;
+    const browser = proxy("browser");
+    const computer = proxy("computer");
+    try {
+      browser.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "input_closed_browser" } });
+      computer.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "input_closed_computer" } });
+      await browser.reached("input_closed_browser");
+      await computer.reached("input_closed_computer");
+      browser.child.stdin.end();
+      computer.child.stdin.end();
+      await expect.poll(() => abandoned, { timeout: 1_500 }).toContain("input_closed_browser");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(abandoned).not.toContain("input_closed_computer");
+    } finally {
+      delayMs = 0;
+      await browser.stop();
+      await computer.stop();
+    }
+  }, 20_000);
+
+  // Only the browser's call outlasts the HTTP client's own wait: the other
+  // families go through fetch, as they do on main.
+  it("keeps the computer and Data calls on fetch, the client they have always used", async () => {
+    const key = Symbol.for("undici.globalDispatcher.1");
+    const globals = globalThis as unknown as Record<symbol, { constructor: new (options: { headersTimeout: number }) => unknown } | undefined>;
+    const dispatcher = globals[key];
+    expect(dispatcher).toBeDefined();
+    globals[key] = new dispatcher!.constructor({ headersTimeout: 1_000 }) as typeof dispatcher;
+    status = 200;
+    payload = { result: { content: [{ type: "text", text: "late" }] } };
+    delayMs = 2_500;
+    try {
+      for (const kind of ["computer", "data"] as const) {
+        const cut = await harnessMcpRequest(frame("tools/call", { name: `via_fetch_${kind}` }), { ...connection(kind), timeoutMs: 10_000 }) as { result: { isError: boolean; content: Array<{ text: string }> } };
+        expect(cut.result.isError, kind).toBe(true);
+        expect(cut.result.content[0]!.text, kind).toContain("connection was interrupted");
+      }
+    } finally {
+      delayMs = 0;
+      globals[key] = dispatcher;
+    }
+  }, 20_000);
+
   it("refuses to start without a known tool family", async () => {
     const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), "shell"], {
       env: { OMB_HARNESS_URL: url, OMB_MCP_TOKEN: "entrypoint-capability" }, stdio: ["pipe", "pipe", "pipe"],
