@@ -7,6 +7,10 @@ action itself: there is no app-side allowlist, classifier, or pattern rule. A
 native tool request that reaches you is one the provider left for you. In Full
 Access, OMB also applies its own configuration tools without another approval.
 
+There is one exception, and it holds at every level: anything that sends on
+your behalf or spends money asks first. See
+[Sending on your behalf and spending money](#sending-on-your-behalf-and-spending-money).
+
 | Level | Behavior |
 | --- | --- |
 | **Ask for approval** | Requests approval for commands and file changes, the way the provider's supervised mode does. |
@@ -103,6 +107,98 @@ restores prompts on the next turn. Questions and missing-credential forms
 still require an answer. A Chief or
 teammate can delegate work to this bot without downgrading its explicit Auto
 (full access) grant. It does not enable Auto on any other bot.
+
+## Sending on your behalf and spending money
+
+Two kinds of action ask first at every level, Full access included, because
+the cost of a wrong one is paid by someone who never saw the bot:
+
+- **Connected-app calls that send**: an email, a reply, a post, an invite, a
+  refund, a charge.
+- **Clicks in the bot's built-in browser that send or pay.** The browser
+  tools are otherwise pre-approved on every engine, so without this a bot
+  could post or pay with no card at any level.
+
+Both raise the same card with **Allow** and **Deny**: "Send on your behalf?",
+or "Spend money?". Both follow the bot's **Sending on your behalf** setting
+under Permissions.
+
+| Setting | Sends | Money in the browser |
+| --- | --- | --- |
+| **Ask every time** (default) | Every send waits for your answer. | Always asks. |
+| **Allow a daily amount** | Sends go out on their own up to the daily number, counted together across connected apps and the browser. Past it, a connected-app send is refused until the next day and a browser send asks. | Always asks. |
+
+### What counts in the browser
+
+Fixed rules in the server decide, not the bot and not a model. Only a click
+and an Enter key press can count. Typing into a field, scrolling, opening a
+page and every kind of reading never ask.
+
+| What the bot does | Held as |
+| --- | --- |
+| Clicks a button, link or menu item whose label has one of: send, reply, post, publish, comment, share, message, submit, invite, apply, list item | Send |
+| Clicks one whose label has one of: pay, buy, place order, checkout, bid, book, reserve, subscribe, donate, transfer | Money |
+| Submits a form that has a card field | Money |
+| Presses Enter in a message or comment box (Shift+Enter is a new line) | Send |
+| Submits a form that has a multi-line text field, whatever its button says | Send |
+
+Labels match whole words in any letter case, in English: "Post reply"
+matches, "Posts" and "Repost" do not. The last row is what catches a send on
+a page in another language. Money wins when both match. Enter in a one-line
+field is judged as its form's submit button. A click that only puts the
+cursor in a text box, or ticks a checkbox, is never held. **Search is never a
+send**: a search field, anything inside a search region, or a form whose only
+text field is a search field.
+
+### What the card shows
+
+The site, the button's label, and the form's visible fields as they are right
+now. A password or a card number is never read: the card says only how long
+it is. Text that looks like a credential is masked. While the card is open it
+also shows a screenshot the server takes itself; the picture is removed once
+the card is answered.
+
+**An approval covers what you were shown, nothing else.** If the address, the
+button or any field changed by the time you answer, nothing is clicked, the
+card says the page changed, and a new card is raised for the page as it is.
+
+The bot's call waits up to nine minutes, the same as a connected-app send, or
+up to the configured MCP call timeout when that is shorter. Then the card
+closes and the bot is told nobody answered. On Deny the bot is told not to
+retry and to ask you what you want instead. Each hold and each answer is in
+the bot's activity log and the decision log, with the site and the label.
+
+While a card is open the bot can still read that browser but cannot act in
+it. You can use the browser yourself at any time, and your own clicks are
+never held. When you hand it back after touching the page, the bot's next
+browser result starts with a line telling it to re-read the page.
+
+### Page scripts
+
+A bot can run a script in the page (`agent_browser_eval`). A script is
+refused, not held, when its text clicks or submits something, sends a network
+request (`fetch`, `XMLHttpRequest`, `sendBeacon`, `WebSocket`), writes into a
+field, dispatches an event, or navigates. The bot is told to use the click
+and fill tools, which the rules above cover. A line break typed with
+`agent_browser_type` is a real Enter key press; it is refused the same way
+where it would send or submit.
+
+This is a guard against a bot acting through a script by habit. **It is not a
+wall**: a script written to hide what it does gets past a check of its text.
+
+### Limits
+
+- The word lists are English. Other languages rely on the two form rules.
+- Only clicks and Enter are checked. Space on a focused button is not.
+- Inside an embedded frame, such as a payment or comment widget, a click is
+  judged by its label alone and the card shows no fields; Enter there is not
+  checked.
+- A one-line box outside any form that sends on Enter is not recognised.
+- Below Full access some engines show their own tool card for a browser
+  click first, then this one. This is the one with the evidence.
+- None of this applies to web work a bot does on a computer (a cloud
+  computer, a Local VM, or This computer): those turns do not use the
+  built-in browser.
 
 ## Asking you questions
 

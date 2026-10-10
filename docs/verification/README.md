@@ -139,6 +139,10 @@ The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
 
+The [browser commit hold recipe](browser-commit-hold.md) proves, with an
+actual browser in a disposable home, that a click or Enter that would send or
+pay waits on a card bound to what the page showed.
+
 The [Local VM resume fixture](local-vm-resume.md) checks idle stop, restart
 recovery, guarded resume and the stopped-to-ready Computer panel flow.
 

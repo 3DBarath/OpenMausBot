@@ -38,7 +38,7 @@ Stagehand, browser-use, browserless, Lightpanda) is summarised at the end.
 ## Shape
 
 ```
-bot turn → scoped OMB MCP proxy → profile control gate → agent-browser MCP → Chrome
+bot turn → scoped OMB MCP proxy → commit gate → profile control gate → agent-browser MCP → Chrome
 owner UI ← authenticated SSE ← OMB ← loopback WebSocket frames ← agent-browser
 owner UI → authenticated POST → control gate → acknowledged native input → Chrome
 ```
@@ -115,6 +115,33 @@ capability. Native session identity and encryption keys stay in the server.
 See [the native verification recipe](../verification/browser-live.md).
 Recording's `--fps 60` is separate from live streaming and needs ffmpeg;
 recording controls are intentionally not added to the live browser chrome.
+
+### 3a. Commit hold and gate owners — implemented
+
+- `BrowserRuntime`'s gate has owner kinds. A **person** (the Browser panel)
+  pauses every bot call and the transcript captures. A **hold** pauses only
+  the bot's actions: reads and captures go on, one hold per session, and a
+  person can still take the browser while it waits. The login vault will add
+  a third kind.
+- After a person who touched the page hands the browser back, the next bot
+  tool result for that session starts with one line telling it to re-read
+  the page. A restart clears it.
+- `server/browser-commit-gate.ts` sits in the browser MCP route ahead of
+  `BrowserRuntime.agentRpc`. For a click, an Enter press, or text typed with
+  a line break, the server reads the target itself
+  (`server/browser-commit-page.ts`): `get box` for the bot's selector, then
+  one fixed script that describes the element in that box and its form, then
+  `get url`. Rules in `shared/browser-commit.ts` decide. A commitment waits
+  on the card and counter that connected-app sends use; the approval is
+  bound to a digest of address, target and fields. User-facing behaviour is
+  in [approval levels](../approval-levels.md#sending-on-your-behalf-and-spending-money).
+- The proxy's per-call limit for the browser is the hold window plus a
+  margin, capped by `mcp.callTimeoutMinutes` (`OMB_MCP_CALL_TIMEOUT_MS`).
+- Not verified on Windows: the gate's reads use `get box`, `get url` and
+  `eval -b` from the engine CLI, checked on 0.37.0. The Windows pin is
+  `0.36.0-omb.1`. Run the [commit hold recipe](../verification/browser-commit-hold.md)
+  there before a Windows release. If a read fails, the click is refused, not
+  let through.
 
 ### 4. Tool-name adapter — dropped
 
