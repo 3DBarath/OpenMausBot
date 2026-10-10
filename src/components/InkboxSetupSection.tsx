@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { api, useStore } from "@/state/store";
+import { copyText } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
 import type { InkboxSetupInput, InkboxSetupSnapshot } from "../../shared/inkbox-setup";
 import { Card } from "./SettingsPrimitives";
@@ -122,8 +123,7 @@ export function InkboxSetupSection() {
           <p>{t("inkbox.sendTo", { number: pairing.number })}</p>
           <p className="break-words rounded-lg bg-control px-3 py-2 font-mono text-ink">{pairing.connectText}</p>
           <button className={buttonStyle} onClick={async () => {
-            try { await navigator.clipboard.writeText(pairing.connectText); setCopyState("copied"); }
-            catch { setCopyState("error"); }
+            setCopyState(await copyText(pairing.connectText) === "copied" ? "copied" : "error");
           }}>{t("inkbox.copyMessage")}</button>
           {copyState === "copied" && <p role="status" className="text-ink-secondary">{t("inkbox.messageCopied")}</p>}
           {copyState === "error" && <p role="alert" className="text-red-500">{t("inkbox.copyError")}</p>}
