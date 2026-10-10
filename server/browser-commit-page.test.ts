@@ -73,6 +73,8 @@ describe("the fixed page read", () => {
       // The page has a password field and a card field elsewhere on it.
       found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true, frames: false,
       button: true, changes: false, typable: false, payFrame: false,
+      // Not a plain link, not a sign-in; the form has a box of many lines, so something is being submitted.
+      link: false, signin: false, carries: true,
       fields: [{ name: "Message", type: "textarea", value: "Hello there" }], others: 0,
       // The form's own fields say what it is; there is nothing around it to add.
       identity: expect.stringMatching(/^html:0\/body:\d+\/form:0\/button:\d+#[0-9a-f]{16}$/), context: "",
@@ -981,6 +983,120 @@ describe("round three: a click that is no commitment on a very large page", () =
   }, 20_000);
 });
 
+describe("tuning: a plain link", () => {
+  it.each([
+    ["a link to another page", `<a id="t" href="/pricing">Pay now</a>`],
+    ["a link to another site", `<a id="t" href="https://example.com/share">Share</a>`],
+    ["a link clicked by the text inside it", `<a href="/posts"><span id="t">Post archive</span></a>`],
+    ["a link that says it is a link", `<a id="t" role="link" href="/x">Send</a>`],
+    ["a link to another page with a fragment", `<a id="t" href="/guide#comment">Comment policy</a>`],
+  ])("says so of %s", (_what, html) => {
+    expect(light({ box: (page.body.innerHTML = html, boxOf("t")), enter: false })).toMatchObject({ found: true, link: true, button: true });
+  });
+
+  it.each([
+    ['a "#" link', `<a id="t" href="#">Send</a>`],
+    ["a link to a place on this page", `<a id="t" href="#comments">Comment</a>`],
+    ['a "javascript:" link', `<a id="t" href="javascript:void(0)">Send</a>`],
+    ['a "JavaScript:" link, however it is written', `<a id="t" href=" JavaScript:send()">Send</a>`],
+    ["a link with a button role", `<a id="t" role="button" href="/x">Send</a>`],
+    ["a link with a menu item role", `<a id="t" role="menuitem" href="/x">Send</a>`],
+    ["a link with a click handler written on it", `<a id="t" href="/x" onclick="send(); return false">Send</a>`],
+    ["a link with an empty address", `<a id="t" href="">Send</a>`],
+    ["an anchor with no address", `<a id="t">Send</a>`],
+    ["a button", `<button id="t" type="button">Send</button>`],
+    ["an element with the link role", `<span id="t" role="link" tabindex="0">Send</span>`],
+  ])("does not say so of %s", (_what, html) => {
+    expect(light({ box: (page.body.innerHTML = html, boxOf("t")), enter: false })).toMatchObject({ found: true, link: false });
+  });
+
+  it("does not say so of a link whose click handler was set by script", () => {
+    page.body.innerHTML = `<a id="t" href="/x">Send</a>`;
+    (page.getElementById("t") as unknown as { onclick: unknown }).onclick = () => {};
+    expect(light({ box: boxOf("t"), enter: false })).toMatchObject({ link: false });
+  });
+
+  it("does not say so of a link to this same page with a fragment: it loads nothing", () => {
+    const here = (globalThis as unknown as { document: { URL: string } }).document.URL.split("#")[0];
+    page.body.innerHTML = `<a id="t" href="${here}#reply">Reply</a><a id="again" href="${here}">Post</a>`;
+    expect(light({ box: boxOf("t"), enter: false })).toMatchObject({ link: false });
+    // The same address with no fragment loads the page again.
+    expect(light({ box: boxOf("again", { x: 1, y: 2, width: 3, height: 4 }), enter: false })).toMatchObject({ link: true });
+  });
+});
+
+describe("tuning: a sign-in, and a form where something is submitted", () => {
+  const read = (html: string, id = "t") => light({ box: (page.body.innerHTML = html, boxOf(id)), enter: false });
+
+  it("calls a form with a password field and no multi-line field a sign-in", () => {
+    const form = `<form><input aria-label="Email"><input id="pw" type="password" aria-label="Password"><button id="t">Submit</button></form>`;
+    expect(read(form)).toMatchObject({ signin: true, carries: false });
+    expect(focusIn(form, "pw")).toMatchObject({ label: "Submit", signin: true });
+    expect(read(`<div role="dialog"><input type="password" aria-label="Password"><div id="t" role="button" tabindex="0">Submit</div></div>`)).toMatchObject({ signin: true });
+  });
+
+  it.each([
+    ["a multi-line field too", `<form><input type="password" aria-label="Password"><textarea aria-label="Message"></textarea><button id="t">Submit</button></form>`],
+    ["no password field", `<form><input aria-label="Email"><button id="t">Submit</button></form>`],
+    ["a password field nobody can see", `<form><input type="password" aria-label="Password" style="display:none"><button id="t">Submit</button></form>`],
+    ["a password field in another form", `<form><input type="password" aria-label="Password"></form><form><input aria-label="Email"><button id="t">Submit</button></form>`],
+    ["no form and no region, on a page with a password field", `<input type="password" aria-label="Password"><div id="t" role="button" tabindex="0">Submit</div>`],
+  ])("does not call it one with %s", (_what, html) => {
+    expect(read(html)).toMatchObject({ signin: false });
+  });
+
+  it.each([
+    ["a form with a file to attach", `<form><input aria-label="Name"><input type="file" aria-label="CV"><button id="t">Apply</button></form>`, true],
+    ["a form whose file input is hidden behind a styled button", `<form><input type="file" style="display:none"><button id="t">Apply</button></form>`, true],
+    ["a form with a multi-line field", `<form><textarea aria-label="Cover letter"></textarea><button id="t">Apply</button></form>`, true],
+    ["a region with a file to attach", `<section><input type="file" aria-label="CV"><div id="t" role="button" tabindex="0">Apply</div></section>`, true],
+    ["a filter form", `<form><select aria-label="Sort by"><option>Newest</option></select><input aria-label="Max price"><button id="t">Apply</button></form>`, false],
+    ["a button with no form and no region, beside a text area", `<textarea aria-label="Notes"></textarea><div id="t" role="button" tabindex="0">Apply</div>`, false],
+  ])("says something is being submitted in %s: %s", (_what, html, carries) => {
+    expect(read(html)).toMatchObject({ carries });
+  });
+});
+
+describe("tuning: what could make a multi-line field a message composer", () => {
+  const entered = (html: string) => focusIn(html, "box");
+
+  it("says nothing of it for a click, or for Enter anywhere else", () => {
+    const html = `<form><input id="one" aria-label="Title"><textarea id="box" aria-label="Notes"></textarea><button id="t">Save</button></form>`;
+    for (const key of ["hint", "only", "says", "near"]) {
+      expect(clickIn(html, "box")).not.toHaveProperty(key);
+      expect(focusIn(html, "one")).not.toHaveProperty(key);
+    }
+  });
+
+  it("says when it is the only text field of its form, and what the buttons there are called", () => {
+    expect(entered(`<form><textarea id="box" aria-label="Your thoughts"></textarea><input type="hidden" name="thread" value="7"><button type="button" aria-label="Attach a file"></button><button>Comment</button></form>`))
+      .toMatchObject({ box: "multiline", hint: false, only: true, says: "Your thoughts", near: ["Attach a file", "Comment"] });
+    expect(entered(`<form><input aria-label="Title"><textarea id="box" aria-label="Notes"></textarea><button>Save</button></form>`)).toMatchObject({ only: false, near: [] });
+    // A field nobody can see is not another text field.
+    expect(entered(`<form><input aria-label="Trap" style="display:none"><textarea id="box" aria-label="Reply"></textarea><button>Send</button></form>`)).toMatchObject({ only: true, near: ["Send"] });
+  });
+
+  it("looks in the region around a box with no form, and at the page when there is none", () => {
+    const chat = `<header><input type="search" aria-label="Search"><button type="button">Log out</button></header>
+      <main><div id="box" contenteditable="true" role="textbox" aria-label="Message #general"></div><button type="button" aria-label="Send"></button></main>`;
+    expect(entered(chat)).toMatchObject({ only: true, says: "Message #general", near: ["Send"] });
+    expect(entered(chat.replace("<main>", "<div>").replace("</main>", "</div>").replace("<header>", "<div>").replace("</header>", "</div>"))).toMatchObject({ only: false });
+    expect(entered(`<div><textarea id="box" placeholder="Write a reply"></textarea></div><p><a href="/help">Help</a></p>`)).toMatchObject({ only: true, says: "Write a reply Write a reply", near: ["Help"] });
+  });
+
+  it("reads the keyboard hint, the label and the placeholder", () => {
+    expect(entered(`<form><input aria-label="Title"><textarea id="box" aria-label="Text" placeholder="Say something" enterkeyhint="Send"></textarea></form>`)).toMatchObject({ hint: true, only: false, says: "Text Say something" });
+    expect(entered(`<form><textarea id="box" aria-label="Text" enterkeyhint="enter"></textarea></form>`)).toMatchObject({ hint: false, only: true });
+  });
+
+  it("names the nearest buttons first, and no more than twelve", () => {
+    const many = Array.from({ length: 30 }, (_, index) => `<button type="button">Tool ${index}</button>`).join("");
+    const read = entered(`<section><div>${many}</div><div><div><textarea id="box" aria-label="Text"></textarea><button type="button">Send</button></div></div></section>`) as { near: string[] };
+    expect(read.near).toHaveLength(12);
+    expect(read.near[0]).toBe("Send");
+  });
+});
+
 describe("the script as an engine argument", () => {
   // It is base64 on the engine's command line. Windows refuses a command
   // line over 32,767 characters, and a refused read refuses every click.
@@ -999,8 +1115,14 @@ describe("parsePageTarget", () => {
     expect(parsePageTarget("found")).toBeNull();
     expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", button: 1, typable: "yes", fields: [{ name: "n", type: "text", value: "v" }] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      button: false, changes: false, typable: false, frames: false, payFrame: false,
+      button: false, changes: false, typable: false, link: false, signin: false, carries: false, frames: false, payFrame: false,
     });
+    // What says a multi-line field is a composer comes all together or not at all, and bounded.
+    expect(parsePageTarget({ found: true, only: "yes", hint: true, says: "Message", near: ["Send"] })).not.toHaveProperty("only");
+    expect(parsePageTarget({ found: true, only: true, hint: 1, says: "s".repeat(500), near: ["Send", 7, null, "b".repeat(200), ...Array.from({ length: 30 }, (_, index) => `Button ${index}`)] })).toMatchObject({
+      only: true, hint: false, says: "s".repeat(200), near: ["Send", "b".repeat(60), ...Array.from({ length: 10 }, (_, index) => `Button ${index}`)],
+    });
+    expect(parsePageTarget({ found: true, link: true, signin: true, carries: true })).toMatchObject({ link: true, signin: true, carries: true });
     expect(parsePageTarget({ found: true, frames: true, payFrame: true, button: true, changes: true, typable: true })).toMatchObject({ frames: true, payFrame: true, button: true, changes: true, typable: true });
   });
 });

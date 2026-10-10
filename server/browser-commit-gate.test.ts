@@ -26,7 +26,7 @@ afterEach(async () => {
 type Scripted = Omit<PageTarget, "also"> & Partial<PageEvidence> & { secrets?: boolean; also?: Scripted[] };
 const element = (extra: Partial<Scripted> = {}): Scripted => ({
   label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
-  button: true, changes: false, typable: true, frames: false, payFrame: false, ...extra,
+  button: true, changes: false, typable: true, link: false, signin: false, carries: false, frames: false, payFrame: false, ...extra,
 });
 const evidenceOf = (target: Scripted): PageEvidence => ({
   fields: target.fields ?? [], others: target.others ?? 0, bound: target.bound ?? "", identity: target.identity ?? "", context: target.context ?? "", around: target.around ?? "",
@@ -1610,6 +1610,131 @@ describe("round three: a page that keeps changing under an approval", () => {
     await f.answer("deny");
     await held;
     expect(f.state.dispatched).toEqual([]);
+  });
+});
+
+describe("tuning: ordinary browsing", () => {
+  const press = (key: string) => ({ name: "agent_browser_press", arguments: { key } });
+  const typed = (selector: string, value: string) => ({ name: "agent_browser_type", arguments: { selector, text: value } });
+  const LINK = element({ label: "Share prices", role: "link", link: true });
+  const NOTES = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });
+  const COMPOSER = element({ label: "Message #general", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: true, says: "Message #general", near: ["Send"] });
+
+  it("lets a plain link through whatever it says, by ref: the snapshot names the same element", async () => {
+    const f = fixture();
+    f.state.target = LINK;
+    f.refs.set("e5", { role: "link", name: "Share prices" });
+    await expect(f.call(click("@e5"))).resolves.toBe(CLICKED);
+    // The browser's name for it need not be the one this read gives. On a
+    // page with no frame, one element in that box is the element.
+    f.refs.set("e6", { role: "link", name: "Share prices, opens in a new tab" });
+    await expect(f.call(click("@e6"))).resolves.toBe(CLICKED);
+    await expect(f.call(click("#by-css"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+    expect(f.state.details).toEqual([]);
+  });
+
+  it.each([
+    ["the snapshot calls the ref a button", LINK, { role: "button", name: "Share" }],
+    ["the page has a frame the ref could be in, and the snapshot names something else", { ...LINK, label: "Home", frames: true }, { role: "link", name: "Send" }],
+    ["two elements share the box, and the snapshot names neither", { ...LINK, label: "Home", also: [element({ label: "Wrapper", role: "generic", button: false })] }, { role: "link", name: "Send" }],
+  ])("still holds a click by ref when %s", async (_what, target, ref) => {
+    const f = fixture();
+    f.state.target = target;
+    f.refs.set("e7", ref);
+    const held = f.call(click("@e7"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("holds a link inside a card region as money, plain or not", async () => {
+    const f = fixture();
+    f.state.target = { ...LINK, label: "Terms", card: true };
+    f.refs.set("e5", { role: "link", name: "Terms" });
+    const held = f.call(click("@e5"));
+    expect(await f.pending()).toMatchObject({ title: "Spend money?" });
+    await f.answer("deny");
+    await held;
+  });
+
+  it("lets a sign-in's button through by ref, whatever it says", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Submit", submits: true, signin: true });
+    f.refs.set("e3", { role: "button", name: "Submit" });
+    await expect(f.call(click("@e3"))).resolves.toBe(CLICKED);
+    await expect(f.call(press("Enter"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("lets Apply through on a filter, and holds it where something is attached", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Apply", submits: true });
+    f.refs.set("e3", { role: "button", name: "Apply" });
+    await expect(f.call(click("@e3"))).resolves.toBe(CLICKED);
+    f.state.target = element({ label: "Apply", submits: true, carries: true });
+    const held = f.call(click("@e3"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Apply" } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toHaveLength(1);
+  });
+
+  it("lets a harmless label through on a form with a multi-line field, by ref", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Save changes", submits: true, multiline: true, carries: true });
+    f.refs.set("e3", { role: "button", name: "Save changes" });
+    await expect(f.call(click("@e3"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("presses Enter in a notes box, and holds it in a composer", async () => {
+    const f = fixture();
+    f.state.target = NOTES;
+    await expect(f.call(press("Enter"))).resolves.toBe(CLICKED);
+    expect(f.cards.size).toBe(0);
+    f.state.target = COMPOSER;
+    const held = f.call(press("Enter"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Enter in Message #general" } });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([press("Enter")]);
+  });
+
+  it.each(["Control+Enter", "Enter+Meta", "Alt+Enter"])("holds %s in a notes box: with another key held it is never a new line", async (key) => {
+    const f = fixture();
+    f.state.target = NOTES;
+    const held = f.call(press(key));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    await f.answer("deny");
+    await held;
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("types text with line breaks into a notes box, however many", async () => {
+    const f = fixture();
+    f.state.target = NOTES;
+    for (const value of ["Bring the charger\n", "Bring the charger\nand the cable", "one\ntwo\nthree\n", "one\r\ntwo"]) {
+      await expect(f.call(typed("#notes", value))).resolves.toBe(CLICKED);
+    }
+    expect(f.state.dispatched).toHaveLength(4);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it.each([
+    ["a composer", COMPOSER, "On my way\nsee you\n", /agent_browser_fill, then press Enter or click the button/],
+    ["a one-line field, where the first Enter may move on", element({ label: "Log in", box: "single", submits: true }), "ada\nlovelace\n", /agent_browser_fill/],
+    ["a notes box, after a tab", NOTES, "one\ttwo\nthree", /agent_browser_fill/],
+    ["a notes box the read could not match to the selector", { ...NOTES, typable: false }, "one\ntwo", /agent_browser_fill/],
+  ])("refuses several lines typed into %s", async (_what, target, value, message) => {
+    const f = fixture();
+    f.state.target = target;
+    const result = await f.call(typed("#box", value)) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(message);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
   });
 });
 

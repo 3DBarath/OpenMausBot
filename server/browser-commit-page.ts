@@ -39,6 +39,22 @@ export interface PageTarget {
   /** For text typed at a selector: the element is itself a text field that
    * takes the focus, so the keys go to it and nowhere else. */
   typable: boolean;
+  /** A plain link: an anchor whose address loads another document, with no
+   * button role and no click handler written on it. */
+  link: boolean;
+  /** Its form, or the region around it when it has no form, is a sign-in:
+   * a password field and no multi-line field. */
+  signin: boolean;
+  /** Its form or region holds a file to attach or a multi-line field. */
+  carries: boolean;
+  /** Only for Enter in a multi-line field: what could make it a message
+   * composer. Its keyboard hint is "send"; it is the only text field in its
+   * form or region; its own label and placeholder; the labels of the
+   * button-like controls there, the nearest first. */
+  hint?: boolean;
+  only?: boolean;
+  says?: string;
+  near?: string[];
   /** The page has a frame. The engine measures an element inside a frame
    * from the frame's own corner, so on such a page the element found by a
    * ref's box may be another one outside the frame. */
@@ -377,6 +393,9 @@ const LIGHT = String.raw`
       return tag(el) === "TEXTAREA" || editable(el) ? "textbox" : "generic";
     };
     const regions = new Map();
+    const hrefOf = prop("href"), urlOf = prop("URL");
+    const TEXTS = 'input, textarea, [contenteditable], [role=textbox], [role=searchbox]';
+    const PRESSED = 'button, [role=button], input[type=submit], input[type=button], input[type=image], a[href], [role=link], [role=menuitem]';
     // A control that a click, Enter or Space activates.
     const buttonLike = (el) => {
       const role = text(attr(el, "role")).toLowerCase();
@@ -401,12 +420,41 @@ const LIGHT = String.raw`
       // The card region: the control's form, or with no form the nearest
       // region around it, or the page when there is none.
       const page = pageOf(control) || document;
-      const scope = form || regionOf(control) || page;
+      const region = form ? null : regionOf(control);
+      const scope = form || region || page;
       if (!regions.has(scope)) regions.set(scope, form ? cardSigns(owned, form, page, 0) : cardSigns(queryAll(scope, "input, select"), scope, page, 0));
       const search = box === "search" || Boolean(climb(control, (n) => matches(n, "[role=search], search"))) || (boxes === 1 && searches === 1);
       const changes = toggles && Boolean(text(handlers(control, ["onchange", "oninput"]) + (form ? handlers(form, ["onchange", "oninput"]) : "")));
       const typable = Boolean(input.enter && input.box && pick.el === control && box && !control.disabled);
-      return { control, target: { label: labelOf(acting), role: roleOf(acting), box, submits, search, card: regions.get(scope), multiline, button: buttonLike(control), changes, typable } };
+      // A plain link: an anchor whose address loads another document, with
+      // no role that makes it a button and no click handler written on it.
+      const href = text(attr(control, "href")), there = String(hrefOf(control) || ""), here = String(urlOf(page) || "").split("#")[0];
+      const link = tag(control) === "A" && Boolean(href) && !/^(?:#|javascript:)/i.test(href) && !(there.includes("#") && there.split("#")[0] === here)
+        && ["", "link"].includes(text(attr(control, "role")).toLowerCase()) && !text(handlers(control, ["onclick"]));
+      // What the form, or the region around a control with no form, holds:
+      // a sign-in has a password field and no multi-line field; a file to
+      // attach or a multi-line field means something is being submitted.
+      const within = form ? own : region ? queryAll(region, "input, textarea, [contenteditable], [role=textbox]") : [];
+      const lines = form ? multiline : within.some((field) => boxKind(field) === "multiline" && shown(field));
+      const signin = !lines && within.some((field) => inputType(field) === "password" && shown(field));
+      const carries = lines || within.some((field) => inputType(field) === "file");
+      const target = { label: labelOf(acting), role: roleOf(acting), box, submits, search, card: regions.get(scope), multiline, button: buttonLike(control), changes, typable, link, signin, carries };
+      if (input.enter && box === "multiline") {
+        // What could make this box a message composer: its keyboard hint,
+        // whether it is the only text field there, what it is called, and
+        // what the buttons there are called, the nearest first.
+        target.hint = attr(control, "enterkeyhint").toLowerCase() === "send";
+        target.only = (form ? boxes : queryAll(scope, TEXTS).filter((field) => boxKind(field) && shown(field)).length) === 1;
+        target.says = clip(text(labelOf(control) + " " + attr(control, "placeholder") + " " + attr(control, "aria-placeholder") + " " + attr(control, "data-placeholder")), 200);
+        target.near = [];
+        for (let n = target.only ? up(control) : null; n && target.near.length < 12; n = n === scope ? null : up(n)) {
+          for (const other of queryAll(n, PRESSED)) {
+            const called = clip(labelOf(other), 60);
+            if (called && target.near.length < 12 && !target.near.includes(called)) target.near.push(called);
+          }
+        }
+      }
+      return { control, target };
     };
 
     const found = resolve();
@@ -606,6 +654,8 @@ export function pageReadScript(input: PageReadInput): string {
 
 const text = (value: unknown, max: number): string => (typeof value === "string" ? value.slice(0, max) : "");
 
+/** How many button labels near a composer are kept; the page script stops at the same number. */
+const MAX_NEAR = 12;
 /** How many other elements in one box are worth judging; the page script stops at the same number. */
 const MAX_ALSO = 8;
 /** More fields than any form a person fills in. Past it the answer is not
@@ -635,6 +685,16 @@ function parseTarget(raw: Record<string, unknown>): Omit<PageTarget, "frames" | 
     button: raw.button === true,
     changes: raw.changes === true,
     typable: raw.typable === true,
+    link: raw.link === true,
+    signin: raw.signin === true,
+    carries: raw.carries === true,
+    // All together or not at all: without `only` nothing says the field is not a composer.
+    ...(typeof raw.only === "boolean" ? {
+      hint: raw.hint === true,
+      only: raw.only,
+      says: text(raw.says, 200),
+      near: (Array.isArray(raw.near) ? raw.near : []).filter((label): label is string => typeof label === "string").slice(0, MAX_NEAR).map((label) => label.slice(0, 60)),
+    } : {}),
   };
 }
 

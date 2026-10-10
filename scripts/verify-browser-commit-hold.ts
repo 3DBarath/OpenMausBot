@@ -20,7 +20,7 @@ if (!binaryPath || !executablePath) throw new Error("Set OMB_VERIFY_BROWSER_BINA
 const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Commit hold test</title>
 <form id="message"><label for="body">Message</label><textarea id="body" name="body">Hello from the fixture</textarea><button>Send</button></form>
 <form id="find" role="search"><input type="search" aria-label="Search" value="shoes"><button>Search</button></form>
-<div id="composer" contenteditable="true" role="textbox" aria-label="Write a message">On my way</div>
+<section aria-label="Chat"><div id="composer" contenteditable="true" role="textbox" aria-label="Write a message">On my way</div></section>
 <button id="details" type="button">Show details</button>
 <button id="later" type="button">Change the draft in a moment</button>
 <output id="log"></output>
@@ -111,6 +111,22 @@ const CASE_PAGES: Record<string, string> = {
     <input aria-label="Code from your phone" autocomplete="one-time-code" value="246810"><input type="text" id="password" aria-label="Sign-in secret" value="correct-horse-battery">
     <input aria-label="Reference" value="5555 5555 5555 4444"><input aria-label="PIN" value="4821"><input aria-label="Name on card" autocomplete="cc-name" value="ADA LOVELACE">
     <input aria-label="City" value="Baramati"><button>Pay</button></form>`),
+  // ── The tuning pass: ordinary pages, and what must pass on them ──
+  "/ordinary-links": doc("Ordinary links", `<nav><a href="/elsewhere">Share prices</a> <a href="/elsewhere?blog">Blog post</a> <a href="/elsewhere?buy">Buy tickets</a></nav>
+    <p><a id="hash" href="#">Send</a></p><script>document.getElementById("hash").addEventListener("click", (event) => { event.preventDefault(); window.note("sent:link"); });</script>`),
+  "/ordinary-forms": doc("Ordinary forms", `<form id="profile"><input aria-label="Name" value="Ada"><textarea aria-label="About you">I write software.</textarea><button>Save changes</button></form>
+    <form id="filters"><select aria-label="Sort by"><option>Newest</option><option>Price</option></select><label><input type="checkbox" checked> In stock</label><button>Apply</button></form>
+    <form id="login"><input aria-label="Email" value="ada@example.com"><input type="password" aria-label="Password" value="correct-horse"><button>Submit</button></form>
+    <form id="signup"><input aria-label="Work email" value="ada@example.com"><input type="password" aria-label="Choose a password" value="correct-horse"><button>Continue</button></form>
+    <form id="notes"><input aria-label="Title" value="Tuesday"><textarea id="note" aria-label="Notes">Bring the charger</textarea><button>Save</button></form>`),
+  "/ordinary-sends": doc("Ordinary sends", `<section aria-label="Chat"><div id="chat" contenteditable="true" role="textbox" aria-label="Message #general">On my way</div><button type="button" aria-label="Send now" onclick="note('sent:chat')">➤</button></section>
+    <form id="comment"><textarea aria-label="Add a comment">Looks good</textarea><button>Comment</button></form>
+    <form id="mail"><input aria-label="To" value="ada@example.com"><input aria-label="Subject" value="Lunch"><textarea aria-label="Body">At one?</textarea><button>Send</button></form>
+    <form id="job"><input aria-label="Full name" value="Ada Lovelace"><input type="file" aria-label="CV"><button>Apply</button></form>
+    <script>document.getElementById("chat").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); window.note("sent:chat"); } });</script>`),
+  "/ordinary-money": doc("Ordinary money", `<section><form id="cart"><input aria-label="Email" value="ada@example.com"><button>Pay now</button></form></section>
+    <section><button type="button" onclick="note('upgraded')">Upgrade</button> <button type="button" onclick="note('confirmed')">Confirm</button></section>`),
+  "/ordinary-card": doc("Ordinary card", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button" onclick="note('continued')">Continue</button></form>`),
   // ── Round three: one page per reviewer scenario R1 to R12 ──
   "/typed-focus": doc("Typed focus", `<p id="para">Just a paragraph</p><img id="pic" alt="A picture" width="20" height="20" src="${PIXEL}">
     <form id="pay"><input id="amount" aria-label="Amount" placeholder="Amount" value="5"><button>Pay now</button></form>`),
@@ -680,6 +696,45 @@ try {
       await passes("agent_browser_click", { selector: refIn(page, 'button "Search"') });
       await passes("agent_browser_click", { selector: refIn(page, 'button "Check"') });
       assert.equal(await log(), "submitted:find submitted:imei");
+    } },
+    { id: "T7", title: "ordinary operations have the outcome they must: links, harmless labels, filters, a sign-in and notes pass; sends and payments are held", run: async () => {
+      // A link that loads another page is never a commitment by its text; one that acts as a button is.
+      let page = await visit("/ordinary-links");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'link "Send"') }, { title: "Send on your behalf?", label: /^Send$/ });
+      for (const text of ["Blog post", "Buy tickets", "Share prices"]) {
+        page = await visit("/ordinary-links");
+        await passes("agent_browser_click", { selector: refIn(page, `link "${text}"`) });
+        assert.match((await tool("agent_browser_get_url")).text, /\/elsewhere/, `the ${text} link did not open its page`);
+      }
+      // A profile, filters, a sign-in and a sign-up: each submits with no card.
+      page = await visit("/ordinary-forms");
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Save changes"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Apply"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Submit"') });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Continue"') });
+      assert.equal(await log(), "submitted:profile submitted:filters submitted:login submitted:signup");
+      // Enter in a notes box is a new line, and several lines typed into it run.
+      await passes("agent_browser_click", { selector: "#note" });
+      await passes("agent_browser_press", { key: "Enter" });
+      await passes("agent_browser_type", { selector: "#note", text: "and the cable\nand the plug\n" });
+      const notes = (await tool("agent_browser_eval", { script: "JSON.stringify(document.getElementById('note').value.split('\\n').length)" })).text;
+      assert.match(notes, /[3-9]/, `the notes box did not take the lines: ${notes}`);
+      assert.equal(await log(), "submitted:profile submitted:filters submitted:login submitted:signup", "Enter in the notes box submitted something");
+      // Sends: Enter in a chat composer, a comment, a mail, an application with a file.
+      page = await visit("/ordinary-sends");
+      await passes("agent_browser_click", { selector: "#chat" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Send on your behalf?", label: /^Enter in Message #general$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Comment"') }, { title: "Send on your behalf?", label: /^Comment$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Send"') }, { title: "Send on your behalf?", label: /^Send$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Apply"') }, { title: "Send on your behalf?", label: /^Apply$/ });
+      // Money: by what the button says, and anything in a card region. "Confirm" alone is neither.
+      page = await visit("/ordinary-money");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Pay now"') }, { title: "Spend money?", label: /^Pay now$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Upgrade"') }, { title: "Spend money?", label: /^Upgrade$/ });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Confirm"') });
+      assert.equal(await log(), "confirmed");
+      page = await visit("/ordinary-card");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

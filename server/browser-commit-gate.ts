@@ -19,6 +19,13 @@
 // When the gate cannot tell what a call would act on, it refuses or asks. It
 // never sends.
 //
+// It is a guard against a bot over-acting on ordinary pages, not a wall. It
+// goes by what a page shows (a label, a form, card fields), so it is tuned
+// to pass ordinary browsing (shared/browser-commit.ts has the rules, and
+// browser-commit-ordinary.test.ts the table of what must pass and what must
+// be held), and a payment behind a neutral label on a page with no card
+// signal gets past it. docs/approval-levels.md lists the limits.
+//
 // Every tool the bot has (server/browser-tool-shape.test.ts has the list),
 // and why it can or cannot commit. Each row was run against agent-browser
 // 0.37.0 on a local page.
@@ -29,7 +36,7 @@
 // | check, uncheck | The same real click, on any element: a Send button too. | Judged as a click. |
 // | select | Sets the value and fires `change`. No click. Commits when the page submits on change. | Judged as a click on the element, and as its form's submit when an inline handler submits. |
 // | press | A real key press at the focus, which may be inside a frame or a closed part of the page. Enter in any part of a chord submits or sends. Space, under any of its names, clicks a focused button. | Enter is judged, in any position, and Space as an activation of the focused element. With the focus where the read cannot look (another site's frame, a closed shadow root) both are refused. F5 and Ctrl+R do nothing in the pinned headless browser. |
-// | type | Key presses for "\n" (Enter) and "\t" (Tab); other characters are inserted with no key press, so a typed space activates nothing. It focuses its element when that can take the focus, and otherwise types at whatever has it; a selector it cannot resolve (`text=`, `label=`, `@x`) is typed at the focus too. | Text with a line break runs only when the read resolved the selector to a text field that will itself take it, and is then judged as Enter there. Into anything else, or after a tab, it is refused. |
+// | type | Key presses for "\n" (Enter) and "\t" (Tab); other characters are inserted with no key press, so a typed space activates nothing. It focuses its element when that can take the focus, and otherwise types at whatever has it; a selector it cannot resolve (`text=`, `label=`, `@x`) is typed at the focus too. | Text with a line break runs only when the read resolved the selector to a text field that will itself take it, and is then judged as Enter there: a new line in a notes box, a send in a composer. Several lines run only into a multi-line field that is no composer. Into anything else, or after a tab, it is refused. |
 // | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
 // | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
 // | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, for as long as the browser lives. |
@@ -58,7 +65,7 @@
 // frame that cannot be read is refused.
 import { createHash } from "node:crypto";
 
-import { COMMIT_TITLE, classifyCommit, commitRule, enterPress, isButtonRole, scriptAction, spacePress } from "../shared/browser-commit.ts";
+import { COMMIT_TITLE, chordPress, classifyCommit, commitRule, enterPress, isButtonRole, scriptAction, spacePress } from "../shared/browser-commit.ts";
 import { DEFAULT_OUTBOUND_POLICY } from "../shared/outbound.ts";
 import { redactSecretsInText } from "../shared/redact.ts";
 import { HELD_NOTE } from "./auto-approve.ts";
@@ -159,6 +166,10 @@ interface Intent {
   typed: boolean;
   /** The key a press is for, as a refusal names it. */
   key?: "Enter" | "Space";
+  /** Enter with a key other than Shift held: never a new line. */
+  chord?: boolean;
+  /** Typed text with more than its one line break at the end. */
+  lines?: boolean;
   /** The call as it will be sent. */
   params: unknown;
 }
@@ -262,22 +273,27 @@ function commitIntent(params: unknown, name: string, args: Record<string, unknow
   if (name === "agent_browser_reload") return reloadHeld ? { via: "reload", selector: null, shift: false, typed: false, params } : null;
   if (name === "agent_browser_press") {
     const enter = enterPress(args.key);
-    if (enter) return { via: "enter", selector: null, shift: enter.shift, typed: false, key: "Enter", params };
+    if (enter) return { via: "enter", selector: null, shift: enter.shift, typed: false, key: "Enter", chord: chordPress(args.key), params };
     // Space on a focused button clicks it: an activation of whatever has the focus.
     return spacePress(args.key) ? { via: "click", selector: null, shift: false, typed: false, key: "Space", params } : null;
   }
   const typed = name === "agent_browser_type";
   if (!CLICKS.has(name) && !typed) return null;
   if (typeof args.selector !== "string") return null;
+  let lines = false;
   if (typed) {
     if (typeof args.text !== "string" || !/[\r\n]/.test(args.text)) return null;
-    // One Enter, at the end, lands on the selector's element. After a tab
-    // or an earlier Enter the focus is somewhere this gate has not read.
-    if (!/^[^\r\n\t]*[\r\n]$/.test(args.text)) return "blind";
+    // A tab moves the focus: after one, the Enter that follows lands
+    // somewhere this gate has not read.
+    if (args.text.includes("\t")) return "blind";
+    // One Enter, at the end, lands on the selector's element. Text with
+    // more line breaks than that runs only into a multi-line field where
+    // Enter is a new line: anywhere else the first Enter may move on.
+    lines = !/^[^\r\n]*[\r\n]$/.test(args.text);
   }
   const selector = args.selector.replace(EDGES, "");
   const sent = selector === args.selector ? params : { ...(params as object), arguments: { ...args, selector } };
-  return { via: typed ? "enter" : "click", selector, shift: false, typed, params: sent };
+  return { via: typed ? "enter" : "click", selector, shift: false, typed, ...(lines ? { lines } : {}), params: sent };
 }
 
 /** The address without its fragment, and its host as a card names it. */
@@ -603,6 +619,9 @@ export class BrowserCommitGate {
         // Text with a line break runs only into a text field that will
         // itself take it. At anything else the engine types at the focus.
         if (!read.every((target) => target.typable)) return "untypable";
+        // Several lines go only into a multi-line field: in a one-line
+        // field the first Enter may submit, and the rest lands elsewhere.
+        if (intent.lines && !read.every((target) => target.box === "multiline")) return "untypable";
         // The engine measures an element inside a frame from the frame's own
         // corner, so on a page with a frame the element found in a ref's box
         // may be another one, outside the frame. When the snapshot does not
@@ -610,14 +629,25 @@ export class BrowserCommitGate {
         if (ref && found.frames && !named) return "undescribed";
       }
       targets = read.map((target) => ({
-        via: intent.via as "click" | "enter", shift: intent.shift, label: target.label, role: target.role, box: target.box,
+        via: intent.via as "click" | "enter", shift: intent.shift, chord: intent.chord, label: target.label, role: target.role, box: target.box,
         submits: target.submits, search: target.search, card: target.card, multiline: target.multiline, button: target.button, changes: target.changes,
+        link: target.link, signin: target.signin, carries: target.carries, hint: target.hint, only: target.only, says: target.says, near: target.near,
       }));
       // For a click, the element as the snapshot named it is judged beside
       // the element as it was read: whichever the box really belongs to, a
       // commitment by either is held. When the names differ on a page with
       // a payment frame it cannot look into, the ref is most likely in it.
-      if (intent.via === "click" && known) targets.push(bySnapshot(found.payFrame && !named));
+      if (intent.via === "click" && known) {
+        // The snapshot is naming the element that was read when it calls it
+        // by the same name, or when the page has no frame for the ref to be
+        // in and only one element has that box. Then what the read found
+        // around that element holds for the snapshot's name too: a sign-in,
+        // a form where something is attached, and (for a ref the snapshot
+        // itself calls a link) a plain link.
+        const twin = read.find((target) => sameName(target.label, known.name)) ?? (!found.frames && read.length === 1 ? read[0] : undefined);
+        const seen = bySnapshot(found.payFrame && !named);
+        targets.push(twin ? { ...seen, link: twin.link && known.role === "link", signin: twin.signin, carries: twin.carries } : seen);
+      }
     }
     // The snapshot's name is the browser's own; the page read's is ours. A
     // click is held when either one names a commitment, on any element the
