@@ -36,7 +36,7 @@
 // | check, uncheck | The same real click, on any element: a Send button too. | Judged as a click. |
 // | select | Sets the value and fires `change`. No click. Commits when the page submits on change. | Judged as a click on the element, and as its form's submit when an inline handler submits. |
 // | press | A real key press at the focus, which may be inside a frame or a closed part of the page. Enter in any part of a chord submits or sends. Space, under any of its names, clicks a focused button. | Enter is judged, in any position, and Space as an activation of the focused element. With the focus where the read cannot look (another site's frame, a closed shadow root) both are refused. F5 and Ctrl+R do nothing in the pinned headless browser. |
-// | type | Key presses for "\n" (Enter) and "\t" (Tab); other characters are inserted with no key press, so a typed space activates nothing. It tries to give its element the focus first, and when it cannot (no field, a modal in front, a disabled group, an inert or hidden parent, a selector it cannot resolve) it types the text and the Enter at whatever has it. | Text ending in one line break, at a text field: sent as written when the field has the focus and Enter there commits nothing; otherwise the gate types the text without the line break, reads the focus, and judges and presses the Enter as a step of its own. A field that cannot take the focus gets nothing. Several lines run only into a focused multi-line field that is no composer. Anything else, and anything with a tab, is refused. |
+// | type | Key presses for "\n" and "\r" (Enter, one for each: "\r\n" is two) and "\t" (Tab); other characters are inserted with no key press, so a typed space activates nothing. It tries to give its element the focus first, and when it cannot (no field, a modal in front, a disabled group, an inert or hidden parent, a selector it cannot resolve) it types the text and the Enter at whatever has it. | Text and its Enter never go to the engine in one call. For each line break at a text field, the gate types the text before it, reads the page afresh, and judges and presses the Enter as a step of its own when the field has the focus. A field that cannot take the focus gets nothing. Several lines run only into a focused multi-line field that is no composer. Anything else, and anything with a tab, is refused. |
 // | fill | Sets the value and fires `input`. No key press, no click; "\n" is not Enter. | Not judged. Limit: a field whose own `input` handler submits. |
 // | eval | Runs the bot's script in the page. | Refused when its text acts (scriptAction). A guard, not a wall. |
 // | reload | Sends a POST again when the page came from one. | Held after a commitment in this browser, for as long as the browser lives. |
@@ -119,6 +119,11 @@ const TYPED_UNREACHABLE = "OpenMausBot did not type this: the field it is aimed 
 const TYPED_NOT_TAKEN = "OpenMausBot typed the text, but the field did not take the focus, so it did not press Enter: that Enter would have landed on something else. Take a new snapshot to see where the text went, then press Enter or click the button as its own step.";
 /** Before the reason an Enter was not pressed, once its text is in the field. */
 const TYPED_THEN = "OpenMausBot typed the text and did not press Enter. ";
+/** Several lines, stopped part-way. */
+const TYPED_PART = "OpenMausBot typed the text up to a line break and stopped: it could not press Enter there as a plain new line. The rest was not typed. Enter text of several lines with agent_browser_fill. ";
+/** How many line breaks one typed text may have: each is an Enter the gate checks and presses by itself. */
+const MAX_TYPED_BREAKS = 50;
+const TYPED_MANY = `OpenMausBot did not type this: it has more than ${MAX_TYPED_BREAKS} line breaks, and each one is an Enter key press it checks by itself. Enter the text with agent_browser_fill instead.`;
 const UNDESCRIBED = "OpenMausBot did not do this: it could not check what this would act on. The element is inside a frame or has no visible area, and the last snapshot gave it no name. Take a new snapshot and use the element's @ref from a new snapshot.";
 const BAD_SELECTOR = "OpenMausBot did not do this: it could not check that selector. Use an @ref from a snapshot, or a shorter selector that does not start with a dash.";
 /** Enter or Space with the focus where the read cannot look. */
@@ -182,6 +187,8 @@ interface Intent {
   chord?: boolean;
   /** Typed text with more than its one line break at the end. */
   lines?: boolean;
+  /** Typed text as what lies between its line breaks: each gap is one Enter. */
+  pieces?: string[];
   /** The call as it will be sent. */
   params: unknown;
 }
@@ -286,7 +293,7 @@ const CLOSES: ReadonlySet<string> = new Set(["agent_browser_close", "restart_bro
 
 /** The calls that can commit, as the header table has them. Null for a call
  * that never does; "blind" for typed text whose Enter cannot be placed. */
-function commitIntent(params: unknown, name: string, args: Record<string, unknown>, reloadHeld: boolean): Intent | "blind" | null {
+function commitIntent(params: unknown, name: string, args: Record<string, unknown>, reloadHeld: boolean): Intent | "blind" | "many" | null {
   if (name === "agent_browser_reload") return reloadHeld ? { via: "reload", selector: null, shift: false, typed: false, params } : null;
   if (name === "agent_browser_press") {
     const enter = enterPress(args.key);
@@ -297,20 +304,26 @@ function commitIntent(params: unknown, name: string, args: Record<string, unknow
   const typed = name === "agent_browser_type";
   if (!CLICKS.has(name) && !typed) return null;
   if (typeof args.selector !== "string") return null;
-  let lines = false;
+  let pieces: string[] | undefined;
   if (typed) {
     if (typeof args.text !== "string" || !/[\r\n]/.test(args.text)) return null;
     // A tab moves the focus: after one, the Enter that follows lands
     // somewhere this gate has not read.
     if (args.text.includes("\t")) return "blind";
-    // One Enter, at the end, lands on the selector's element. Text with
-    // more line breaks than that runs only into a multi-line field where
-    // Enter is a new line: anywhere else the first Enter may move on.
-    lines = !/^[^\r\n]*[\r\n]$/.test(args.text);
+    // The engine presses Enter for a line feed and for a carriage return
+    // (measured: for both of a pair, so "a\r\n" submitted a form twice).
+    // Here a pair is one line break, like either alone. The gate types what
+    // lies between the line breaks and presses each Enter itself.
+    pieces = args.text.split(/\r\n|\r|\n/);
+    if (pieces.length - 1 > MAX_TYPED_BREAKS) return "many";
   }
   const selector = args.selector.replace(EDGES, "");
   const sent = selector === args.selector ? params : { ...(params as object), arguments: { ...args, selector } };
-  return { via: typed ? "enter" : "click", selector, shift: false, typed, ...(lines ? { lines } : {}), params: sent };
+  // One Enter, at the end, lands on the selector's element. Text with more
+  // line breaks than that runs only into a multi-line field where Enter is
+  // a new line: anywhere else the first Enter may move on.
+  const lines = pieces !== undefined && (pieces.length > 2 || pieces.at(-1) !== "");
+  return { via: typed ? "enter" : "click", selector, shift: false, typed, ...(pieces ? { pieces } : {}), ...(lines ? { lines } : {}), params: sent };
 }
 
 /** The address without its fragment, and its host as a card names it. */
@@ -431,45 +444,74 @@ export class BrowserCommitGate {
     const intent = commitIntent(call.params, name, args, this.sent.has(call.session));
     if (!intent) return this.relay(call, name);
     if (intent === "blind") return refusal(TYPED_BLIND);
+    if (intent === "many") return refusal(TYPED_MANY);
     call.admit();
     const deadline = Date.now() + this.deps.holdMs;
     const first = await this.look(call, intent);
-    // Text that ends in one line break, at a text field: the text is typed
-    // without it, and the Enter is judged and pressed as a step of its own.
-    if (first === "typed-apart" || (first === "typed-commit" && !intent.lines)) return this.apart(call, intent, name, args, first === "typed-commit", deadline);
-    return this.judged(call, intent, name, first, deadline);
+    if (!intent.typed) return this.judged(call, intent, name, first, deadline);
+    // Typed text with a line break. The text and its Enter never go to the
+    // engine in one call: what Enter does at a field can only be judged once
+    // the text is in it (a "Pay now" button disabled until then).
+    if (first === "typed-commit" && intent.lines) return refusal(TYPED_ENTER);
+    if (typeof first === "string" && first !== "typed-commit" && first !== "typed-apart") return refusal(blindReason(intent, first));
+    return this.stepped(call, intent, name, args, first !== "typed-apart", deadline);
   }
 
-  /** Text ending in exactly one line break, aimed at a text field. The
-   * engine would type the text and press Enter in one go, and nothing could
-   * then be asked between the two. So the gate does it in two steps: the
-   * text, without the line break, at that field; then, when the field has
-   * the focus, the Enter, judged exactly as an Enter press there (passed,
-   * held on a card, or refused) and pressed by itself. When the field did
-   * not take the focus the Enter is not pressed at all: it would land on
-   * something else. The call as the bot wrote it is never sent, so the text
-   * is typed once. */
-  private async apart(call: CommitCall, intent: Intent, name: string, args: Record<string, unknown>, focused: boolean, deadline: number): Promise<unknown> {
+  /** Text with line breaks, aimed at a text field. The engine would type
+   * the text and press Enter in one go, and what Enter does there could
+   * only be judged before the text was in: a button that is disabled until
+   * its field has text would be pressed unseen. So the gate does it in
+   * steps. It types what lies before a line break, at that field. It reads
+   * the page afresh: when the field has the focus, the Enter is judged
+   * exactly as an Enter press there and pressed by itself; when the focus
+   * is anywhere else it is not pressed at all, because it would land on
+   * something else. Then the next piece. The call as the bot wrote it is
+   * never sent, so the text is typed once.
+   *
+   * One line break, at the end: its Enter is passed, held on a card or
+   * refused like any Enter press. Several lines run only where each Enter
+   * is a plain new line; at the first that is not, the gate stops. */
+  private async stepped(call: CommitCall, intent: Intent, name: string, args: Record<string, unknown>, focused: boolean, deadline: number): Promise<unknown> {
     const selector = intent.selector as string;
-    const words = (args.text as string).replace(/[\r\n]+$/, "");
-    let typed: unknown;
-    if (words) {
-      typed = await call.dispatch({ ...(intent.params as object), arguments: { ...args, selector, text: words } });
-      if (failed(typed)) return typed;
-      // Where the focus is now. The same read as before the text: is the
-      // selector's own element a text field that has the focus?
-      const now = await this.deps.runtime.withAgentAction(call.session, () => call.page.target(selector, true), "read").catch(() => "unreadable" as const);
-      if (typeof now === "string" || now.also || !now.typable) return refusal(TYPED_NOT_TAKEN);
-    } else if (!focused) {
-      // A line break alone, at a field without the focus: nothing to type that would give it the focus.
-      return refusal(TYPED_UNFOCUSED);
-    }
+    const pieces = intent.pieces ?? [];
     const press: Intent = { via: "enter", selector: null, shift: false, typed: false, key: "Enter", params: { name: "agent_browser_press", arguments: { key: "Enter" } } };
-    const pressed = await this.judged(call, press, name, await this.look(call, press), deadline);
-    if (!words) return pressed;
-    // The bot is told what became of both steps.
-    if (failed(pressed)) return refusal(TYPED_THEN + text(pressed));
-    return { ...(pressed as object), content: [...content(typed), ...content(pressed)] };
+    /** What was typed first, and what the engine answered last. */
+    let typed: unknown;
+    let last: unknown;
+    /** Is the selector's own field known to have the focus? */
+    let sure = focused;
+    for (let at = 0; at < pieces.length; at += 1) {
+      const words = pieces[at]!;
+      if (words) {
+        last = await call.dispatch({ ...(intent.params as object), arguments: { ...args, selector, text: words } });
+        if (failed(last)) return typed === undefined ? last : refusal(TYPED_PART + text(last));
+        typed ??= last;
+        sure = false;
+      }
+      if (at === pieces.length - 1) break;
+      // An Enter is next. Where is the focus now? The same read as before
+      // the text: is the selector's own element a text field that has it?
+      if (!sure) {
+        // A line break with nothing typed before it, at a field without the focus: nothing gives the field the focus.
+        if (typed === undefined) return refusal(TYPED_UNFOCUSED);
+        const now = await this.deps.runtime.withAgentAction(call.session, () => call.page.target(selector, true), "read").catch(() => "unreadable" as const);
+        if (typeof now === "string" || now.also || !now.typable) return refusal(TYPED_NOT_TAKEN);
+      }
+      const seen = await this.look(call, press);
+      if (intent.lines) {
+        // Several lines: every Enter has to be a plain new line.
+        if (seen !== null) return refusal(TYPED_PART);
+        last = await call.dispatch(press.params);
+        if (failed(last)) return refusal(TYPED_PART + text(last));
+      } else {
+        last = await this.judged(call, press, name, seen, deadline);
+        if (failed(last)) return typed === undefined ? last : refusal(TYPED_THEN + text(last));
+      }
+      // The Enter may have moved the focus.
+      sure = false;
+    }
+    // The bot is told what became of the text and of the last step.
+    return typed === undefined || typed === last ? last : { ...(last as object), content: [...content(typed), ...content(last)] };
   }
 
   /** What becomes of one call once it has been looked at: sent, refused, or

@@ -71,6 +71,9 @@ interface Op {
   setup?: () => void;
   /** The clicked element, when no selector reaches it (it is inside a shadow root). */
   pick?: () => El;
+  /** What the page does once text has been typed into a field: its own
+   * script, which a page set by innerHTML does not run. */
+  reacts?: () => void;
   /** The click is on a ref inside a frame from another site: the engine
    * measures it from the frame's own corner, and nothing on the page has
    * that box. */
@@ -158,6 +161,7 @@ async function outcomeOf(op: Op): Promise<Outcome> {
     let el: El | null = null;
     try { el = given.selector.startsWith("@") ? refs.get(given.selector.slice(1)) ?? null : page.querySelector(given.selector); } catch { el = null; }
     if (el && !el.hasAttribute("disabled") && !el.closest("fieldset[disabled], [inert]") && !/visibility:\s*hidden|display:\s*none/.test(el.getAttribute("style") ?? "")) el.focus();
+    if (given.text) op.reacts?.();
   };
   const result = gate.guard({
     botId: "bot-1", botName: "Pepper", threadId: "thread-1", session: "s", params,
@@ -302,10 +306,11 @@ const OPS: Op[] = [
 // and links whose snapshot name is not their text.
 const contents = (text: string, id: string): Op => ({ what: `a contents link "${text}" to a place on the same page`, html: `<nav><a id="t" href="#${id}">${text}</a></nav><p>…</p><h2 id="${id}">${text}</h2>`, click: "#t", want: "passes" });
 const route = (text: string, href: string): Op => ({ what: `a "${href}" route that says "${text}"`, html: `<nav><a href="#/">Home</a> <a id="t" href="${href}">${text}</a></nav><div id="app"></div>`, click: "#t", want: "passes" });
-/** A product page with a pay-later message frame and an express-checkout button frame, both from another site. */
+/** A product page with a pay-later message frame and a wallet button frame, both from another site. (Round six: a
+ * frame that calls itself "express checkout" and names no brand is a card signal, so the wallet frame here names one.) */
 const SHOP = (inner: string) => `<main><h1>Desk lamp</h1><p>$40.00</p>${inner}
-  <object title="Klarna On-site messaging" name="klarna-payments-main"></object><object title="Secure express checkout frame"></object></main>`;
-const shop = (what: string, inner: string, rest: Partial<Op> = { click: "#t" }): Op => ({ what: `${what} on a shop page with a pay-later frame and an express-checkout frame`, html: SHOP(inner), want: "passes", ...rest });
+  <object title="Klarna On-site messaging"></object><object title="Shop Pay"></object></main>`;
+const shop = (what: string, inner: string, rest: Partial<Op> = { click: "#t" }): Op => ({ what: `${what} on a shop page with a pay-later frame and a wallet frame`, html: SHOP(inner), want: "passes", ...rest });
 /** An article with an advert frame, and a link whose name in the snapshot is not what its text says. */
 const renamed = (what: string, anchor: string, named: string): Op => ({ what: `${what}, by ref, on a page with an advert frame`, html: `<article>${anchor}<p>Body.</p></article><object title="Advertisement"></object>`, click: "#t", named, want: "passes" });
 const LONG = "How to share and post your first message with the new publishing tools: a complete walk-through for people who have never sent one before today";
@@ -332,7 +337,7 @@ const GAPS: Op[] = [
   { what: "a link on a blog post with a donation-button frame", html: `<article><p>Thanks for reading.</p><a id="t" href="/next">Share this story</a><object title="Donate with PayPal button"></object></article>`, click: "#t", want: "passes" },
   { what: '"Like" on a blog post with a donation-button frame', html: `<article><p>Thanks for reading.</p><button id="t" type="button">Like</button><object title="Donate with PayPal button"></object></article>`, click: "#t", want: "passes" },
   // A click inside such a frame is still money, and a frame for typing a card in still makes its form a card region.
-  { what: "the button inside an express-checkout frame", html: SHOP(""), inFrame: { role: "button", name: "Buy with Pay" }, want: "held as Money" },
+  { what: "the button inside a wallet frame", html: SHOP(""), inFrame: { role: "button", name: "Buy with Pay" }, want: "held as Money" },
   { what: 'a "Continue" inside a frame named only klarna-payments-main', html: `<main><h1>Checkout</h1><object name="klarna-payments-main"></object></main>`, inFrame: { role: "button", name: "Continue" }, want: "held as Money" },
   { what: '"Continue" on a form whose card field is a hosted card-number frame', html: `<form><input aria-label="Email"><object title="Secure card number input frame"></object><button id="t" type="button">Continue</button></form>`, click: "#t", want: "held as Money" },
 
@@ -399,7 +404,7 @@ const LATER: Op[] = [
 
   // A frame that speaks of payment and is no known brand's message or button.
   ...["Checkout", "Payment", "Secure payment"].map((title): Op => ({ what: `"Continue" beside a frame titled "${title}"`, html: beside(title), click: "#t", want: "held as Money" })),
-  ...["Klarna On-site messaging", "PayPal Message", "Secure express checkout frame", "Donate with PayPal button"].map((title): Op => ({ what: `"Continue" beside a frame titled "${title}"`, html: beside(title), click: "#t", want: "passes" })),
+  ...["Klarna On-site messaging", "PayPal Message", "Google Pay button", "Donate with PayPal button"].map((title): Op => ({ what: `"Continue" beside a frame titled "${title}"`, html: beside(title), click: "#t", want: "passes" })),
 
   // An address a browser reads as a script, written so as not to look like one.
   { what: 'a "Pay now" link whose address is java, a tab, script:', html: `<p><a id="t" href="java\tscript:pay()">Pay now</a></p>`, click: "#t", want: "held as Money" },
@@ -411,6 +416,42 @@ const LATER: Op[] = [
   { what: "Enter in a message box on a page with a header search and no region around the box", html: MESSAGES, focus: "#box", press: "Enter", want: "held as Send" },
   { what: "Enter in the body of a mail form with To and Subject fields", html: MAIL, focus: "#box", press: "Enter", want: "passes" },
 ];
+
+// ── Round six ──
+/** A form whose button is disabled until its field has text, and the page's script that enables it. */
+const gated = (field: string, button: string) => `<form><input id="f" aria-label="${field}"><button id="b" disabled>${button}</button></form>`;
+const enable = () => { (page.querySelector("#b") as unknown as { removeAttribute(name: string): void }).removeAttribute("disabled"); };
+/** A shop page with one frame from another site, and a button and a link on the page itself. */
+const shopWith = (frame: string) => `<main><h1>Desk lamp</h1><p>$40.00</p><button id="t" type="button">Add to cart</button> <a id="l" href="/tickets">Buy tickets for the launch</a>${frame}</main>`;
+
+const LATEST: Op[] = [
+  // Text and its Enter never go to the engine together: what Enter does is judged once the text is in.
+  { what: "text with a line break typed at a focused field whose Pay now button is disabled until the field has text", html: gated("Amount", "Pay now"), focus: "#f", type: ["#f", "hello\n"], reacts: enable, want: "held as Money" },
+  { what: "the same, at a field that was not clicked first", html: gated("Amount", "Pay now"), type: ["#f", "hello\n"], reacts: enable, want: "held as Money" },
+  { what: "text with a line break typed at a focused field whose Send button is disabled until the field has text", html: gated("Ask anything", "Send"), focus: "#f", type: ["#f", "hello\n"], reacts: enable, want: "held as Send" },
+  { what: "the same Send, at a field that was not clicked first", html: gated("Ask anything", "Send"), type: ["#f", "hello\n"], reacts: enable, want: "held as Send" },
+  { what: "a search typed with a carriage return and a line feed at its end", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form>`, type: ["#q", "lamps\r\n"], want: "passes" },
+  { what: "a search typed with a carriage return at its end, at a box that has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form>`, focus: "#q", type: ["#q", "lamps\r"], want: "passes" },
+
+  // A wallet or pay-later frame does not make the page ask.
+  ...["Shop Pay", "Donate with PayPal", "PayPal", "Apple Pay", "Google Pay", "Amazon Pay", "Klarna", "Afterpay", "Affirm", "Pay later with Affirm"].map((title): Op => ({ what: `"Add to cart" beside a frame titled "${title}"`, html: shopWith(`<object title="${title}"></object>`), click: "#t", want: "passes" })),
+  { what: 'a link beside a frame titled "Shop Pay"', html: shopWith(`<object title="Shop Pay"></object>`), click: "#l", want: "passes" },
+  // Nor does a word in a frame's address.
+  { what: '"Add to cart" beside a reviews widget with "pay" only in its address', html: shopWith(`<object title="Reviews" data="https://widgets.example.com/pay/embed?id=7"></object>`), click: "#t", want: "passes" },
+  { what: 'a link beside an advert with "checkout" only in its address', html: shopWith(`<object title="Advertisement" data="https://ads.example.com/checkout/banner"></object>`), click: "#l", want: "passes" },
+  { what: 'a "Continue" inside a widget frame with "pay" only in its address', html: shopWith(`<object title="Reviews" data="https://widgets.example.com/pay/embed?id=7"></object>`), inFrame: { role: "button", name: "Continue" }, want: "passes" },
+  // A frame that calls itself payment or checkout does, for every button around it.
+  ...["Payment button frame", "Checkout message", "Onsite checkout", "Secure express checkout frame", "PayPal card fields", "Klarna payments"].map((title): Op => ({ what: `"Add to cart" beside a frame titled "${title}"`, html: shopWith(`<object title="${title}"></object>`), click: "#t", want: "held as Money" })),
+  { what: '"Add to cart" beside an untitled frame served from a processor\'s hosted card field', html: shopWith(`<object data="https://js.stripe.com/v3/elements-inner-card-19.html"></object>`), click: "#t", want: "held as Money" },
+  // A click inside a wallet frame is still money.
+  { what: 'a "Continue" inside a frame titled "Shop Pay"', html: shopWith(`<object title="Shop Pay"></object>`), inFrame: { role: "button", name: "Continue" }, want: "held as Money" },
+];
+
+describe("ordinary operations, round six", () => {
+  it.each(LATEST.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {
+    expect(await outcomeOf(op)).toBe(want);
+  });
+});
 
 describe("ordinary operations, round five", () => {
   it.each(LATER.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {

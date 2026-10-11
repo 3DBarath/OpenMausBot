@@ -70,9 +70,9 @@ export interface PageTarget {
    * from the frame's own corner, so on such a page the element found by a
    * ref's box may be another one outside the frame. */
   frames: boolean;
-  /** The page has a frame the read cannot look into whose title, name or
-   * address says payment or card: a frame for typing a card in, or a
-   * payment brand's message or button. */
+  /** The page has a frame the read cannot look into that is a payment
+   * frame: one that calls itself a card, payment or checkout frame, or a
+   * wallet or pay-later brand's own. */
   payFrame: boolean;
   /** The measured box could be inside such a frame: it starts within the
    * frame's own width and height, where the engine measures from. */
@@ -397,24 +397,35 @@ const LIGHT = String.raw`
     // or an expiry. One alone is not enough: a library card has a number, a
     // gift card a code.
     const CARD_COMPANION = /\bcv[cv]\d?\b|\bcvn\b|\bcsc\b|\bsecurity ?code\b|\bcard ?verification\b|\bverification ?value\b|\bexp(?:iry|iration|ires)?\b|\bexp ?(?:date|month|year|mm|yy)\b|\bvalid ?(?:thru|through|until)\b|\bmm ?yy(?:yy)?\b|\bcodigo de segur\w+\b|\bcryptogramme\b|\bprufziffer\b|\bsicherheitscode\b|\bcaducidad\b|\bvencimiento\b|\bdate d expiration\b|\bablaufdatum\b|\bgultig bis\b|\bvalidade\b/;
-    // A frame from another site, by what its title, name or address says.
-    // One that speaks of a card, a payment or a checkout is a card signal
-    // for the region around it, with one exception: a frame known to be a
-    // payment brand's message or button (pay-later messaging, a wallet or
-    // express-checkout button, a donate button) and nothing of a card. A
-    // click inside either kind is money; the page around a brand's message
-    // or button is an ordinary page.
-    const CARD_FRAME = /\b(?:cards?|cc|cvc|cvv|cvn|csc|expir\w+|security ?code|hosted ?fields?|payment (?:input|form|element|fields?|details)|tarjetas?|cartes?|karten?|kartennummer|kreditkarte|cartao|cartoes)\b/;
-    const PAY_FRAME = /\b(?:pay|payments?|checkout|stripe|adyen|braintree|paypal|razorpay|klarna|afterpay|clearpay|affirm|sezzle|gpay|pagos?|paiements?|zahlung(?:en)?|pagamentos?)\b/;
-    const BRAND_FRAME = /\b(?:buttons?|btn|express checkout|messag\w*|osm|placements?|promo\w*|badges?|pay ?later|on ?site)\b/;
-    // A brand's message or button is known by what the frame calls itself
-    // (its title, name and id), or by one of the few addresses such frames
-    // are served from. A word in any other address excuses nothing.
-    const BRAND_ADDRESS = /\bpay google com gp p ui\b|\bpaypal com smart buttons?\b|\bpaypal com credit presentment\b/;
+    // A frame from another site, by what it calls itself: its title, name,
+    // id and label. One that speaks of a card, a payment or a checkout is a
+    // card signal for the region around it. One that calls itself a wallet
+    // or pay-later brand, and nothing of paying besides (alone, or with
+    // words such as button, message, donate, express), is that brand's own
+    // frame: a click inside it is money, and the page around it is an
+    // ordinary page. A word in a frame's address decides nothing: adverts
+    // and widgets are served from addresses with "pay" and "checkout" in
+    // them. The address counts only where it is one of the few known to
+    // serve a processor's card fields, or a brand's button.
+    const CARD_WORDS = /\b(?:cards?|cc|cvc|cvv|cvn|csc|expir\w+|security ?code|hosted ?fields?|tarjetas?|cartes?|karten?|kartennummer|kreditkarte|cartao|cartoes)\b/;
+    const PAY_WORDS = /\b(?:pay|paying|payments?|checkout|pagos?|paiements?|zahlung(?:en)?|pagamentos?)\b/;
+    // (Names are compared as words, and "PayPal" is two of them.)
+    const WALLETS = "pay ?pal|klarna|after ?pay|clear ?pay|affirm|sezzle|venmo|g ?pay|(?:shop|apple|google|amazon|samsung) ?pay|pay ?later|pay in \\d+";
+    const CARD_HOST = /\bjs stripe com v\d+ elements inner (?:card|payment(?! request)|cvc|expiry|number)|\bbraintreegateway com\b.*\bhosted fields\b|\badyen com\b.*\bsecured ?fields\b|\bpaypal com smart card fields\b|\bpci shopifyinc com\b|\bcheckout com\b.*\bframes\b|\brecurly com js v\d+ field\b/;
+    const BRAND_HOST = /\bpay google com gp p ui\b|\bpaypal com smart buttons?\b|\bpaypal com credit presentment\b|\bjs stripe com v\d+ elements inner (?:express checkout|payment request)/;
     const selfWords = (el) => words(["title", "name", "id", "aria-label"].map((name) => attr(el, name)).join(" "));
-    // Does a frame speak of payment at all, and is it a card signal for what is around it?
-    const pays = (frame) => { const said = frameWords(frame); return CARD_FRAME.test(said) || PAY_FRAME.test(said); };
-    const signals = (frame) => { const said = frameWords(frame); return CARD_FRAME.test(said) || (PAY_FRAME.test(said) && !BRAND_FRAME.test(selfWords(frame)) && !BRAND_ADDRESS.test(said)); };
+    const addressWords = (el) => words(attr(el, "src") + " " + attr(el, "data"));
+    // Is the frame a card signal for what is around it?
+    const signals = (frame) => {
+      const from = addressWords(frame);
+      if (CARD_HOST.test(from)) return true;
+      if (BRAND_HOST.test(from)) return false;
+      // What it calls itself, the brand names aside.
+      const rest = selfWords(frame).replace(new RegExp("\\b(?:" + WALLETS + ")\\b", "g"), " ");
+      return CARD_WORDS.test(rest) || PAY_WORDS.test(rest);
+    };
+    // Is it a payment frame at all: a card signal, or a brand's own frame? A click inside either is money.
+    const pays = (frame) => signals(frame) || BRAND_HOST.test(addressWords(frame)) || new RegExp("\\b(?:" + WALLETS + ")\\b").test(selfWords(frame));
     // The numbers card schemes issue, by their first digits and length. A
     // number that only passes the checksum may be anything: an IMEI does.
     const BRAND = /^(?:4\d{12}(?:\d{3}){0,2}|(?:5[1-5]\d\d|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720)\d{12}|3[47]\d{13}|(?:6011|65\d\d|64[4-9]\d|62\d\d)\d{12,15}|35(?:2[89]|[3-8]\d)\d{12,15}|3(?:0[0-5]|[689]\d)\d{11,16}|(?:5[06-9]|6\d)\d{10,17}|(?:8[12]\d\d|508\d)\d{12}|220[0-4]\d{12,15})$/;
@@ -423,7 +434,7 @@ const LIGHT = String.raw`
     // Does this set of controls and frames hold a card signal? 2 for one
     // that stands by itself: an autofill hint; a card-number field beside a
     // security-code or expiry field, by name; a frame from another site that
-    // speaks of a card or a payment and is no brand's message or button.
+    // calls itself a card, payment or checkout frame.
     // 1 when all there is is a card number typed in: a number that passes
     // the checksum with a scheme's first digits, or beside one of those
     // names. (What is typed in a search form is never taken for one, so the

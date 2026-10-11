@@ -50,6 +50,9 @@ const FRAME_PAGES: Record<string, string> = {
   "/continue-frame": `<button type="button" onclick="fetch('/framed-paid', { method: 'POST' })">Continue</button>`,
   // A payment brand's message, as a shop page carries one beside the price.
   "/message-frame": `<p>4 interest-free instalments of $10. <a href="/pay-frame">Learn more</a></p>`,
+  // Frames that are nothing to do with paying, served from addresses with a payment word in them.
+  "/pay/widget": `<p>Rated 4.8 by 312 buyers.</p>`,
+  "/checkout/advert": `<p>Summer sale: 20% off lamps.</p>`,
 };
 const frameSite = createServer((req, res) => {
   req.resume();
@@ -64,6 +67,8 @@ const frameOrigin = `http://localhost:${(frameSite.address() as { port: number }
 
 /** A headline longer than the 120 characters a label is cut to, with words from the lists in it. */
 const LONG_HEADLINE = "How to share and post your first message with the new publishing tools: a complete walk-through for people who have never sent one before today";
+/** Frames from another site that speak of payment or checkout and are no brand's own: the page around each is a card region. */
+const STRICT_FRAMES = ["Checkout", "Payment", "Secure payment", "Payment button frame", "Checkout message", "Klarna payments", "PayPal card fields"];
 /** Everyday buttons on a form with a text area: none of them sends anything. */
 const EVERYDAY = ["Save draft", "Translate", "Generate", "Check grammar", "Update profile", "Add note"];
 /** One local page per reviewer scenario (docs/verification/browser-commit-hold.md, "Cases"). */
@@ -133,6 +138,17 @@ const CASE_PAGES: Record<string, string> = {
   "/ordinary-money": doc("Ordinary money", `<section><form id="cart"><input aria-label="Email" value="ada@example.com"><button>Pay now</button></form></section>
     <section><button type="button" onclick="note('upgraded')">Upgrade</button> <button type="button" onclick="note('confirmed')">Confirm</button></section>`),
   "/ordinary-card": doc("Ordinary card", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button" onclick="note('continued')">Continue</button></form>`),
+  // ── Round six ──
+  // A button that is disabled until its field has text: what Enter does there cannot be told before the text is in.
+  "/tip": doc("Tip", `<form id="tip"><input id="amount" aria-label="Amount"><button id="pay" disabled>Pay now</button></form>
+    <script>document.getElementById("amount").addEventListener("input", (event) => { document.getElementById("pay").disabled = !event.target.value; });</script>`),
+  "/ask": doc("Ask", `<form id="ask"><input id="q" aria-label="Ask anything"><button id="send" disabled>Send</button></form>
+    <script>document.getElementById("q").addEventListener("input", (event) => { document.getElementById("send").disabled = !event.target.value; });</script>`),
+  "/wallet-frames": doc("Desk lamp", `<main><h1>Desk lamp</h1><p>$40.00</p><button type="button" onclick="note('added')">Add to cart</button> <a href="/elsewhere">Buy tickets for the launch</a>
+    <iframe title="Shop Pay" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe>
+    <iframe title="Donate with PayPal" src="${frameOrigin}/message-frame" width="320" height="40"></iframe>
+    <iframe title="Reviews" src="${frameOrigin}/pay/widget" width="320" height="40"></iframe>
+    <iframe title="Advertisement" src="${frameOrigin}/checkout/advert" width="320" height="40"></iframe></main>`),
   // ── Round five ──
   "/typed-apart": doc("Typed apart", `<form id="find" role="search"><input id="q" type="search" aria-label="Search"></form>
     <form id="login"><input id="user" aria-label="Email" value="ada@example.com"><input id="pw" type="password" aria-label="Password"><button>Log in</button></form>
@@ -142,7 +158,7 @@ const CASE_PAGES: Record<string, string> = {
     <button id="open" type="button" onclick="document.getElementById('dlg').showModal()">Open the offer</button>
     <dialog id="dlg"><form id="buy"><input id="coupon" aria-label="Coupon"><button id="buynow">Buy now</button></form></dialog>
     <script>document.getElementById("chat").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); window.note("sent:chat:" + event.target.textContent); } });</script>`),
-  ...Object.fromEntries(["Checkout", "Payment", "Secure payment"].map((title, index) => [`/unknown-frame-${index}`, doc("Order", `<main><h1>Your order</h1><p>Lamp, $40.00</p>
+  ...Object.fromEntries(STRICT_FRAMES.map((title, index) => [`/unknown-frame-${index}`, doc("Order", `<main><h1>Your order</h1><p>Lamp, $40.00</p>
     <button type="button" onclick="note('continued')">Continue</button><iframe title="${title}" src="${frameOrigin}/message-frame" width="320" height="60"></iframe></main>`)])),
   "/tab-scheme": doc("Tab scheme", `<p><a id="pay" href="java&#9;script:note('paid')">Pay now</a> <a id="data" href="data:text/html,<p>sent</p>">Send</a></p>`),
   "/header-search": doc("Messages", `<header><input type="search" aria-label="Search the site"> <nav><input aria-label="Jump to a page"></nav></header>
@@ -168,7 +184,7 @@ const CASE_PAGES: Record<string, string> = {
     <div role="button" tabindex="0" onclick="note('opened')">Shipping details</div>
     <p><a href="/elsewhere">Read the reviews</a></p>
     <iframe title="Klarna On-site messaging" src="${frameOrigin}/message-frame" width="320" height="40"></iframe>
-    <iframe title="Secure express checkout frame" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe></main>`),
+    <iframe title="Shop Pay" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe></main>`),
   "/klarna-only": doc("Checkout", `<main><h1>Checkout</h1><p>Choose how to pay.</p><iframe name="klarna-payments-main" src="${frameOrigin}/continue-frame" width="320" height="50"></iframe></main>`),
   "/links-frame": doc("News", `<article><h2><a style="display:block" href="/elsewhere?story">${LONG_HEADLINE}</a></h2>
     <p><a href="/elsewhere?subscribe">Subscribe<span aria-hidden="true"> to the newsletter</span></a></p>
@@ -1000,6 +1016,56 @@ try {
       await passes("agent_browser_click", { selector: "#body" });
       await passes("agent_browser_press", { key: "Enter" });
       assert.equal(await log(), "");
+    } },
+    { id: "6A", title: "text and its Enter never go to the engine in one call: the Enter is judged after the text is in, focused field or not", run: async () => {
+      const valueOf = async (id: string) => JSON.parse((await tool("agent_browser_eval", { script: `document.getElementById(${JSON.stringify(id)}).value` })).text) as string;
+      // A button disabled until its field has text. Before the text, Enter there does nothing; after it, it pays or sends.
+      for (const [path, field, named, title, done] of [["/tip", "amount", "Amount", "Spend money?", "submitted:tip"], ["/ask", "q", "Ask anything", "Send on your behalf?", "submitted:ask"]] as const) {
+        for (const clickFirst of [true, false]) {
+          for (const answer of ["deny", "allow"] as const) {
+            await visit(path);
+            if (clickFirst) await passes("agent_browser_click", { selector: `#${field}` });
+            const held = await ask("agent_browser_type", { selector: `#${field}`, text: "hello\n" });
+            const what = `${path}, ${clickFirst ? "clicked first" : "not clicked first"}, ${answer}`;
+            assert.equal(held.card.title, title, what);
+            // While the card is open the browser can be read, not acted in: a snapshot shows the field.
+            const during = (await tool("agent_browser_snapshot")).text.split("\n").find((row) => row.includes(`textbox "${named}"`)) ?? "";
+            assert.match(during, /: hello$/, `${what}: the text is not in the field once (${during.trim()})`);
+            assert.equal(await log(), "", `${what}: something was submitted before the answer`);
+            await respond(held.card, answer);
+            const result = await held.result;
+            if (answer === "deny") {
+              assert.match(result.text, /typed the text and did not press Enter/, what);
+              assert.equal(await log(), "", `${what}: Deny still submitted`);
+            } else {
+              assert.equal(result.isError, false, `${what}: ${result.text.slice(0, 120)}`);
+              assert.equal(await log(), done, `${what}: not submitted once`);
+            }
+            assert.equal(await valueOf(field), "hello", `${what}: the text was typed again`);
+          }
+        }
+      }
+      // A carriage return is an Enter to the engine, and a carriage return with a line feed is two: here it is one line break.
+      await visit("/typed-apart");
+      await passes("agent_browser_type", { selector: "#q", text: "lamps\r\n" });
+      assert.equal(await log(), "submitted:find", "the search was not submitted exactly once");
+      await visit("/typed-apart");
+      await passes("agent_browser_type", { selector: "#q", text: "lamps\r" });
+      assert.equal(await log(), "submitted:find");
+    } },
+    { id: "6B", title: "a wallet or pay-later frame does not make the page ask; a frame that calls itself payment or checkout does; an address alone does neither", run: async () => {
+      // A wallet frame, a donate frame, and two frames with a payment word only in their address.
+      let page = await visit("/wallet-frames");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      await passes("agent_browser_click", { selector: refIn(page, 'button "Add to cart"') });
+      assert.equal(await log(), "added");
+      await passes("agent_browser_click", { selector: refIn(page, 'link "Buy tickets for the launch"') });
+      assert.match((await tool("agent_browser_get_url")).text, /\/elsewhere/);
+      // A frame that calls itself payment or checkout, whatever else it says, and a brand's frame for paying in.
+      for (const index of [3, 4, 5, 6]) {
+        page = await visit(`/unknown-frame-${index}`);
+        await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      }
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

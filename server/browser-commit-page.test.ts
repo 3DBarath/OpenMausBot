@@ -779,9 +779,10 @@ describe("round three: a card region", () => {
     };
     expect(framed('title="Secure card number input frame" src="https://js.stripe.com/v3/elements-inner-card.html"', null)).toBe(true);
     expect(framed('title="Kartennummer"', null)).toBe(true);
-    // A frame that says payment and nothing else is nothing the read knows: a card signal (round five).
+    // A frame that calls itself payment is a card signal, whatever else it says; a brand's own button is not (round six).
     expect(framed('title="Zahlung"', null)).toBe(true);
-    expect(framed('title="Zahlung Button"', null)).toBe(false);
+    expect(framed('title="Zahlung Button"', null)).toBe(true);
+    expect(framed('title="PayPal Button"', null)).toBe(false);
     expect(framed('title="Video player" src="https://videos.example/embed/7"', null)).toBe(false);
     expect(framed('title="Secure card number input frame" style="display:none"', null)).toBe(false);
     expect(framed('title="Billing"', `<body>${CARD}</body>`)).toBe(true);
@@ -1245,13 +1246,21 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     return light({ box: boxOf("go"), enter: false });
   };
 
-  // Round five turned the default round: a frame that speaks of payment is a
-  // card signal unless it is a known brand's message or button.
+  // Round six. A frame is a card signal for the page around it when what it
+  // calls itself speaks of a card, a payment or a checkout. It is not one
+  // when what it calls itself is a wallet or pay-later brand and nothing of
+  // paying besides. A word in its address decides nothing, except for a few
+  // addresses known to be a processor's card fields or a brand's button.
   it.each([
-    'title="Klarna On-site messaging"', 'title="Klarna Placement"', 'title="PayPal Message"', 'name="__zoid__paypal_message__abc" title="PayPal Message 7"',
-    'title="PayPal" name="__zoid__paypal_buttons__abc" src="https://www.paypal.com/smart/buttons?x=1"', 'title="Secure express checkout frame"',
-    'title="Secure payment button frame"', 'title="Donate with PayPal button"', 'src="https://pay.google.com/gp/p/ui/pay"', 'title="Afterpay messaging"', 'title="Pay later with Affirm"',
-    'title="Google Pay button"', 'name="shop-pay-button"',
+    // A wallet or pay-later brand, alone.
+    'title="Shop Pay"', 'title="PayPal"', 'title="Apple Pay"', 'title="Google Pay"', 'title="Amazon Pay"', 'title="Klarna"', 'title="Afterpay"', 'title="Affirm"', 'name="gpay"',
+    // A brand with words for a button or a message.
+    'title="Donate with PayPal"', 'title="Donate with PayPal button"', 'title="Klarna On-site messaging"', 'title="Klarna Placement"', 'title="PayPal Message"',
+    'name="__zoid__paypal_message__abc" title="PayPal Message 7"', 'title="PayPal" name="__zoid__paypal_buttons__abc" src="https://www.paypal.com/smart/buttons?x=1"',
+    'title="Afterpay messaging"', 'title="Pay later with Affirm"', 'title="Google Pay button"', 'name="shop-pay-button"', 'title="Apple Pay express wallet logo badge"',
+    // The few addresses known to serve a brand's button, whatever the frame is called.
+    'src="https://pay.google.com/gp/p/ui/pay"', 'title="Secure express checkout frame" src="https://js.stripe.com/v3/elements-inner-express-checkout-1a2b.html"',
+    'title="Secure payment button frame" src="https://js.stripe.com/v3/elements-inner-payment-request-1a2b.html"',
   ])("does not make the page around %s a card region, and knows it for a payment frame", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: false, payFrame: true });
   });
@@ -1260,14 +1269,29 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     'title="Secure card number input frame"', 'title="Secure expiration date input frame"', 'title="Secure CVC input frame"', 'title="Secure payment input frame"',
     'title="Secure card payment input frame"', 'name="braintree-hosted-field-number"', 'title="Iframe for card number"', 'title="Iframe for expiry date"',
     'title="Iframe for security code"', 'title="Secure Credit Card Form"', 'name="checkout-frames-cardNumber"', 'title="Field container for: Card number"',
-    'src="https://www.paypal.com/smart/card-fields?x=1"', 'title="Hosted fields"', 'title="Número de tarjeta"', 'title="Kartennummer"',
-    // A frame that speaks of payment, checkout or a card, and is nothing the read knows.
-    'title="Checkout"', 'title="Payment"', 'title="Secure payment"', 'name="klarna-payments-main"', 'title="PayPal"', 'title="Afterpay"', 'title="Zahlungen"',
-    'title="Paiements"', 'src="https://pay.example.com/session/7"', 'title="Pay"', 'title="Card payment button"',
-    // What makes a frame a brand's message or button is what it calls itself, not a word in its address.
-    'title="Checkout" src="https://shop.example.com/embed/message-frame?buttonColor=blue"', 'src="https://pay.example.com/button/7"',
+    'title="Hosted fields"', 'title="Número de tarjeta"', 'title="Kartennummer"',
+    // A frame that calls itself payment or checkout, whatever else it says.
+    'title="Checkout"', 'title="Payment"', 'title="Secure payment"', 'title="Zahlungen"', 'title="Paiements"', 'title="Pay"', 'title="Card payment button"',
+    'title="Payment button frame"', 'title="Checkout message"', 'title="Onsite checkout"', 'title="Secure express checkout frame"', 'title="Secure payment button frame"',
+    'title="Checkout" src="https://shop.example.com/embed/message-frame?buttonColor=blue"', 'aria-label="Payment"', 'name="checkout-frame"',
+    // A brand's frame for paying in.
+    'name="klarna-payments-main"', 'title="Klarna payments"', 'title="PayPal card fields"', 'title="paypal_card_number_field"', 'title="PayPal Checkout"', 'title="Pay with Klarna"',
+    // The few addresses known to serve a processor's card fields, whatever the frame is called.
+    'src="https://js.stripe.com/v3/elements-inner-card-19.html"', 'name="__privateStripeFrame7" src="https://js.stripe.com/v3/elements-inner-payment-3c.html"',
+    'src="https://assets.braintreegateway.com/web/3.97.2/html/hosted-fields-frame.min.html"', 'src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/x/5.1/securedFields.html"',
+    'src="https://www.paypal.com/smart/card-fields?x=1"',
   ])("makes the page around %s a card region", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: true, payFrame: true });
+  });
+
+  // A word that is only in a frame's address makes it nothing: not a card
+  // signal, and no payment frame for a click inside it either.
+  it.each([
+    'title="Reviews" src="https://widgets.example.com/pay/embed?id=7"', 'title="Advertisement" src="https://ads.example.com/checkout/banner"',
+    'src="https://pay.example.com/session/7"', 'src="https://pay.example.com/button/7"', 'data="https://cdn.example.com/card/promo.html"', 'title="Stripe"',
+    'title="Support chat" src="https://chat.example.com/payments-help"',
+  ])("takes %s for no payment frame at all", (attrs) => {
+    expect(beside(attrs)).toMatchObject({ found: true, card: false, payFrame: false });
   });
 
   it.each(['title="Advertisement"', 'title="Video player" src="https://videos.example/embed/7"', 'title="Comments"', 'title="Map"'])("takes %s for neither", (attrs) => {

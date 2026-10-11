@@ -742,9 +742,10 @@ describe("Enter", () => {
     await f.answer("deny");
     expect(text(await held)).toMatch(/typed the text and did not press Enter/);
     expect(f.state.dispatched).toHaveLength(1);
+    // Where it would not, the text and the Enter still go as two calls (round six), never as the one the bot wrote.
     f.state.target = element({ label: "Log in", box: "single", submits: true });
-    await expect(f.call(typed)).resolves.toBe(CLICKED);
-    expect(f.state.dispatched.at(-1)).toEqual(typed);
+    expect((await f.call(typed) as { isError?: boolean }).isError).not.toBe(true);
+    expect(f.state.dispatched.slice(1)).toEqual([{ name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way" } }, { name: "agent_browser_press", arguments: { key: "Enter" } }]);
   });
 });
 
@@ -918,12 +919,17 @@ describe("a ref the read may have matched to the wrong element", () => {
     const f = fixture();
     f.state.target = EMAIL;
     f.refs.set("e1", { role: "textbox", name: " email " });
-    await expect(f.call(typed("@e1"))).resolves.toBe(CLICKED);
-    await expect(f.call(typed("#before"))).resolves.toBe(CLICKED);
+    const ran = async (selector: string) => {
+      f.state.dispatched.length = 0;
+      expect((await f.call(typed(selector)) as { isError?: boolean }).isError, selector).not.toBe(true);
+      // The text, then the Enter as a call of its own.
+      expect(f.state.dispatched).toEqual([{ name: "agent_browser_type", arguments: { selector, text: "4242" } }, { name: "agent_browser_press", arguments: { key: "Enter" } }]);
+    };
+    await ran("@e1");
+    await ran("#before");
     f.state.target = { ...EMAIL, frames: false };
     f.refs.set("e4", { role: "textbox", name: "Card number" });
-    await expect(f.call(typed("@e4"))).resolves.toBe(CLICKED);
-    expect(f.state.dispatched).toHaveLength(3);
+    await ran("@e4");
   });
 });
 
@@ -1296,11 +1302,13 @@ describe("round three: text typed with a line break", () => {
   it("types it into a text field that will itself take it, when Enter there is no commitment", async () => {
     const f = fixture();
     f.state.target = NOTE;
-    await expect(f.call(typed("#note"))).resolves.toBe(CLICKED);
+    expect((await f.call(typed("#note")) as { isError?: boolean }).isError).not.toBe(true);
+    expect(f.state.dispatched).toEqual([typed("#note", "On my way"), { name: "agent_browser_press", arguments: { key: "Enter" } }]);
+    const reads = f.state.reads.length;
     // The same call with no line break is never read at all.
     f.state.target = "missing";
     await expect(f.call(typed("text=Send", "On my way"))).resolves.toBe(CLICKED);
-    expect(f.state.reads).toHaveLength(1);
+    expect(f.state.reads).toHaveLength(reads);
   });
 
   // Round five: the text is typed without its line break, and the Enter is
@@ -1741,10 +1749,20 @@ describe("tuning: ordinary browsing", () => {
   it("types text with line breaks into a notes box, however many", async () => {
     const f = fixture();
     f.state.target = NOTES;
-    for (const value of ["Bring the charger\n", "Bring the charger\nand the cable", "one\ntwo\nthree\n", "one\r\ntwo"]) {
-      await expect(f.call(typed("#notes", value))).resolves.toBe(CLICKED);
+    const ENTER = { name: "agent_browser_press", arguments: { key: "Enter" } };
+    // Each line as text, each line break as an Enter of its own (round six): never text and Enter in one call.
+    for (const [value, steps] of [
+      ["Bring the charger\n", [typed("#notes", "Bring the charger"), ENTER]],
+      ["Bring the charger\nand the cable", [typed("#notes", "Bring the charger"), ENTER, typed("#notes", "and the cable")]],
+      ["one\ntwo\nthree\n", [typed("#notes", "one"), ENTER, typed("#notes", "two"), ENTER, typed("#notes", "three"), ENTER]],
+      // A carriage return with a line feed is one line break; two line breaks running are two.
+      ["one\r\ntwo", [typed("#notes", "one"), ENTER, typed("#notes", "two")]],
+      ["one\n\ntwo\r", [typed("#notes", "one"), ENTER, ENTER, typed("#notes", "two"), ENTER]],
+    ] as const) {
+      f.state.dispatched.length = 0;
+      expect((await f.call(typed("#notes", value)) as { isError?: boolean }).isError, value).not.toBe(true);
+      expect(f.state.dispatched, value).toEqual(steps);
     }
-    expect(f.state.dispatched).toHaveLength(4);
     expect(f.cards.size).toBe(0);
   });
 
@@ -1903,11 +1921,77 @@ describe("round five: text ending in a line break, typed at a field that was not
     expect(f.state.dispatched).toEqual([]);
   });
 
-  it("still sends the call as it is when the field already has the focus and Enter there commits nothing", async () => {
+  // Round six. What Enter does at a field can change once the text is in:
+  // a "Pay now" button that is disabled until its field has text. So the
+  // text and its Enter never go to the engine in one call, focus or not.
+  it("types the text and presses Enter as two calls when the field already has the focus and Enter there commits nothing", async () => {
     const f = fixture();
     f.state.target = { ...SEARCH, typable: true };
-    await expect(f.call(typed("#q", "lamps\n"))).resolves.toBe(CLICKED);
-    expect(f.state.dispatched).toEqual([typed("#q", "lamps\n")]);
+    expect((await f.call(typed("#q", "lamps\n")) as { isError?: boolean }).isError).not.toBe(true);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps"), ENTER]);
+  });
+
+  it.each([
+    ["money", "Spend money?", element({ label: "Pay now", box: "single", submits: true })],
+    ["a send", "Send on your behalf?", element({ label: "Send", box: "single", submits: true })],
+  ])("judges the Enter after the text is in: a focused field whose button is disabled until then is held as %s", async (_what, title, after) => {
+    const f = fixture();
+    // Before the text: a field whose form has no button that works, so Enter there commits nothing.
+    f.state.target = element({ label: "Amount", role: "textbox", box: "single", submits: true, button: false });
+    f.state.onDispatch = (sent) => { if ((sent as { name: string }).name === "agent_browser_type") f.state.target = after; };
+    const held = f.call(typed("#amount", "hello\n"));
+    expect(await f.pending()).toMatchObject({ title });
+    expect(f.state.dispatched).toEqual([typed("#amount", "hello")]);
+    await f.answer("allow");
+    await held;
+    expect(f.state.dispatched).toEqual([typed("#amount", "hello"), ENTER]);
+  });
+
+  it.each(["lamps\r", "lamps\r\n"])("takes %j for the text and one line break", async (value) => {
+    const f = fixture();
+    f.state.target = { ...SEARCH, typable: true };
+    expect((await f.call(typed("#q", value)) as { isError?: boolean }).isError).not.toBe(true);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps"), ENTER]);
+  });
+
+  it("stops several lines at the first Enter that would commit, and says how far it got", async () => {
+    const f = fixture();
+    const NOTES = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });
+    f.state.target = NOTES;
+    // Once the first line is in, the page shows its Send button: the box is a composer after all.
+    f.state.onDispatch = (sent) => { if ((sent as { name: string }).name === "agent_browser_type") f.state.target = { ...NOTES, only: true, near: ["Send"] }; };
+    const result = await f.call(typed("#notes", "one\ntwo\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/typed the text up to a line break and stopped/);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([typed("#notes", "one")]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it("stops several lines when the field loses the focus part-way", async () => {
+    const f = fixture();
+    const NOTES = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });
+    f.state.target = NOTES;
+    let typedCalls = 0;
+    f.state.onDispatch = (sent) => { if ((sent as { name: string }).name === "agent_browser_type" && (typedCalls += 1) === 2) f.state.target = { ...NOTES, typable: false }; };
+    const result = await f.call(typed("#notes", "one\ntwo\nthree")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/did not press Enter/);
+    expect(f.state.dispatched).toEqual([typed("#notes", "one"), ENTER, typed("#notes", "two")]);
+  });
+
+  it("refuses text with more line breaks than it will press one by one", async () => {
+    const f = fixture();
+    f.state.target = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });
+    const result = await f.call(typed("#notes", "line\n".repeat(51))) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/more than 50 line breaks/);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.state.reads).toEqual([]);
+    // Fifty is the most it does.
+    expect((await f.call(typed("#notes", "line\n".repeat(50))) as { isError?: boolean }).isError).not.toBe(true);
+    expect(f.state.dispatched).toHaveLength(100);
   });
 
   it("presses a line break alone as Enter, held, at a composer that already has the focus", async () => {
