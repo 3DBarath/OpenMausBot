@@ -263,7 +263,10 @@ A click *inside* any of these frames, brand or not, is still money (see
 
 A word in a frame's address decides nothing: adverts and widgets are served
 from addresses with "pay" and "checkout" in them. The address counts only
-where it is one of a few known ones: a processor's hosted card fields
+where the frame is served from one of a few known hosts, matched against the
+host and path of the address as a browser parses it (a mention of such an
+address in a query, or a host that only starts the same, is nothing, and an
+address that cannot be parsed matches nothing): a processor's hosted card fields
 (Stripe's card and payment elements, Braintree's hosted fields, Adyen's
 secured fields, PayPal's card fields, and a few more) make a card signal
 whatever the frame is called, and a brand's button (Google Pay's button,
@@ -283,7 +286,10 @@ What counts as submitting a form:
   to the form from outside it.
 - **Enter** while the focus is on any of its controls except a multi-line
   box: a one-line field, but also a checkbox, a radio button, a list or a
-  slider. It is judged as the form's first submit button. Enter with any
+  slider. It is judged as the form's first submit button, **whether or not
+  that button is enabled at the moment**: a page can enable its "Pay now" a
+  moment after the last key, between the server's look at the page and its
+  key press. Enter with any
   other key held (`Control+Enter`, `Enter+Alt`, in either order) is still
   Enter. Shift+Enter is a new line only in a multi-line box, and only as
   Shift and Enter alone.
@@ -612,6 +618,13 @@ catch:
   no telling name, not a card number) is shown like any other value. A frame
   from another site that holds one, and does not name a payment or a
   sign-in, is in the picture.
+- **A button that a script enables just after typing, and that is not its
+  form's submit button.** The server looks at the page and then presses the
+  key, and a page can change in between. For Enter in a form's field that
+  gap is closed: the form's submit button is judged even while it is
+  disabled. For anything else it remains: a button outside a form, or a
+  script that starts listening for Enter a moment after the last key, is
+  judged as it was when the server looked.
 - After OpenMausBot restarts while a browser stays open, a reload in that
   browser is no longer held: what was sent before the restart is not
   remembered.
@@ -651,6 +664,8 @@ catch:
   take one: the text, a look at the page, and the key.
 - When the server types the text itself and the Enter is then declined or
   refused, the text stays in the field.
+- Enter in a field asks when the form's pay or send button is disabled,
+  although Enter would do nothing at that moment.
 - **More than 5,000 fields in one form or region:** a commitment there is
   refused, not held. The approval could not be bound to all of them.
 - **A reading script that fills a result it did not start empty.** `const

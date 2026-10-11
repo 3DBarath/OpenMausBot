@@ -90,6 +90,8 @@ even when an earlier one failed, and prints `"case"`, its title and
 | 5D | Enter in a box labelled "Write a message", on a page with a search in its header and fields in its navigation and footer, is held as a send. Enter in the body of a mail form with To and Subject fields is a new line. |
 | 6A | A form whose "Pay now" button is disabled until its field has text, and one whose "Send" button is: text with a line break typed at the field, clicked first and not clicked first. Each time the text is in the field once, a card is raised ("Spend money?", "Send on your behalf?") and nothing is submitted before the answer; Deny submits nothing, Allow submits once. Then a search typed with a carriage return and a line feed at its end, and with a carriage return alone: submitted exactly once each. |
 | 6B | A shop page with a frame titled "Shop Pay", one titled "Donate with PayPal", a reviews widget and an advert whose addresses contain "pay" and "checkout": "Add to cart" and a link run with no card, and "Continue" inside the wallet frame is held as money. Beside a frame titled "Payment button frame", "Checkout message", "Klarna payments" or "PayPal card fields", "Continue" on the page is held as money. |
+| 7A | A "Pay now" button enabled 0, 50 and 150 ms after typing stops. Text with a line break typed at its field, four tries at each delay, clicked first and not: every time a "Spend money?" card is raised and nothing is paid before the answer; Deny pays nothing, Allow pays once. A search and a sign-in whose buttons are disabled until there is text run with no card. |
+| 7B | "Continue" beside a frame titled "Checkout" whose address only mentions Google Pay's and PayPal's button addresses in its query is held as money. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
@@ -107,7 +109,7 @@ pnpm exec vitest run shared/browser-commit.test.ts server/browser-commit-page.te
   server/activity.test.ts src/lib/approval-summary.test.ts src/components/ApprovalCard.test.ts
 ```
 
-`server/browser-commit-ordinary.test.ts` is a table of more than 270 ordinary
+`server/browser-commit-ordinary.test.ts` is a table of more than 280 ordinary
 operations and the outcome each must have: passes, held as a send, held as
 money, or refused. Forty are links whose text has a word from the lists. A
 second group holds what the first table missed, and a third and a fourth

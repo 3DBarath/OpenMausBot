@@ -174,7 +174,13 @@ recording controls are intentionally not added to the live browser chrome.
   and nothing of paying besides is that brand's frame: only a click inside
   it is money. A word in a frame's address decides nothing, except through
   two short lists of known addresses: processors' hosted card fields (a
-  card signal) and brands' buttons (a brand's frame).
+  card signal) and brands' buttons (a brand's frame). Each entry is matched
+  against the host, and the path where it has one, of the frame's address
+  as a browser parses it.
+- Enter in a form's field is judged by the form's first submit control
+  whatever its enabled state: a page can enable the button between the
+  gate's read and its key press. That read-then-press gap remains for
+  anything that is not a form's submit control.
 - A card region is a form, or for a control with no form the nearest
   dialog or landmark around it (the page when there is none), that holds a
   `cc-*` autofill hint, or a card-number field beside a security-code or
