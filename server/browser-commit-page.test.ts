@@ -1261,6 +1261,7 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     // The few addresses known to serve a brand's button, whatever the frame is called.
     'src="https://pay.google.com/gp/p/ui/pay"', 'title="Secure express checkout frame" src="https://js.stripe.com/v3/elements-inner-express-checkout-1a2b.html"',
     'title="Secure payment button frame" src="https://js.stripe.com/v3/elements-inner-payment-request-1a2b.html"',
+    'title="Buy" src="//pay.google.com/gp/p/ui/pay?x=1"', 'data="https://www.paypal.com/smart/buttons?style=gold"',
   ])("does not make the page around %s a card region, and knows it for a payment frame", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: false, payFrame: true });
   });
@@ -1279,7 +1280,13 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     // The few addresses known to serve a processor's card fields, whatever the frame is called.
     'src="https://js.stripe.com/v3/elements-inner-card-19.html"', 'name="__privateStripeFrame7" src="https://js.stripe.com/v3/elements-inner-payment-3c.html"',
     'src="https://assets.braintreegateway.com/web/3.97.2/html/hosted-fields-frame.min.html"', 'src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/x/5.1/securedFields.html"',
-    'src="https://www.paypal.com/smart/card-fields?x=1"',
+    'src="https://www.paypal.com/smart/card-fields?x=1"', 'src="//js.stripe.com/v3/elements-inner-card-19.html"',
+    // Round seven. A known address counts by the host the frame is served from, and its path: a mention of it
+    // anywhere else in the address (a query, a path on another host, a look-alike host, a user name) excuses nothing.
+    'title="Checkout" src="https://shop.example.com/embed?next=https://pay.google.com/gp/p/ui/pay"', 'title="Checkout" src="https://pay.google.com.evil.example/gp/p/ui/pay"',
+    'title="Checkout" src="https://pay.google.com@evil.example/gp/p/ui/pay"', 'title="Checkout" src="https://evil.example/www.paypal.com/smart/buttons"',
+    'title="Payment" src="https://js.stripe.com.evil.example/v3/elements-inner-express-checkout-1.html"', 'title="Checkout" src="https://pay.google.com/other/page"',
+    'title="Payment" src="https://evil.example/#https://www.paypal.com/smart/buttons"',
   ])("makes the page around %s a card region", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: true, payFrame: true });
   });
@@ -1290,6 +1297,10 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     'title="Reviews" src="https://widgets.example.com/pay/embed?id=7"', 'title="Advertisement" src="https://ads.example.com/checkout/banner"',
     'src="https://pay.example.com/session/7"', 'src="https://pay.example.com/button/7"', 'data="https://cdn.example.com/card/promo.html"', 'title="Stripe"',
     'title="Support chat" src="https://chat.example.com/payments-help"',
+    // A card-field host named anywhere but in the host of the address is no card-field host; an address that cannot be read matches nothing.
+    'src="https://evil.example/js.stripe.com/v3/elements-inner-card-19.html"', 'src="https://cdn.example.com/x?u=https://js.stripe.com/v3/elements-inner-card-19.html"',
+    'src="https://js.stripe.com.evil.example/v3/elements-inner-card-19.html"', 'src="https://js.stripe.com@evil.example/v3/elements-inner-card-19.html"',
+    'src="http://[bad/v3/elements-inner-card-19.html"', 'src="https://js.stripe.com/v3/fingerprinted/js/controller.html"',
   ])("takes %s for no payment frame at all", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: false, payFrame: false });
   });
@@ -1430,6 +1441,56 @@ describe("round four: the language a page declares", () => {
     if (lang === null) root.removeAttribute("lang"); else root.setAttribute("lang", lang);
     try { expect(light({ box: (page.body.innerHTML = html, boxOf("t")), enter: false })).toMatchObject({ found: true, lang: want }); }
     finally { root.removeAttribute("lang"); }
+  });
+});
+
+describe("round seven: Enter in a field whose form's submit button is disabled", () => {
+  const CARD = `<input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc">`;
+  const classed = (read: Record<string, unknown>) => classifyCommit({ via: "enter", ...(read as unknown as Omit<CommitTarget, "via">) });
+
+  // A page can enable its button a moment after the last key: between the
+  // look at the page and the key press. The browser's default button is the
+  // form's first submit control whatever its state, so that is what Enter
+  // there is judged by.
+  it.each([
+    ["a button that pays", `<form><input id="f" aria-label="Amount"><button disabled>Pay now</button></form>`, "Pay now", "money"],
+    ["a button that sends", `<form><input id="f" aria-label="Ask anything"><button disabled>Send</button></form>`, "Send", "send"],
+    ["a card form's button, whatever it says", `<form>${CARD}<input id="f" aria-label="Name on card"><button disabled>Continue</button></form>`, "Continue", "money"],
+    ["an input button", `<form><input id="f" aria-label="Amount"><input type="submit" value="Donate" disabled></form>`, "Donate", "money"],
+    ["a button tied to the form from outside it", `<form id="x"><input id="f" aria-label="Amount"></form><button form="x" disabled>Pay now</button>`, "Pay now", "money"],
+  ] as const)("judges it by %s although the button is disabled", (_what, html, label, kind) => {
+    const read = focusIn(html, "f");
+    expect(read).toMatchObject({ label, role: "button", submits: true });
+    expect(classed(read)).toBe(kind);
+    // The same for text typed at the field.
+    page.body.innerHTML = html;
+    expect(classed(light({ box: boxOf("f"), enter: true }))).toBe(kind);
+  });
+
+  it("goes by the form's first submit control, enabled or not, as the browser does", () => {
+    expect(focusIn(`<form><input id="f" aria-label="Amount"><button disabled>Pay now</button><button>Save</button></form>`, "f")).toMatchObject({ label: "Pay now", submits: true });
+    expect(focusIn(`<form><input id="f" aria-label="Amount"><button>Save</button><button disabled>Pay now</button></form>`, "f")).toMatchObject({ label: "Save", submits: true });
+  });
+
+  it.each([
+    ["a search", `<form role="search"><input id="f" type="search" aria-label="Search"><button disabled>Search</button></form>`],
+    ["a sign-in", `<form><input aria-label="Email"><input id="f" type="password" aria-label="Password"><button disabled>Log in</button></form>`],
+    ["a sign-in whose button says Submit", `<form><input aria-label="Email"><input id="f" type="password" aria-label="Password"><button disabled>Submit</button></form>`],
+    ["a filter form", `<form><input id="f" aria-label="Max price"><button disabled>Apply</button></form>`],
+    ["a profile form", `<form><input id="f" aria-label="Name"><button disabled>Save changes</button></form>`],
+  ])("still lets Enter through in %s whose button is disabled", (_what, html) => {
+    const read = focusIn(html, "f");
+    expect(read).toMatchObject({ submits: true, role: "button" });
+    expect(classed(read)).toBeNull();
+  });
+
+  it("judges a list whose handler submits its form by that button too", () => {
+    const read = clickIn(`<form><textarea aria-label="Message">Hi</textarea><select id="s" aria-label="When" onchange="this.form.requestSubmit()"><option>now</option></select><button disabled>Send</button></form>`, "s");
+    expect(read).toMatchObject({ label: "Send", submits: true });
+  });
+
+  it("leaves a click on a disabled button what it was: it is not a submit", () => {
+    expect(clickIn(`<form><input aria-label="Name"><button id="b" disabled>Save changes</button></form>`, "b")).toMatchObject({ label: "Save changes", submits: false });
   });
 });
 

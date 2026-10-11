@@ -115,6 +115,7 @@ const UNREADABLE = "OpenMausBot did not do this: it could not read the page to c
 const TYPED_ENTER = "OpenMausBot did not type this: a line break typed with agent_browser_type presses Enter, which would send or submit here. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const TYPED_BLIND = "OpenMausBot did not type this: with agent_browser_type a line break presses Enter and a tab moves the focus, so it could not check where Enter would land. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const TYPED_UNFOCUSED = "OpenMausBot did not type this: a line break typed with agent_browser_type presses Enter, and the field it is aimed at does not have the focus, so that Enter could land on something else. Click the field first and then type, or enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
+const TYPED_LINES = "OpenMausBot did not type this: it has several line breaks, and each one is an Enter key press. In a one-line field the first Enter may submit the form, and the rest of the text would land somewhere else. Enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const TYPED_UNREACHABLE = "OpenMausBot did not type this: the field it is aimed at cannot take the focus right now (it is disabled, hidden, or behind something else), so the text and its Enter would have gone to whatever has the focus. Nothing was typed. If the field should be usable, take a new snapshot; otherwise enter the text with agent_browser_fill, then press Enter or click the button as its own step.";
 const TYPED_NOT_TAKEN = "OpenMausBot typed the text, but the field did not take the focus, so it did not press Enter: that Enter would have landed on something else. Take a new snapshot to see where the text went, then press Enter or click the button as its own step.";
 /** Before the reason an Enter was not pressed, once its text is in the field. */
@@ -229,10 +230,12 @@ interface Sighting {
  *   field that will itself take it. The engine would type at the focus.
  * - "unreachable": text with a line break, for a text field that cannot
  *   take the focus. The engine would type it into whatever has the focus.
+ * - "one-line": text of several lines, for a field of one line that has
+ *   the focus. Its first Enter may submit, and the rest land elsewhere.
  * - "framed": the call would act inside a frame the read cannot look into.
  * - "sealed": the focus is inside a closed part of the page.
  * - "unusable": the selector is one the read will not hand to the engine. */
-type Blind = "unreadable" | "undescribed" | "untypable" | "unreachable" | "framed" | "sealed" | "unusable";
+type Blind = "unreadable" | "undescribed" | "untypable" | "unreachable" | "one-line" | "framed" | "sealed" | "unusable";
 
 /** What the bot is told when its call could not be judged. */
 function blindReason(intent: Intent, blind: Blind): string {
@@ -243,6 +246,7 @@ function blindReason(intent: Intent, blind: Blind): string {
   }
   if (blind === "untypable") return TYPED_UNFOCUSED;
   if (blind === "unreachable") return TYPED_UNREACHABLE;
+  if (blind === "one-line") return TYPED_LINES;
   if (blind === "undescribed") return intent.typed ? TYPED_BLIND : UNDESCRIBED;
   return blind === "unusable" ? BAD_SELECTOR : UNREADABLE;
 }
@@ -729,7 +733,8 @@ export class BrowserCommitGate {
           // Several lines go only into a multi-line field that already has
           // the focus: in a one-line field the first Enter may submit, and
           // the rest lands elsewhere.
-          if (!read.every((target) => target.typable && target.box === "multiline")) return "untypable";
+          if (!read.every((target) => target.typable)) return "untypable";
+          if (!read.every((target) => target.box === "multiline")) return "one-line";
         } else if (!read.every((target) => target.typable)) {
           // One line break at the end. At anything but a text field of its
           // own the engine types at the focus. At a text field that does

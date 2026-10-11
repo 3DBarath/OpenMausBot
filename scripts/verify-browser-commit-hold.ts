@@ -138,6 +138,18 @@ const CASE_PAGES: Record<string, string> = {
   "/ordinary-money": doc("Ordinary money", `<section><form id="cart"><input aria-label="Email" value="ada@example.com"><button>Pay now</button></form></section>
     <section><button type="button" onclick="note('upgraded')">Upgrade</button> <button type="button" onclick="note('confirmed')">Confirm</button></section>`),
   "/ordinary-card": doc("Ordinary card", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button" onclick="note('continued')">Continue</button></form>`),
+  // ── Round seven ──
+  // The Pay now button is enabled a moment after typing stops: between the gate's look at the page and its key press, at some delays.
+  ...Object.fromEntries([0, 50, 150].map((delay) => [`/tip-later-${delay}`, doc("Tip", `<form id="tip"><input id="amount" aria-label="Amount"><button id="pay" disabled>Pay now</button></form>
+    <script>let timer; document.getElementById("amount").addEventListener("input", (event) => { clearTimeout(timer); const on = Boolean(event.target.value);
+      timer = setTimeout(() => { document.getElementById("pay").disabled = !on; }, ${delay}); });</script>`)])),
+  // The same kind of button on forms that send nothing and pay for nothing.
+  "/gated-plain": doc("Gated", `<form id="find" role="search"><input id="q" type="search" aria-label="Search"><button id="go" disabled>Search</button></form>
+    <form id="login"><input aria-label="Email" value="ada@example.com"><input id="pw" type="password" aria-label="Password"><button id="in" disabled>Log in</button></form>
+    <script>for (const [field, button] of [["q", "go"], ["pw", "in"]]) document.getElementById(field).addEventListener("input", (event) => { setTimeout(() => { document.getElementById(button).disabled = !event.target.value; }, 50); });</script>`),
+  // A frame that calls itself a checkout, whose address only mentions a wallet button's address.
+  "/borrowed-address": doc("Order", `<main><h1>Your order</h1><button type="button" onclick="note('continued')">Continue</button>
+    <iframe title="Checkout" src="${frameOrigin}/message-frame?next=https://pay.google.com/gp/p/ui/pay&from=https://www.paypal.com/smart/buttons" width="320" height="60"></iframe></main>`),
   // ── Round six ──
   // A button that is disabled until its field has text: what Enter does there cannot be told before the text is in.
   "/tip": doc("Tip", `<form id="tip"><input id="amount" aria-label="Amount"><button id="pay" disabled>Pay now</button></form>
@@ -1066,6 +1078,34 @@ try {
         page = await visit(`/unknown-frame-${index}`);
         await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
       }
+    } },
+    { id: "7A", title: "Enter in a field is judged by the form's submit button even while that is disabled: a button enabled a moment after typing never pays without a card", run: async () => {
+      for (const delay of [0, 50, 150]) {
+        for (const attempt of [1, 2, 3, 4]) {
+          await visit(`/tip-later-${delay}`);
+          if (attempt % 2 === 0) await passes("agent_browser_click", { selector: "#amount" });
+          const what = `enabled ${delay} ms after typing, try ${attempt}`;
+          const held = await ask("agent_browser_type", { selector: "#amount", text: "hello\n" });
+          assert.equal(held.card.title, "Spend money?", what);
+          await sleep(350);
+          assert.equal(await log(), "", `${what}: paid before the answer`);
+          await respond(held.card, attempt === 4 ? "allow" : "deny");
+          const result = await held.result;
+          await sleep(250);
+          if (attempt === 4) {
+            assert.equal(result.isError, false, `${what}: ${result.text.slice(0, 120)}`);
+            assert.equal(await log(), "submitted:tip", `${what}: not paid once after Allow`);
+          } else assert.equal(await log(), "", `${what}: paid after Deny`);
+        }
+      }
+      // A search and a sign-in whose buttons are disabled until there is text still run with no card.
+      await visit("/gated-plain");
+      await passes("agent_browser_type", { selector: "#q", text: "lamps\n" });
+      await passes("agent_browser_type", { selector: "#pw", text: "correct-horse\n" });
+    } },
+    { id: "7B", title: "a known address counts by a frame's host, not by a mention of it elsewhere in the address", run: async () => {
+      const page = await visit("/borrowed-address");
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

@@ -1980,6 +1980,22 @@ describe("round five: text ending in a line break, typed at a field that was not
     expect(f.state.dispatched).toEqual([typed("#notes", "one"), ENTER, typed("#notes", "two")]);
   });
 
+  // Round seven: a refusal that says what is the matter. This field has the focus.
+  it("says several lines do not go into a one-line field, not that the field lacks the focus", async () => {
+    const f = fixture();
+    f.state.target = { ...SEARCH, typable: true };
+    const result = await f.call(typed("#q", "lamps\nand shades\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/several line breaks/);
+    expect(text(result)).toMatch(/one-line field/);
+    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(text(result)).not.toMatch(/does not have the focus/);
+    expect(f.state.dispatched).toEqual([]);
+    // A field that does not have it is still told so.
+    f.state.target = SEARCH;
+    expect(text(await f.call(typed("#q", "lamps\nand shades\n")))).toMatch(/does not have the focus/);
+  });
+
   it("refuses text with more line breaks than it will press one by one", async () => {
     const f = fixture();
     f.state.target = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });

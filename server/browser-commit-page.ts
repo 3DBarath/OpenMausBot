@@ -240,7 +240,8 @@ const PRELUDE = String.raw`
     // Every control the form owns, in document order. form.elements leaves
     // out <input type="image">, which is a submit button like any other.
     const formControls = (form) => queryAll(rootOf(form) || document, "input, button, select, textarea").filter((el) => formOwner(el) === form);
-    const submitter = (el) => (tag(el) === "BUTTON" || tag(el) === "INPUT") && (el.type === "submit" || el.type === "image") && !el.disabled;
+    const submitControl = (el) => (tag(el) === "BUTTON" || tag(el) === "INPUT") && (el.type === "submit" || el.type === "image");
+    const submitter = (el) => submitControl(el) && !el.disabled;
     const shown = (el) => visible(el, { checkVisibilityCSS: true }) !== false;
     const all = (root, out) => {
       for (const el of queryAll(root, "*")) { out.push(el); const inner = shadowOf(el); if (inner) all(inner, out); }
@@ -366,7 +367,10 @@ const PRELUDE = String.raw`
       const toggles = tag(control) === "SELECT" || type === "checkbox" || type === "radio";
       let acting = control;
       let submits = false;
-      const viaDefault = () => { const first = owned.find(submitter); if (first) acting = first; return Boolean(first); };
+      // The form's default button: its first submit control, whatever its
+      // state. A disabled one is judged like a live one: a page can enable
+      // it between this read and the key press.
+      const viaDefault = () => { const first = owned.find(submitControl); if (first) acting = first; return Boolean(first); };
       if (input.enter && form && box !== "multiline" && (formControl || box)) {
         // Enter on a form control (a one-line field, but also a checkbox, a
         // radio button, a select, a slider) submits the form through its
@@ -411,21 +415,34 @@ const LIGHT = String.raw`
     const PAY_WORDS = /\b(?:pay|paying|payments?|checkout|pagos?|paiements?|zahlung(?:en)?|pagamentos?)\b/;
     // (Names are compared as words, and "PayPal" is two of them.)
     const WALLETS = "pay ?pal|klarna|after ?pay|clear ?pay|affirm|sezzle|venmo|g ?pay|(?:shop|apple|google|amazon|samsung) ?pay|pay ?later|pay in \\d+";
-    const CARD_HOST = /\bjs stripe com v\d+ elements inner (?:card|payment(?! request)|cvc|expiry|number)|\bbraintreegateway com\b.*\bhosted fields\b|\badyen com\b.*\bsecured ?fields\b|\bpaypal com smart card fields\b|\bpci shopifyinc com\b|\bcheckout com\b.*\bframes\b|\brecurly com js v\d+ field\b/;
-    const BRAND_HOST = /\bpay google com gp p ui\b|\bpaypal com smart buttons?\b|\bpaypal com credit presentment\b|\bjs stripe com v\d+ elements inner (?:express checkout|payment request)/;
+    // The few addresses that count, each by the host a frame is served
+    // from (a leading dot: that host and those under it) and, where given,
+    // its path. A mention of one anywhere else in an address (a query, a
+    // path on another host, a host that only starts the same) is nothing.
+    const CARD_HOSTS = [
+      ["js.stripe.com", /^\/v\d+\/elements-inner-(?:card|payment(?!-request)|cvc|expiry|number)/], ["assets.braintreegateway.com", /hosted-fields/], [".adyen.com", /securedfields/i],
+      [".paypal.com", /^\/smart\/card-fields/], [".pci.shopifyinc.com", null], [".checkout.com", /frames/], ["api.recurly.com", /^\/js\/v\d+\/field/],
+    ];
+    const BRAND_HOSTS = [["pay.google.com", /^\/gp\/p\/ui\//], [".paypal.com", /^\/(?:smart\/buttons?|credit-presentment)/], ["js.stripe.com", /^\/v\d+\/elements-inner-(?:express-checkout|payment-request)/]];
+    // Is the frame served from one of them? Its address is parsed as a
+    // browser parses it; one that cannot be parsed matches nothing.
+    const servedFrom = (frame, known) => {
+      let at;
+      try { const base = String(urlOf(pageOf(frame) || document) || ""), raw = attr(frame, "src") || attr(frame, "data"); at = base ? new URL(raw, base) : new URL(raw); } catch (error) { return false; }
+      const host = String(at.hostname).toLowerCase();
+      return /^https?:$/.test(at.protocol) && known.some((entry) => (entry[0][0] === "." ? host.endsWith(entry[0]) || host === entry[0].slice(1) : host === entry[0]) && (!entry[1] || entry[1].test(at.pathname)));
+    };
     const selfWords = (el) => words(["title", "name", "id", "aria-label"].map((name) => attr(el, name)).join(" "));
-    const addressWords = (el) => words(attr(el, "src") + " " + attr(el, "data"));
     // Is the frame a card signal for what is around it?
     const signals = (frame) => {
-      const from = addressWords(frame);
-      if (CARD_HOST.test(from)) return true;
-      if (BRAND_HOST.test(from)) return false;
+      if (servedFrom(frame, CARD_HOSTS)) return true;
+      if (servedFrom(frame, BRAND_HOSTS)) return false;
       // What it calls itself, the brand names aside.
       const rest = selfWords(frame).replace(new RegExp("\\b(?:" + WALLETS + ")\\b", "g"), " ");
       return CARD_WORDS.test(rest) || PAY_WORDS.test(rest);
     };
     // Is it a payment frame at all: a card signal, or a brand's own frame? A click inside either is money.
-    const pays = (frame) => signals(frame) || BRAND_HOST.test(addressWords(frame)) || new RegExp("\\b(?:" + WALLETS + ")\\b").test(selfWords(frame));
+    const pays = (frame) => signals(frame) || servedFrom(frame, BRAND_HOSTS) || new RegExp("\\b(?:" + WALLETS + ")\\b").test(selfWords(frame));
     // The numbers card schemes issue, by their first digits and length. A
     // number that only passes the checksum may be anything: an IMEI does.
     const BRAND = /^(?:4\d{12}(?:\d{3}){0,2}|(?:5[1-5]\d\d|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720)\d{12}|3[47]\d{13}|(?:6011|65\d\d|64[4-9]\d|62\d\d)\d{12,15}|35(?:2[89]|[3-8]\d)\d{12,15}|3(?:0[0-5]|[689]\d)\d{11,16}|(?:5[06-9]|6\d)\d{10,17}|(?:8[12]\d\d|508\d)\d{12}|220[0-4]\d{12,15})$/;

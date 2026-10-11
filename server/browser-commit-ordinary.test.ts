@@ -447,6 +447,31 @@ const LATEST: Op[] = [
   { what: 'a "Continue" inside a frame titled "Shop Pay"', html: shopWith(`<object title="Shop Pay"></object>`), inFrame: { role: "button", name: "Continue" }, want: "held as Money" },
 ];
 
+// ── Round seven ──
+const LAST: Op[] = [
+  // Enter in a field is judged by the form's submit button even while that is disabled: a page can enable it a moment later.
+  { what: "text with a line break typed at a field whose Pay now button is still disabled", html: gated("Amount", "Pay now"), type: ["#f", "hello\n"], want: "held as Money" },
+  { what: "Enter in a field whose Pay now button is still disabled", html: gated("Amount", "Pay now"), focus: "#f", press: "Enter", want: "held as Money" },
+  { what: "text with a line break typed at a field whose Send button is still disabled", html: gated("Ask anything", "Send"), focus: "#f", type: ["#f", "hello\n"], want: "held as Send" },
+  { what: "a search typed with a line break while its Search button is still disabled", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button disabled>Search</button></form>`, type: ["#q", "lamps\n"], want: "passes" },
+  { what: "a password typed with a line break while the Log in button is still disabled", html: `<form><input aria-label="Email" value="ada@example.com"><input id="pw" type="password" aria-label="Password"><button disabled>Log in</button></form>`, type: ["#pw", "correct-horse\n"], want: "passes" },
+  { what: "Enter in a profile field while Save changes is still disabled", html: `<form><input id="f" aria-label="Name" value="Ada"><button disabled>Save changes</button></form>`, focus: "#f", press: "Enter", want: "passes" },
+  { what: "Enter in a filter field while Apply is still disabled", html: `<form><input id="f" aria-label="Max price" value="50"><button disabled>Apply</button></form>`, focus: "#f", press: "Enter", want: "passes" },
+  // A known address counts by the host a frame is served from.
+  { what: '"Add to cart" beside a frame titled "Checkout" whose address only mentions a wallet button\'s address', html: shopWith(`<object title="Checkout" data="https://shop.example.com/embed?next=https://pay.google.com/gp/p/ui/pay"></object>`), click: "#t", want: "held as Money" },
+  { what: '"Add to cart" beside a frame titled "Checkout" on a host that only starts like a wallet\'s', html: shopWith(`<object title="Checkout" data="https://pay.google.com.evil.example/gp/p/ui/pay"></object>`), click: "#t", want: "held as Money" },
+  { what: '"Add to cart" beside an untitled frame served from a wallet button\'s own address', html: shopWith(`<object data="https://pay.google.com/gp/p/ui/pay?x=1"></object>`), click: "#t", want: "passes" },
+  { what: '"Add to cart" beside an untitled frame whose address only mentions a card-field host', html: shopWith(`<object data="https://cdn.example.com/x?u=https://js.stripe.com/v3/elements-inner-card-19.html"></object>`), click: "#t", want: "passes" },
+  // Several lines at a one-line field that has the focus.
+  { what: "several lines typed at a one-line field that has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form>`, focus: "#q", type: ["#q", "lamps\nand shades\n"], want: "refused" },
+];
+
+describe("ordinary operations, round seven", () => {
+  it.each(LAST.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {
+    expect(await outcomeOf(op)).toBe(want);
+  });
+});
+
 describe("ordinary operations, round six", () => {
   it.each(LATEST.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {
     expect(await outcomeOf(op)).toBe(want);
