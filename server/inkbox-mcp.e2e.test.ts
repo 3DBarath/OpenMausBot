@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { harnessMcpRequest } from "./harness-mcp-proxy.ts";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
@@ -59,7 +59,7 @@ it("mounts host-owned Inkbox tools only for the configured bot and gates actual 
     `, { mode: 0o600 });
     const log = openSync(logPath, "a", 0o600);
     try {
-      child = spawn(process.execPath, ["--experimental-strip-types", "--import", prelude, fileURLToPath(new URL("./index.ts", import.meta.url))], {
+      child = spawn(process.execPath, ["--experimental-strip-types", "--import", pathToFileURL(prelude).href, fileURLToPath(new URL("./index.ts", import.meta.url))], {
         cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: ["ignore", log, log],
         env: { ...verificationServerEnvironment({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_TOOL_CALLS: "[]" }, dataDir, Number(new URL(url).port)),
           OMB_INKBOX_API_KEY: key, OMB_INKBOX_SIGNING_SECRET: "synthetic-signing-key", OMB_INKBOX_IDENTITY_ID: identity,

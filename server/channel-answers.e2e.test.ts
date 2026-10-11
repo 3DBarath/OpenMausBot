@@ -6,7 +6,7 @@ import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } 
 import { connect, type Socket } from "node:net";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import type { OptionCardData } from "../shared/wire.ts";
@@ -96,7 +96,7 @@ it("answers signed owner questions and exact one-time approvals on the original 
     `, { mode: 0o600 });
     const log = openSync(logPath, "a", 0o600);
     try {
-      child = spawn(process.execPath, ["--experimental-strip-types", "--import", prelude, fileURLToPath(new URL("./index.ts", import.meta.url))], {
+      child = spawn(process.execPath, ["--experimental-strip-types", "--import", pathToFileURL(prelude).href, fileURLToPath(new URL("./index.ts", import.meta.url))], {
         cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: ["ignore", log, log],
         env: { ...verificationServerEnvironment({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_TOOL_CALLS: "[]", FAKE_CLAUDE_RELEASE: releaseFile, FAKE_CLAUDE_PROMPTS: promptsFile }, dataDir, Number(new URL(url).port)),
           OMB_COMPOSIO_API: brokerOrigin + "/api", OMB_COMPOSIO_TOOLKITS_API: brokerOrigin + "/api",

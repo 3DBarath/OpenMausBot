@@ -3,7 +3,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
@@ -77,7 +77,7 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     const startServer = async () => {
       const log = openSync(logPath, "a", 0o600);
       try {
-        child = spawn(process.execPath, ["--experimental-strip-types", "--import", prelude, fileURLToPath(new URL("./index.ts", import.meta.url))], {
+        child = spawn(process.execPath, ["--experimental-strip-types", "--import", pathToFileURL(prelude).href, fileURLToPath(new URL("./index.ts", import.meta.url))], {
           cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: ["ignore", log, log],
           env: { ...verificationServerEnvironment({ FAKE_CLAUDE_TOOL_CALLS: "[]", FAKE_CLAUDE_REPLIES: '["**owner fixture reply**"]' }, dataDir, Number(new URL(url).port)),
             OMB_INKBOX_API_KEY: apiKey, OMB_INKBOX_SIGNING_SECRET: signingSecret, OMB_INKBOX_IDENTITY_ID: identityId, OMB_INKBOX_OWNER_PHONE: ownerPhone, OMB_INKBOX_BOT_ID: bot.id,
