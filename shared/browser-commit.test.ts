@@ -410,6 +410,20 @@ describe("linkGoes", () => {
     expect(linkGoes(href, PAGE)).toBe(false);
   });
 
+  // A browser drops tabs and line breaks anywhere in an address, and control
+  // characters and spaces before it, before it looks at the scheme.
+  it.each(["java\tscript:pay()", "j\na\rv\tascript:pay()", "\u0001\u0002 javascript:pay()", "\n  javascript:send()", "JAVA\tSCRIPT:pay()", "data:text/html,<p>sent</p>", "DATA:text/html,x", " \tdata:x", "vbscript:pay", "vb\tscript:pay"])
+  ("says %j is no plain link: a browser reads a script or a made-up page there", (href) => {
+    expect(linkGoes(href, PAGE)).toBe(false);
+  });
+
+  it("reads an ordinary address with a stray tab or line break in it as a browser does", () => {
+    expect(linkGoes("/sto\try", PAGE)).toBe(true);
+    expect(linkGoes("\n/story\n", PAGE)).toBe(true);
+    expect(linkGoes("#\t/blog", PAGE)).toBe(true);
+    expect(linkGoes("\t#\n", PAGE)).toBe(false);
+  });
+
   it("says a link to this same address, with no fragment, loads the page again", () => {
     expect(linkGoes("/lamps?page=2", PAGE)).toBe(true);
   });

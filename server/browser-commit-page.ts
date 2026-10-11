@@ -37,8 +37,15 @@ export interface PageTarget {
    * runs when it changes. */
   changes: boolean;
   /** For text typed at a selector: the element is itself a text field that
-   * takes the focus, so the keys go to it and nowhere else. */
+   * has the focus, so the keys go to it and nowhere else. */
   typable: boolean;
+  /** For text typed at a selector: the element is itself a text field,
+   * with the focus or not. */
+  field: boolean;
+  /** That field can take the focus, as far as the read can tell: it is not
+   * in a disabled group, under an inert parent, hidden, or outside a modal
+   * dialog that is open. */
+  reach: boolean;
   /** A plain link: an anchor whose address goes somewhere (another
    * document, a place on this page that exists, a "#/" route), with no
    * button role and no click handler written on it. */
@@ -391,21 +398,32 @@ const LIGHT = String.raw`
     // gift card a code.
     const CARD_COMPANION = /\bcv[cv]\d?\b|\bcvn\b|\bcsc\b|\bsecurity ?code\b|\bcard ?verification\b|\bverification ?value\b|\bexp(?:iry|iration|ires)?\b|\bexp ?(?:date|month|year|mm|yy)\b|\bvalid ?(?:thru|through|until)\b|\bmm ?yy(?:yy)?\b|\bcodigo de segur\w+\b|\bcryptogramme\b|\bprufziffer\b|\bsicherheitscode\b|\bcaducidad\b|\bvencimiento\b|\bdate d expiration\b|\bablaufdatum\b|\bgultig bis\b|\bvalidade\b/;
     // A frame from another site, by what its title, name or address says.
-    // One for typing a card in (a card number, an expiry, a security code,
-    // a processor's hosted fields) is a card signal for the region around
-    // it. One that only names a payment or a payment brand is that brand's
-    // message or button: a click inside it is money, and the page around
-    // it is an ordinary page.
+    // One that speaks of a card, a payment or a checkout is a card signal
+    // for the region around it, with one exception: a frame known to be a
+    // payment brand's message or button (pay-later messaging, a wallet or
+    // express-checkout button, a donate button) and nothing of a card. A
+    // click inside either kind is money; the page around a brand's message
+    // or button is an ordinary page.
     const CARD_FRAME = /\b(?:cards?|cc|cvc|cvv|cvn|csc|expir\w+|security ?code|hosted ?fields?|payment (?:input|form|element|fields?|details)|tarjetas?|cartes?|karten?|kartennummer|kreditkarte|cartao|cartoes)\b/;
     const PAY_FRAME = /\b(?:pay|payments?|checkout|stripe|adyen|braintree|paypal|razorpay|klarna|afterpay|clearpay|affirm|sezzle|gpay|pagos?|paiements?|zahlung(?:en)?|pagamentos?)\b/;
+    const BRAND_FRAME = /\b(?:buttons?|btn|express checkout|messag\w*|osm|placements?|promo\w*|badges?|pay ?later|on ?site)\b/;
+    // A brand's message or button is known by what the frame calls itself
+    // (its title, name and id), or by one of the few addresses such frames
+    // are served from. A word in any other address excuses nothing.
+    const BRAND_ADDRESS = /\bpay google com gp p ui\b|\bpaypal com smart buttons?\b|\bpaypal com credit presentment\b/;
+    const selfWords = (el) => words(["title", "name", "id", "aria-label"].map((name) => attr(el, name)).join(" "));
+    // Does a frame speak of payment at all, and is it a card signal for what is around it?
+    const pays = (frame) => { const said = frameWords(frame); return CARD_FRAME.test(said) || PAY_FRAME.test(said); };
+    const signals = (frame) => { const said = frameWords(frame); return CARD_FRAME.test(said) || (PAY_FRAME.test(said) && !BRAND_FRAME.test(selfWords(frame)) && !BRAND_ADDRESS.test(said)); };
     // The numbers card schemes issue, by their first digits and length. A
     // number that only passes the checksum may be anything: an IMEI does.
     const BRAND = /^(?:4\d{12}(?:\d{3}){0,2}|(?:5[1-5]\d\d|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720)\d{12}|3[47]\d{13}|(?:6011|65\d\d|64[4-9]\d|62\d\d)\d{12,15}|35(?:2[89]|[3-8]\d)\d{12,15}|3(?:0[0-5]|[689]\d)\d{11,16}|(?:5[06-9]|6\d)\d{10,17}|(?:8[12]\d\d|508\d)\d{12}|220[0-4]\d{12,15})$/;
-    // The frames of another site under a root whose own words match a pattern.
-    const framesIn = (root, kind) => deep(root, FRAMES).filter((frame) => shown(frame) && !frameDoc(frame) && kind.test(frameWords(frame)));
+    // The frames of another site under a root whose own words pass a test.
+    const framesIn = (root, test) => deep(root, FRAMES).filter((frame) => shown(frame) && !frameDoc(frame) && test(frame));
     // Does this set of controls and frames hold a card signal? 2 for one
     // that stands by itself: an autofill hint; a card-number field beside a
-    // security-code or expiry field, by name; a frame for typing a card in.
+    // security-code or expiry field, by name; a frame from another site that
+    // speaks of a card or a payment and is no brand's message or button.
     // 1 when all there is is a card number typed in: a number that passes
     // the checksum with a scheme's first digits, or beside one of those
     // names. (What is typed in a search form is never taken for one, so the
@@ -433,7 +451,7 @@ const LIGHT = String.raw`
       }
       // The two signs must be on two fields: one field called "Card number or CVC" is one sign.
       if (hint || numbers.some((number) => companions.some((companion) => companion !== number))) return 2;
-      if (framesIn(root, CARD_FRAME).length) return 2;
+      if (framesIn(root, signals).length) return 2;
       // A frame the page can read is a card frame when what is in it is.
       let inner = 0;
       if (depth < 2) for (const frame of deep(root, FRAMES)) { const inside = shown(frame) && frameDoc(frame); if (inside) inner = Math.max(inner, cardSigns(deep(inside, "input, select"), inside, inside, depth + 1)); }
@@ -456,6 +474,7 @@ const LIGHT = String.raw`
     const regions = new Map();
     const hrefOf = prop("href"), urlOf = prop("URL");
     const TEXTS = 'input, textarea, [contenteditable], [role=textbox], [role=searchbox]';
+    const APART = '[role=search], search, header, nav, footer, aside, [role=banner], [role=navigation], [role=contentinfo], [role=complementary]';
     const PRESSED = 'button, [role=button], input[type=submit], input[type=button], input[type=image], a[href], [role=link], [role=menuitem]';
     // A control that a click, Enter or Space activates.
     const buttonLike = (el) => {
@@ -492,19 +511,33 @@ const LIGHT = String.raw`
       // already has the focus: the engine cannot always give it the focus
       // (a modal in front, a disabled fieldset, an inert or hidden parent),
       // and then its Enter goes to whatever has it.
-      const typable = Boolean(input.enter && input.box && pick.el === control && box && !control.disabled && holder === control);
+      const field = Boolean(input.enter && input.box && pick.el === control && box && !control.disabled);
+      const typable = field && holder === control;
+      // Can the field take the focus, as far as a read can tell? Not in a
+      // disabled group, under an inert parent, hidden, or outside a modal
+      // dialog that is open. The engine types at whatever has the focus
+      // when its field cannot take it (measured: into the field that had it).
+      const modal = field ? queryAll(page, "dialog[open]").find((dialog) => matches(dialog, ":modal") === true) : null;
+      const reach = field && shown(control) && matches(control, ":disabled") !== true
+        && !climb(control, (n) => hasAttr(n, "inert") || (tag(n) === "FIELDSET" && hasAttr(n, "disabled")))
+        && (!modal || Boolean(climb(control, (n) => n === modal)));
       // A plain link: an anchor whose address goes somewhere, with no role
       // that makes it a button and no click handler written on it. Somewhere
       // is another document, a place on this page that exists (an element
       // with that id, or an anchor with that name), or a "#/" or "#!" route.
       // A bare "#", an address to no place, and "javascript:" go nowhere:
       // such a link is a button.
-      const href = text(attr(control, "href")), there = String(hrefOf(control) || ""), here = String(urlOf(page) || "").split("#")[0];
+      // The address is read the way a browser reads it: tabs and line breaks
+      // dropped wherever they are, control characters and spaces at its ends.
+      const href = attr(control, "href").replace(/[\t\n\r]/g, "").replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, "");
+      const there = String(hrefOf(control) || ""), here = String(urlOf(page) || "").split("#")[0];
       const cut = there.indexOf("#");
       let place = cut < 0 || there.slice(0, cut) !== here ? null : there.slice(cut + 1);
       if (place) try { place = decodeURIComponent(place); } catch (error) { /* as it is written */ }
       const goes = place === null || /^[/!]/.test(place) || (place !== "" && Boolean(byId(page, place) || queryAll(page, "a[name]").some((anchor) => attr(anchor, "name") === place)));
-      const link = tag(control) === "A" && Boolean(href) && !/^javascript:/i.test(href) && goes
+      // A scheme that runs a script or makes up a page on the spot is no address to go to.
+      const acts = /^(?:javascript|data|vbscript):/i;
+      const link = tag(control) === "A" && Boolean(href) && !acts.test(href) && !acts.test(there) && goes
         && ["", "link"].includes(text(attr(control, "role")).toLowerCase()) && !text(handlers(control, ["onclick"]));
       // What the form, or the region around a control with no form, holds:
       // a sign-in has a password field and no multi-line field; a file to
@@ -515,13 +548,16 @@ const LIGHT = String.raw`
       const carries = lines || within.some((field) => inputType(field) === "file");
       // The language the page declares for this element: its own or the nearest around it, "" for none.
       const speaks = climb(control, (n) => hasAttr(n, "lang"));
-      const target = { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, button: buttonLike(control), changes, typable, link, signin, carries, lang: clip(text(speaks ? attr(speaks, "lang") : ""), 20) };
+      const target = { label: labelOf(acting), role: roleOf(acting), box, submits, search, card, multiline, button: buttonLike(control), changes, typable, field, reach, link, signin, carries, lang: clip(text(speaks ? attr(speaks, "lang") : ""), 20) };
       if (input.enter && box === "multiline") {
         // What could make this box a message composer: its keyboard hint,
         // whether it is the only text field there, what it is called, and
         // what the buttons there are called, the nearest first.
         target.hint = attr(control, "enterkeyhint").toLowerCase() === "send";
-        target.only = (form ? boxes : deep(scope, TEXTS).filter((field) => boxKind(field) && shown(field)).length) === 1;
+        // The only text field there: a search field does not count, nor one
+        // in a header, navigation, footer or sidebar the box is not itself in.
+        const apart = (other) => boxKind(other) === "search" || Boolean(climb(other, (n) => matches(n, APART) === true && !climb(control, (inside) => inside === n)));
+        target.only = (form ? own : deep(scope, TEXTS)).filter((other) => other === control || (boxKind(other) && shown(other) && !apart(other))).length === 1;
         target.says = clip(text(labelOf(control) + " " + attr(control, "placeholder") + " " + attr(control, "aria-placeholder") + " " + attr(control, "data-placeholder")), 200);
         target.near = [];
         for (let n = target.only ? up(control) : null; n && target.near.length < 12; n = n === scope ? null : up(n)) {
@@ -543,10 +579,10 @@ const LIGHT = String.raw`
     // payment frame, and whether the measured box could be inside one: it
     // starts within the frame's own width and height.
     const frames = deep(document, FRAMES);
-    const pays = frames.filter((frame) => shown(frame) && !frameDoc(frame) && (CARD_FRAME.test(frameWords(frame)) || PAY_FRAME.test(frameWords(frame))));
+    const paying = frames.filter((frame) => shown(frame) && !frameDoc(frame) && pays(frame));
     const about = {
-      frames: frames.length > 0, payFrame: pays.length > 0,
-      inPay: Boolean(input.box) && pays.some((frame) => { const size = rectOf(frame); return Boolean(size) && input.box.x >= -1 && input.box.y >= -1 && input.box.x < size.width && input.box.y < size.height; }),
+      frames: frames.length > 0, payFrame: paying.length > 0,
+      inPay: Boolean(input.box) && paying.some((frame) => { const size = rectOf(frame); return Boolean(size) && input.box.x >= -1 && input.box.y >= -1 && input.box.x < size.width && input.box.y < size.height; }),
     };
     if (!found.picks) return { ...found, ...about };
     const described = each(found.picks, judge);
@@ -781,6 +817,8 @@ function parseTarget(raw: Record<string, unknown>): Omit<PageTarget, "frames" | 
     button: raw.button === true,
     changes: raw.changes === true,
     typable: raw.typable === true,
+    field: raw.field === true,
+    reach: raw.reach === true,
     link: raw.link === true,
     signin: raw.signin === true,
     carries: raw.carries === true,

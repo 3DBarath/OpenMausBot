@@ -26,7 +26,7 @@ afterEach(async () => {
 type Scripted = Omit<PageTarget, "also"> & Partial<PageEvidence> & { secrets?: boolean; also?: Scripted[] };
 const element = (extra: Partial<Scripted> = {}): Scripted => ({
   label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
-  button: true, changes: false, typable: true, link: false, signin: false, carries: false, lang: "", frames: false, payFrame: false, inPay: false, ...extra,
+  button: true, changes: false, typable: true, field: true, reach: true, link: false, signin: false, carries: false, lang: "", frames: false, payFrame: false, inPay: false, ...extra,
 });
 const evidenceOf = (target: Scripted): PageEvidence => ({
   opaque: target.opaque ?? false, fields: target.fields ?? [], others: target.others ?? 0, bound: target.bound ?? "", identity: target.identity ?? "", context: target.context ?? "", around: target.around ?? "",
@@ -69,6 +69,8 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     dispatched: [] as unknown[],
     /** What the engine answers, when not the usual result. */
     result: undefined as unknown,
+    /** Runs as each call reaches the engine: what the call does to the page. */
+    onDispatch: undefined as ((sent: unknown) => void) | undefined,
     dropped: [] as string[],
     shots: 0,
     resumed: 0,
@@ -104,7 +106,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     admit: () => {},
     active: () => state.active,
     signal: abort.signal,
-    dispatch: async (sent) => { state.dispatched.push(sent); return state.result ?? CLICKED; },
+    dispatch: async (sent) => { state.dispatched.push(sent); state.onDispatch?.(sent); return state.result ?? CLICKED; },
     ...extra,
   });
   /** The newest open card, once it is in the thread. */
@@ -728,18 +730,21 @@ describe("Enter", () => {
     expect(f.state.reads).toHaveLength(1);
   });
 
-  it("typed as a line break is refused where it would commit, and typed where it would not", async () => {
+  // The text is typed without its line break, and the Enter is judged and
+  // pressed as a step of its own (round five; it used to be refused).
+  it("typed as a line break is held where it would commit, after the text is typed, and typed as it is where it would not", async () => {
     const f = fixture();
     const typed = { name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way\n" } };
     f.state.target = BOX;
-    const refused = await f.call(typed) as { isError: boolean };
-    expect(refused.isError).toBe(true);
-    expect(text(refused)).toMatch(/agent_browser_fill, then press Enter or click the button/);
-    expect(f.state.reads).toEqual([{ selector: "#composer", enter: true }]);
-    expect(f.state.dispatched).toEqual([]);
-    expect(f.cards.size).toBe(0);
+    const held = f.call(typed);
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Enter in Write a message" } });
+    expect(f.state.dispatched).toEqual([{ name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way" } }]);
+    await f.answer("deny");
+    expect(text(await held)).toMatch(/typed the text and did not press Enter/);
+    expect(f.state.dispatched).toHaveLength(1);
     f.state.target = element({ label: "Log in", box: "single", submits: true });
     await expect(f.call(typed)).resolves.toBe(CLICKED);
+    expect(f.state.dispatched.at(-1)).toEqual(typed);
   });
 });
 
@@ -1264,10 +1269,10 @@ describe("round three: text typed with a line break", () => {
   // cannot take it (agent-browser 0.37.0: typed at a paragraph or an image,
   // the Enter submitted the form the focus was in).
   it.each([
-    ["a paragraph", element({ label: "Read this first", role: "generic", button: false, typable: false })],
-    ["a button", element({ label: "Help", typable: false })],
-    ["a field that cannot take the focus", { ...NOTE, typable: false }],
-    ["two elements in one box, one of them no text field", { ...NOTE, also: [element({ label: "Wrapper", role: "generic", button: false, typable: false })] }],
+    ["a paragraph", element({ label: "Read this first", role: "generic", button: false, typable: false, field: false, reach: false })],
+    ["a button", element({ label: "Help", typable: false, field: false, reach: false })],
+    ["a field that cannot take the focus", { ...NOTE, typable: false, reach: false }],
+    ["two elements in one box, one of them no text field", { ...NOTE, also: [element({ label: "Wrapper", role: "generic", button: false, typable: false, field: false, reach: false })] }],
   ])("refuses it at %s, whatever that would otherwise be", async (_what, target) => {
     const f = fixture();
     f.state.target = target;
@@ -1298,14 +1303,16 @@ describe("round three: text typed with a line break", () => {
     expect(f.state.reads).toHaveLength(1);
   });
 
-  it("refuses it where Enter would commit, without reading the page a second time", async () => {
+  // Round five: the text is typed without its line break, and the Enter is
+  // then judged and pressed as a step of its own. It used to be refused.
+  it("types the text where Enter would commit, and holds the Enter on a card", async () => {
     const f = fixture();
     f.state.target = element({ label: "Write a message", role: "textbox", box: "multiline", multiline: true });
-    const result = await f.call(typed("#composer")) as { isError: boolean };
-    expect(result.isError).toBe(true);
-    expect(text(result)).toMatch(/agent_browser_fill, then press Enter or click the button/);
-    expect(f.state.details).toEqual([]);
-    expect(f.cards.size).toBe(0);
+    const held = f.call(typed("#composer"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Enter in Write a message" } });
+    expect(f.state.dispatched).toEqual([typed("#composer", "On my way")]);
+    await f.answer("deny");
+    await held;
   });
 });
 
@@ -1781,18 +1788,137 @@ describe("round four: what the third card is bound to", () => {
   });
 });
 
-describe("round four: text typed with a line break, aimed at a field without the focus", () => {
-  it("is refused, and the bot is told to click the field first or to fill it", async () => {
+describe("round five: text ending in a line break, typed at a field that was not clicked first", () => {
+  const typed = (selector: string, value: string) => ({ name: "agent_browser_type", arguments: { selector, text: value } });
+  const ENTER = { name: "agent_browser_press", arguments: { key: "Enter" } };
+  const SEARCH = element({ label: "Search", role: "searchbox", box: "search", search: true, button: false, typable: false });
+  const COMPOSER = element({ label: "Message #general", role: "textbox", box: "multiline", multiline: true, button: false, typable: false, hint: false, only: true, says: "Message #general", near: ["Send"] });
+  /** The engine gives a field the focus as it types there. */
+  const takesFocus = (f: ReturnType<typeof fixture>) => {
+    f.state.onDispatch = (sent) => {
+      if ((sent as { name: string }).name === "agent_browser_type" && typeof f.state.target !== "string") f.state.target = { ...f.state.target, typable: true };
+    };
+  };
+
+  it("types the text without the line break, sees the field took the focus, and presses Enter as a step of its own", async () => {
     const f = fixture();
-    f.state.target = element({ label: "Search", role: "searchbox", box: "search", search: true, button: false, typable: false });
-    const result = await f.call({ name: "agent_browser_type", arguments: { selector: "#q", text: "lamps\n" } }) as { isError: boolean };
+    f.state.target = SEARCH;
+    takesFocus(f);
+    const result = await f.call(typed("#q", "lamps\n")) as { isError?: boolean };
+    expect(result.isError).not.toBe(true);
+    // The text once, without its line break, then the key. Never the call as the bot wrote it.
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps"), ENTER]);
+    expect(f.cards.size).toBe(0);
+    // Read as typed text first, then where the focus is, then as an Enter press at the focus.
+    expect(f.state.reads).toEqual([{ selector: "#q", enter: true }, { selector: "#q", enter: true }, { selector: null, enter: true }]);
+  });
+
+  it("holds the Enter on a card where it would send: the text is typed once, and nothing is pressed before the answer", async () => {
+    const f = fixture();
+    f.state.target = { ...COMPOSER, fields: [{ name: "Message #general", type: "contenteditable", value: "On my way" }] };
+    takesFocus(f);
+    const held = f.call(typed("#chat", "On my way\n"));
+    const card = await f.pending();
+    expect(card).toMatchObject({ title: "Send on your behalf?", subtitle: "mail.example.com · Enter in Message #general\nMessage #general: On my way" });
+    expect(f.state.dispatched).toEqual([typed("#chat", "On my way")]);
+    await f.answer("allow");
+    await held;
+    expect(f.state.dispatched).toEqual([typed("#chat", "On my way"), ENTER]);
+  });
+
+  it("tells the bot the text is in the field when the Enter is declined", async () => {
+    const f = fixture();
+    f.state.target = COMPOSER;
+    takesFocus(f);
+    const held = f.call(typed("#chat", "On my way\n"));
+    await f.pending();
+    await f.answer("deny");
+    const result = await held as { isError: boolean };
     expect(result.isError).toBe(true);
-    expect(text(result)).toMatch(/Click the field first and then type/);
-    expect(text(result)).toMatch(/agent_browser_fill/);
+    expect(text(result)).toMatch(/^OpenMausBot typed the text and did not press Enter/);
+    expect(text(result)).toMatch(/the user declined/);
+    expect(f.state.dispatched).toEqual([typed("#chat", "On my way")]);
+  });
+
+  it("does not press Enter when the field did not take the focus, and says the text was typed", async () => {
+    const f = fixture();
+    f.state.target = SEARCH;
+    const result = await f.call(typed("#q", "lamps\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/typed the text, but the field did not take the focus/);
+    expect(text(result)).toMatch(/did not press Enter/);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps")]);
+    expect(f.cards.size).toBe(0);
+  });
+
+  it.each([
+    ["the selector no longer resolves", "missing" as const],
+    ["the page cannot be read", "unreadable" as const],
+    ["another element now shares its box", { ...SEARCH, typable: true, also: [element()] }],
+  ])("does not press Enter when, after the text, %s", async (_what, after) => {
+    const f = fixture();
+    f.state.target = SEARCH;
+    f.state.onDispatch = () => { f.state.target = after; };
+    const result = await f.call(typed("#q", "lamps\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/did not press Enter/);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps")]);
+  });
+
+  // Measured: text typed at a field in a disabled group, under an inert
+  // parent, hidden, or behind a modal goes into whatever field has the focus.
+  it("types nothing at a field the read says cannot take the focus", async () => {
+    const f = fixture();
+    f.state.target = { ...SEARCH, reach: false };
+    const result = await f.call(typed("#q", "lamps\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/cannot take the focus/);
+    expect(text(result)).toMatch(/Nothing was typed/);
     expect(f.state.dispatched).toEqual([]);
-    // The same for a selector the engine resolves to nothing.
-    f.state.target = "missing";
-    expect(text(await f.call({ name: "agent_browser_type", arguments: { selector: "text=Search", text: "lamps\n" } }))).toMatch(/Click the field first and then type/);
+  });
+
+  it("types nothing when the text step itself fails, and passes the engine's answer on", async () => {
+    const f = fixture();
+    f.state.target = SEARCH;
+    f.state.result = { isError: true, content: [{ type: "text", text: "Element is not editable" }] };
+    const result = await f.call(typed("#q", "lamps\n"));
+    expect(text(result)).toBe("Element is not editable");
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps")]);
+  });
+
+  it("still refuses what it refused before: no text field, a line break alone, several lines, a tab", async () => {
+    const f = fixture();
+    for (const [target, value, message] of [
+      [element({ label: "Help", typable: false, field: false, reach: false }), "x\n", /Click the field first and then type/],
+      ["missing" as const, "x\n", /Click the field first and then type/],
+      [SEARCH, "\n", /Click the field first and then type/],
+      [{ ...COMPOSER, only: false }, "one\ntwo\n", /Click the field first and then type/],
+      [SEARCH, "a\tb\n", /a tab moves the focus/],
+    ] as const) {
+      f.state.target = target;
+      const result = await f.call(typed("#q", value)) as { isError: boolean };
+      expect(result.isError).toBe(true);
+      expect(text(result)).toMatch(message);
+    }
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("still sends the call as it is when the field already has the focus and Enter there commits nothing", async () => {
+    const f = fixture();
+    f.state.target = { ...SEARCH, typable: true };
+    await expect(f.call(typed("#q", "lamps\n"))).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps\n")]);
+  });
+
+  it("presses a line break alone as Enter, held, at a composer that already has the focus", async () => {
+    const f = fixture();
+    f.state.target = { ...COMPOSER, typable: true };
+    const held = f.call(typed("#chat", "\n"));
+    expect(await f.pending()).toMatchObject({ title: "Send on your behalf?" });
+    expect(f.state.dispatched).toEqual([]);
+    await f.answer("allow");
+    await held;
+    expect(f.state.dispatched).toEqual([ENTER]);
   });
 });
 

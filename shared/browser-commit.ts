@@ -240,15 +240,30 @@ export function enterPress(key: unknown): { shift: boolean } | null {
   return { shift: enters === 1 && shifts > 0 && shifts === parts.length - 1 };
 }
 
+/** An address as a browser reads it: tabs and line breaks dropped wherever
+ * they are, and control characters and spaces at either end. "java, a tab,
+ * script:" is "javascript:" to a browser. */
+export function addressAsRead(href: string): string {
+  const kept = [...href].filter((char) => char !== "\t" && char !== "\n" && char !== "\r");
+  let start = 0;
+  let end = kept.length;
+  while (start < end && kept[start]!.charCodeAt(0) <= 0x20) start += 1;
+  while (end > start && kept[end - 1]!.charCodeAt(0) <= 0x20) end -= 1;
+  return kept.slice(start, end).join("");
+}
+/** Schemes that run a script or make up a page on the spot: no plain link. */
+const ACTING_SCHEME = /^(?:javascript|data|vbscript):/i;
+
 /** Does a link's address, as its `href` attribute says it, go somewhere:
  * another document, or a "#/" or "#!" route of this one? A bare "#", an
- * empty address and "javascript:" go nowhere, and a place on the same page
- * ("#comments") is something only the page itself can vouch for. Used for
- * the address the engine gives for a ref's own element. */
+ * empty address, and "javascript:", "data:" and "vbscript:" go nowhere,
+ * and a place on the same page ("#comments") is something only the page
+ * itself can vouch for. Used for the address the engine gives for a ref's
+ * own element. */
 export function linkGoes(href: unknown, pageUrl: string | null): boolean {
   if (typeof href !== "string") return false;
-  const raw = href.trim();
-  if (!raw || /^javascript:/i.test(raw)) return false;
+  const raw = addressAsRead(href);
+  if (!raw || ACTING_SCHEME.test(raw)) return false;
   if (raw.startsWith("#")) return /^#[/!]/.test(raw);
   if (!raw.includes("#")) return true;
   // An address with a fragment goes somewhere when it is another document's.

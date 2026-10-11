@@ -72,7 +72,7 @@ describe("the fixed page read", () => {
     expect(click("send")).toEqual({
       // The page has a password field and a card field elsewhere on it.
       found: true, label: "Send", role: "button", box: null, submits: true, search: false, card: false, multiline: true, secrets: true, frames: false,
-      button: true, changes: false, typable: false, payFrame: false, inPay: false, lang: "",
+      button: true, changes: false, typable: false, field: false, reach: false, payFrame: false, inPay: false, lang: "",
       // Not a plain link, not a sign-in; the form has a box of many lines, so something is being submitted.
       link: false, signin: false, carries: true, opaque: false,
       fields: [{ name: "Message", type: "textarea", value: "Hello there" }], others: 0,
@@ -661,6 +661,29 @@ describe("round three: text typed with a line break", () => {
     expect(light({ box: boxOf(id), enter: true })).toMatchObject({ found: true, typable: false });
   });
 
+  // Round five. A text field that does not have the focus is still a text
+  // field: the gate can type the text there and judge the Enter afterwards,
+  // when the field can take the focus at all.
+  it.each(["to", "body", "edit"])("says #%s is a text field the text can be typed at, focused or not", (id) => {
+    expect(typed(id)).toMatchObject({ field: true, reach: true, typable: true });
+    expect(typed(id, "send")).toMatchObject({ field: true, reach: true, typable: false });
+  });
+
+  it.each(["send", "para", "logo", "label", "off", "plan", "line"])("says #%s is no such field", (id) => {
+    expect(typed(id)).toMatchObject({ field: false, reach: false });
+  });
+
+  it.each([
+    ["in a disabled group", `<fieldset disabled><input id="t" aria-label="Notes"></fieldset>`],
+    ["under an inert parent", `<div inert><div><input id="t" aria-label="Notes"></div></div>`],
+    ["that is not visible", `<input id="t" aria-label="Notes" style="visibility:hidden">`],
+    ["that is not displayed", `<div style="display:none"><input id="t" aria-label="Notes"></div>`],
+  ])("says a field %s cannot take the focus", (_what, html) => {
+    page.body.innerHTML = `${html}<input id="other" aria-label="Amount">`;
+    page.getElementById("other")!.focus();
+    expect(light({ box: boxOf("t"), enter: true })).toMatchObject({ found: true, field: true, reach: false, typable: false });
+  });
+
   it("knows the focus inside an open shadow root", () => {
     page.body.innerHTML = `<note-box id="host"></note-box><input id="other">`;
     const root = (page.getElementById("host") as unknown as { attachShadow(init: { mode: string }): { innerHTML: string; getElementById(id: string): PageElement } }).attachShadow({ mode: "open" });
@@ -756,8 +779,9 @@ describe("round three: a card region", () => {
     };
     expect(framed('title="Secure card number input frame" src="https://js.stripe.com/v3/elements-inner-card.html"', null)).toBe(true);
     expect(framed('title="Kartennummer"', null)).toBe(true);
-    // Round four: a frame that says payment, and nothing of a card, is a brand's message or button.
-    expect(framed('title="Zahlung"', null)).toBe(false);
+    // A frame that says payment and nothing else is nothing the read knows: a card signal (round five).
+    expect(framed('title="Zahlung"', null)).toBe(true);
+    expect(framed('title="Zahlung Button"', null)).toBe(false);
     expect(framed('title="Video player" src="https://videos.example/embed/7"', null)).toBe(false);
     expect(framed('title="Secure card number input frame" style="display:none"', null)).toBe(false);
     expect(framed('title="Billing"', `<body>${CARD}</body>`)).toBe(true);
@@ -1105,8 +1129,35 @@ describe("tuning: what could make a multi-line field a message composer", () => 
     const chat = `<header><input type="search" aria-label="Search"><button type="button">Log out</button></header>
       <main><div id="box" contenteditable="true" role="textbox" aria-label="Message #general"></div><button type="button" aria-label="Send"></button></main>`;
     expect(entered(chat)).toMatchObject({ only: true, says: "Message #general", near: ["Send"] });
-    expect(entered(chat.replace("<main>", "<div>").replace("</main>", "</div>").replace("<header>", "<div>").replace("</header>", "</div>"))).toMatchObject({ only: false });
+    const plain = chat.replace("<main>", "<div>").replace("</main>", "</div>").replace("<header>", "<div>").replace("</header>", "</div>");
+    expect(entered(plain.replace('type="search" aria-label="Search"', 'aria-label="Subject"'))).toMatchObject({ only: false });
     expect(entered(`<div><textarea id="box" placeholder="Write a reply"></textarea></div><p><a href="/help">Help</a></p>`)).toMatchObject({ only: true, says: "Write a reply Write a reply", near: ["Help"] });
+  });
+
+  // Round five. A page's search box, and the fields in its header,
+  // navigation, footer and sidebars, are not part of what a message box
+  // belongs to: they do not make it one field among several.
+  it("does not count search fields, or fields in the page's header, navigation, footer or aside", () => {
+    const box = `<div id="box" contenteditable="true" role="textbox" aria-label="Write a message"></div>`;
+    for (const html of [
+      `<input type="search" aria-label="Search">${box}`,
+      `<div role="search"><input aria-label="Find"></div>${box}`,
+      `<input role="searchbox" aria-label="Find">${box}`,
+      `<header><input aria-label="Jump to"></header>${box}`,
+      `<nav><input aria-label="Filter the menu"></nav>${box}<footer><input aria-label="Newsletter email"></footer><aside><input aria-label="Notes to self"></aside>`,
+      `<div role="banner"><input aria-label="Jump to"></div><div role="navigation"><input aria-label="Go"></div>${box}<div role="contentinfo"><input aria-label="Email"></div><div role="complementary"><input aria-label="Tag"></div>`,
+      `<form><input type="search" aria-label="Find in thread"><textarea id="box" aria-label="Reply"></textarea><button>Send</button></form>`,
+    ]) expect(entered(html), html).toMatchObject({ only: true });
+  });
+
+  it("still counts an ordinary field beside it, wherever both are", () => {
+    for (const html of [
+      `<input aria-label="Subject"><div id="box" contenteditable="true" role="textbox" aria-label="Write a message"></div>`,
+      `<form><input aria-label="To"><input aria-label="Subject"><textarea id="box" aria-label="Body"></textarea><button>Send</button></form>`,
+      // A box that is itself in a sidebar counts the sidebar's other fields: they are its own neighbours.
+      `<aside><input aria-label="Your name"><textarea id="box" aria-label="Message"></textarea></aside>`,
+      `<footer><form><input aria-label="Email"><textarea id="box" aria-label="Message"></textarea></form></footer>`,
+    ]) expect(entered(html), html).toMatchObject({ only: false });
   });
 
   it("reads the keyboard hint, the label and the placeholder", () => {
@@ -1143,6 +1194,12 @@ describe("round four: links that stay on the page", () => {
     ["a place on this page, with a button role", `<a id="t" href="#trade" role="button">Trade</a><h2 id="trade">Trade</h2>`],
     ["javascript:", `<a id="t" href="javascript:void(0)">Send</a>`],
     ["nothing", `<a id="t" href="">Send</a>`],
+    // Round five: an address is read the way a browser reads it.
+    ["java, a tab, script:", `<a id="t" href="java&#9;script:send()">Send</a>`],
+    ["javascript: split by a line break and a carriage return", `<a id="t" href="jav&#10;ascr&#13;ipt:send()">Send</a>`],
+    ["javascript: after control characters and spaces", `<a id="t" href="&#1;&#2;  javascript:send()">Send</a>`],
+    ["data:", `<a id="t" href="data:text/html,<p>sent</p>">Send</a>`],
+    ["vbscript:", `<a id="t" href="vbscript:send">Send</a>`],
   ])("still calls a link to %s a button", (_what, html) => {
     expect(linked(html)).toMatchObject({ found: true, link: false });
   });
@@ -1188,9 +1245,13 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     return light({ box: boxOf("go"), enter: false });
   };
 
+  // Round five turned the default round: a frame that speaks of payment is a
+  // card signal unless it is a known brand's message or button.
   it.each([
-    'title="Klarna On-site messaging"', 'name="klarna-payments-main"', 'title="PayPal"', 'title="PayPal Message"', 'title="Secure express checkout frame"',
-    'title="Secure payment button frame"', 'title="Donate with PayPal button"', 'src="https://pay.google.com/gp/p/ui/pay"', 'title="Afterpay"', 'title="Zahlungen"', 'title="Paiements"',
+    'title="Klarna On-site messaging"', 'title="Klarna Placement"', 'title="PayPal Message"', 'name="__zoid__paypal_message__abc" title="PayPal Message 7"',
+    'title="PayPal" name="__zoid__paypal_buttons__abc" src="https://www.paypal.com/smart/buttons?x=1"', 'title="Secure express checkout frame"',
+    'title="Secure payment button frame"', 'title="Donate with PayPal button"', 'src="https://pay.google.com/gp/p/ui/pay"', 'title="Afterpay messaging"', 'title="Pay later with Affirm"',
+    'title="Google Pay button"', 'name="shop-pay-button"',
   ])("does not make the page around %s a card region, and knows it for a payment frame", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: false, payFrame: true });
   });
@@ -1200,6 +1261,11 @@ describe("round four: a payment brand's frame, and a frame for typing a card in"
     'title="Secure card payment input frame"', 'name="braintree-hosted-field-number"', 'title="Iframe for card number"', 'title="Iframe for expiry date"',
     'title="Iframe for security code"', 'title="Secure Credit Card Form"', 'name="checkout-frames-cardNumber"', 'title="Field container for: Card number"',
     'src="https://www.paypal.com/smart/card-fields?x=1"', 'title="Hosted fields"', 'title="Número de tarjeta"', 'title="Kartennummer"',
+    // A frame that speaks of payment, checkout or a card, and is nothing the read knows.
+    'title="Checkout"', 'title="Payment"', 'title="Secure payment"', 'name="klarna-payments-main"', 'title="PayPal"', 'title="Afterpay"', 'title="Zahlungen"',
+    'title="Paiements"', 'src="https://pay.example.com/session/7"', 'title="Pay"', 'title="Card payment button"',
+    // What makes a frame a brand's message or button is what it calls itself, not a word in its address.
+    'title="Checkout" src="https://shop.example.com/embed/message-frame?buttonColor=blue"', 'src="https://pay.example.com/button/7"',
   ])("makes the page around %s a card region", (attrs) => {
     expect(beside(attrs)).toMatchObject({ found: true, card: true, payFrame: true });
   });
@@ -1382,7 +1448,7 @@ describe("parsePageTarget", () => {
     expect(parsePageTarget("found")).toBeNull();
     expect(parsePageTarget({ found: true, label: "x".repeat(500), role: 7, box: "weird", submits: "yes", button: 1, typable: "yes", fields: [{ name: "n", type: "text", value: "v" }] })).toEqual({
       label: "x".repeat(120), role: "", box: null, submits: false, search: false, card: false, multiline: false,
-      button: false, changes: false, typable: false, link: false, signin: false, carries: false, lang: "", frames: false, payFrame: false, inPay: false,
+      button: false, changes: false, typable: false, field: false, reach: false, link: false, signin: false, carries: false, lang: "", frames: false, payFrame: false, inPay: false,
     });
     // What says a multi-line field is a composer comes all together or not at all, and bounded.
     expect(parsePageTarget({ found: true, only: "yes", hint: true, says: "Message", near: ["Send"] })).not.toHaveProperty("only");

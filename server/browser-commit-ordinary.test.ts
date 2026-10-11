@@ -24,7 +24,7 @@ import { removeTempDir } from "./testing/cleanup.ts";
 import type { OptionCardData } from "../shared/wire.ts";
 
 /** The server's types carry no DOM. This is all of happy-dom the table touches. */
-interface El { focus(): void; getAttribute(name: string): string | null; textContent: string | null; tagName: string; value?: string; attachShadow?(init: { mode: string }): { innerHTML: string; querySelector(selector: string): El | null } }
+interface El { focus(): void; getAttribute(name: string): string | null; hasAttribute(name: string): boolean; closest(selector: string): El | null; textContent: string | null; tagName: string; value?: string; attachShadow?(init: { mode: string }): { innerHTML: string; querySelector(selector: string): El | null } }
 const page = (globalThis as unknown as { document: { body: { innerHTML: string }; documentElement: { setAttribute(name: string, value: string): void; removeAttribute(name: string): void }; querySelector(selector: string): El | null } }).document;
 
 /** happy-dom lays nothing out: each element the engine "measures" gets a box
@@ -147,23 +147,36 @@ async function outcomeOf(op: Op): Promise<Outcome> {
     post: ({ card }) => { raise(card); return "card-1"; },
     patch: () => {}, resume: () => {}, log: () => {}, dropShot: () => {},
   });
-  let dispatched = 0;
+  const dispatched: Array<{ name: string; arguments: { text?: string } }> = [];
+  /** What the engine does with a call that goes through, as far as the next
+   * read can tell: typing at a field gives it the focus, unless it cannot
+   * take it (measured on agent-browser 0.37.0: a disabled group, an inert
+   * parent, a hidden field, and then the keys go to whatever has the focus). */
+  const engineDoes = (sent: unknown) => {
+    const { name, arguments: given } = sent as { name: string; arguments: { selector?: string; text?: string } };
+    if (name !== "agent_browser_type" || !given.selector) return;
+    let el: El | null = null;
+    try { el = given.selector.startsWith("@") ? refs.get(given.selector.slice(1)) ?? null : page.querySelector(given.selector); } catch { el = null; }
+    if (el && !el.hasAttribute("disabled") && !el.closest("fieldset[disabled], [inert]") && !/visibility:\s*hidden|display:\s*none/.test(el.getAttribute("style") ?? "")) el.focus();
+  };
   const result = gate.guard({
     botId: "bot-1", botName: "Pepper", threadId: "thread-1", session: "s", params,
     page: browserPageReader(engine),
     shot: async () => "/data/attachments/shot.jpg",
     admit: () => {}, active: () => true, signal: new AbortController().signal,
-    dispatch: async () => { dispatched += 1; return { content: [{ type: "text", text: "done" }] }; },
+    dispatch: async (sent) => { dispatched.push(sent as (typeof dispatched)[number]); engineDoes(sent); return { content: [{ type: "text", text: "done" }] }; },
   });
   const first = await Promise.race([result.then(() => null), raised]);
   if (first) {
     requests.resolve({ threadId: "thread-1", requestId: first.requestId!, behavior: "deny" });
     await result;
-    expect(dispatched).toBe(0);
+    // Nothing went out while it was held. Text typed without its line break, ahead of an Enter that was held, is not "out".
+    expect(dispatched.filter((sent) => sent.name !== "agent_browser_type" || /[\r\n]/.test(sent.arguments.text ?? ""))).toEqual([]);
     return first.browserCommit!.class === "money" ? "held as Money" : "held as Send";
   }
   if ((await result as { isError?: boolean }).isError) return "refused";
-  expect(dispatched).toBe(1);
+  // One call, or two when the gate typed the text and pressed Enter as steps of its own.
+  expect(dispatched.length).toBeGreaterThanOrEqual(1);
   return "passes";
 }
 
@@ -256,7 +269,8 @@ const OPS: Op[] = [
 
   // Typed text.
   { what: "several lines typed into a notes box, which has the focus", html: NOTES, focus: "#box", type: ["#box", "Bring the charger\nand the cable\n"], want: "passes" },
-  { what: "a line break typed into a chat composer", html: CHAT, focus: "#box", type: ["#box", "On my way\n"], want: "refused" },
+  // (Round five: the text is typed, and the Enter is held on a card. It used to be refused.)
+  { what: "a line break typed into a chat composer", html: CHAT, focus: "#box", type: ["#box", "On my way\n"], want: "held as Send" },
   { what: "a line break typed at a paragraph", html: `<p id="para">Read this first</p>${NOTES}`, type: ["#para", "x\n"], want: "refused" },
   { what: "a tab and a line break typed into a notes box", html: NOTES, type: ["#box", "a\tb\n"], want: "refused" },
   { what: "a line break typed at a selector the engine cannot resolve", html: NOTES, type: ["text=Notes", "x\n"], want: "refused" },
@@ -347,9 +361,10 @@ const GAPS: Op[] = [
   { what: "a search whose words are a card number", html: `<form role="search"><input type="search" aria-label="Search" value="4242 4242 4242 4242"><button id="t">Search</button></form>`, click: "#t", want: "passes" },
 
   // Typed text with a line break, aimed at a field that does not have the focus.
-  { what: "a line break typed at a search box while a Buy now button has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"></form><form><button id="buy">Buy now</button></form>`, focus: "#buy", type: ["#q", "lamps\n"], want: "refused" },
+  // (Round five: the gate types the text at the search box itself, and presses Enter only once that box has the focus.)
+  { what: "a line break typed at a search box while a Buy now button has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"></form><form><button id="buy">Buy now</button></form>`, focus: "#buy", type: ["#q", "lamps\n"], want: "passes" },
   { what: "a line break typed at a disabled field while a payment form has the focus", html: `<fieldset disabled><form><input id="off" aria-label="Notes"></form></fieldset><form><input id="amount" aria-label="Amount"><button>Pay now</button></form>`, focus: "#amount", type: ["#off", "x\n"], want: "refused" },
-  { what: "a line break typed at a notes box that does not have the focus", html: `<form><input id="title" aria-label="Title"><textarea id="box" aria-label="Notes"></textarea><button>Save</button></form>`, focus: "#title", type: ["#box", "one\n"], want: "refused" },
+  { what: "a line break typed at a notes box that does not have the focus", html: `<form><input id="title" aria-label="Title"><textarea id="box" aria-label="Notes"></textarea><button>Save</button></form>`, focus: "#title", type: ["#box", "one\n"], want: "passes" },
   { what: "a line break typed into the search box that has the focus", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form>`, focus: "#q", type: ["#q", "lamps\n"], want: "passes" },
 
   // In a card region, a control with an option, tab or switch role pays like a button.
@@ -364,6 +379,44 @@ const GAPS: Op[] = [
     setup: shadow("checkout-box", `<input aria-label="Card number" autocomplete="cc-number"><button id="go" type="button">Continue</button>`),
     pick: () => (page.querySelector("#host") as unknown as { shadowRoot: { querySelector(selector: string): El } }).shadowRoot.querySelector("#go"), want: "held as Money" },
 ];
+
+// ── Round five ──
+const LOGIN = `<form><input aria-label="Email" value="ada@example.com"><input id="pw" type="password" aria-label="Password"><button>Log in</button></form>`;
+/** A page whose only payment element is a frame from another site with this title. */
+const beside = (title: string) => `<main><h1>Your order</h1><p>Lamp, $40.00</p><button id="t" type="button">Continue</button><object title="${title}"></object></main>`;
+const MESSAGES = `<header><input type="search" aria-label="Search the site"><nav><input aria-label="Jump to a page"></nav></header>
+  <div id="box" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Write a message">Hello</div><footer><input aria-label="Newsletter email"></footer>`;
+const MAIL = `<header><input type="search" aria-label="Search mail"></header><form><input aria-label="To" value="ada@example.com"><input aria-label="Subject" value="Lunch"><textarea id="box" aria-label="Body">At one?</textarea><button>Send</button></form>`;
+
+const LATER: Op[] = [
+  // Text with a line break, typed at a field that was not clicked first: the way a bot usually types.
+  { what: "a search typed with a line break at a box that was not clicked first", html: `<form role="search"><input id="q" type="search" aria-label="Search"><button>Search</button></form><button id="other" type="button">Help</button>`, focus: "#other", type: ["#q", "lamps\n"], want: "passes" },
+  { what: "a password typed with a line break at a field that was not clicked first", html: LOGIN, type: ["#pw", "correct-horse\n"], want: "passes" },
+  { what: "a note typed with a line break at a box that was not clicked first", html: NOTES, focus: "#t", type: ["#box", "Bring the charger\n"], want: "passes" },
+  { what: "a message typed with a line break at a chat composer that was not clicked first", html: CHAT, focus: "#send", type: ["#box", "On my way\n"], want: "held as Send" },
+  { what: "a line break typed at a field under an inert parent while a payment form has the focus", html: `<div inert><form><input id="off" aria-label="Notes"></form></div><form><input id="amount" aria-label="Amount"><button>Pay now</button></form>`, focus: "#amount", type: ["#off", "x\n"], want: "refused" },
+  { what: "several lines typed at a notes box that was not clicked first", html: NOTES, focus: "#t", type: ["#box", "one\ntwo\n"], want: "refused" },
+
+  // A frame that speaks of payment and is no known brand's message or button.
+  ...["Checkout", "Payment", "Secure payment"].map((title): Op => ({ what: `"Continue" beside a frame titled "${title}"`, html: beside(title), click: "#t", want: "held as Money" })),
+  ...["Klarna On-site messaging", "PayPal Message", "Secure express checkout frame", "Donate with PayPal button"].map((title): Op => ({ what: `"Continue" beside a frame titled "${title}"`, html: beside(title), click: "#t", want: "passes" })),
+
+  // An address a browser reads as a script, written so as not to look like one.
+  { what: 'a "Pay now" link whose address is java, a tab, script:', html: `<p><a id="t" href="java\tscript:pay()">Pay now</a></p>`, click: "#t", want: "held as Money" },
+  { what: 'a "Send" link whose address starts with a line break and spaces before javascript:', html: `<p><a id="t" href="\n  javascript:send()">Send</a></p>`, click: "#t", want: "held as Send" },
+  { what: 'a "Send" link with a data: address', html: `<p><a id="t" href="data:text/html,<p>sent</p>">Send</a></p>`, click: "#t", want: "held as Send" },
+  { what: 'a "Pay now" link with a vbscript: address', html: `<p><a id="t" href="vbscript:pay">Pay now</a></p>`, click: "#t", want: "held as Money" },
+
+  // A message box on a page with a search in its header.
+  { what: "Enter in a message box on a page with a header search and no region around the box", html: MESSAGES, focus: "#box", press: "Enter", want: "held as Send" },
+  { what: "Enter in the body of a mail form with To and Subject fields", html: MAIL, focus: "#box", press: "Enter", want: "passes" },
+];
+
+describe("ordinary operations, round five", () => {
+  it.each(LATER.map((op) => [op.want, op.what, op] as const))("%s: %s", async (want, _what, op) => {
+    expect(await outcomeOf(op)).toBe(want);
+  });
+});
 
 describe("ordinary operations the first table missed", () => {
   it("has a row for each group", () => {

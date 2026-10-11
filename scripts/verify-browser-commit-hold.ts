@@ -133,6 +133,22 @@ const CASE_PAGES: Record<string, string> = {
   "/ordinary-money": doc("Ordinary money", `<section><form id="cart"><input aria-label="Email" value="ada@example.com"><button>Pay now</button></form></section>
     <section><button type="button" onclick="note('upgraded')">Upgrade</button> <button type="button" onclick="note('confirmed')">Confirm</button></section>`),
   "/ordinary-card": doc("Ordinary card", `<form id="card"><input aria-label="Card number" autocomplete="cc-number"><input aria-label="CVC" autocomplete="cc-csc"><button type="button" onclick="note('continued')">Continue</button></form>`),
+  // ── Round five ──
+  "/typed-apart": doc("Typed apart", `<form id="find" role="search"><input id="q" type="search" aria-label="Search"></form>
+    <form id="login"><input id="user" aria-label="Email" value="ada@example.com"><input id="pw" type="password" aria-label="Password"><button>Log in</button></form>
+    <section aria-label="Chat"><div id="chat" contenteditable="true" role="textbox" aria-label="Message #general"></div></section>
+    <fieldset disabled><form id="dis"><input id="disabled-in" aria-label="Disabled field"></form></fieldset>
+    <form id="pay"><input id="amount" aria-label="Amount" value="5"><button>Pay now</button></form>
+    <button id="open" type="button" onclick="document.getElementById('dlg').showModal()">Open the offer</button>
+    <dialog id="dlg"><form id="buy"><input id="coupon" aria-label="Coupon"><button id="buynow">Buy now</button></form></dialog>
+    <script>document.getElementById("chat").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); window.note("sent:chat:" + event.target.textContent); } });</script>`),
+  ...Object.fromEntries(["Checkout", "Payment", "Secure payment"].map((title, index) => [`/unknown-frame-${index}`, doc("Order", `<main><h1>Your order</h1><p>Lamp, $40.00</p>
+    <button type="button" onclick="note('continued')">Continue</button><iframe title="${title}" src="${frameOrigin}/message-frame" width="320" height="60"></iframe></main>`)])),
+  "/tab-scheme": doc("Tab scheme", `<p><a id="pay" href="java&#9;script:note('paid')">Pay now</a> <a id="data" href="data:text/html,<p>sent</p>">Send</a></p>`),
+  "/header-search": doc("Messages", `<header><input type="search" aria-label="Search the site"> <nav><input aria-label="Jump to a page"></nav></header>
+    <div id="box" contenteditable="true" role="textbox" aria-label="Write a message">Hello</div><footer><input aria-label="Newsletter email"></footer>
+    <script>document.getElementById("box").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); window.note("sent"); } });</script>`),
+  "/mail-form": doc("Mail", `<header><input type="search" aria-label="Search mail"></header><form id="mail"><input aria-label="To" value="ada@example.com"><input aria-label="Subject" value="Lunch"><textarea id="body" aria-label="Body">At one?</textarea><button>Send</button></form>`),
   // ── Round four: one page per reviewer finding A to L ──
   "/typed-unfocused": doc("Typed, not focused", `<form id="find" role="search"><input id="q" type="search" aria-label="Search"></form>
     <fieldset disabled><form id="dis"><input id="disabled-in" aria-label="Disabled field"></form></fieldset>
@@ -353,10 +369,16 @@ try {
   const page = await tool("agent_browser_snapshot");
   const fresh = (line: string) => `@${(page.text.split("\n").find((row) => row.includes(line)) ?? "").match(/ref=(e\d+)/)?.[1]}`;
 
-  // Enter in a message box is a send; typed as a line break it is refused; Shift+Enter is a new line.
+  // Enter in a message box is a send; typed as a line break, the text goes in and the Enter waits on a card; Shift+Enter is a new line.
   await tool("agent_browser_click", { selector: fresh('textbox "Write a message"') });
   assert.equal((await tool("agent_browser_press", { key: "Shift+Enter" })).isError, false);
-  assert.match((await tool("agent_browser_type", { selector: "#composer", text: "more\n" })).text, /agent_browser_fill/);
+  const typing = tool("agent_browser_type", { selector: "#composer", text: "more\n" });
+  const typedCard = await pending();
+  assert.match(typedCard.subtitle, /· Enter in Write a message\nWrite a message: [^]*more/);
+  assert.equal(await log(), "", "the typed Enter was pressed before the answer");
+  await respond(typedCard, "deny");
+  assert.match((await typing).text, /typed the text and did not press Enter/);
+  assert.equal(await log(), "");
 
   // The page changes under the approval (its own script edits the draft a
   // moment after the card is up): the approval is void, and a new card is
@@ -796,20 +818,21 @@ try {
       page = await visit("/ordinary-card");
       await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
     } },
-    { id: "4A", title: "text typed with a line break runs only at the element that already has the focus", run: async () => {
+    { id: "4A", title: "text typed with a line break never lands on another element: a field that cannot take the focus gets nothing", run: async () => {
+      const valueOf = async (id: string) => JSON.parse((await tool("agent_browser_eval", { script: `document.getElementById(${JSON.stringify(id)}).value` })).text) as string;
       await visit("/typed-unfocused");
       await passes("agent_browser_click", { selector: "#amount" });
-      // The engine cannot focus these, so its Enter lands on the Amount field, in a form that pays.
-      for (const selector of ["#disabled-in", "#inert-in", "#hidden-in"]) await refused("agent_browser_type", { selector, text: "1\n" }, /Click the field first/);
-      // A field that could take the focus but does not have it is refused too; clicked first, the same text runs.
-      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /Click the field first/);
-      await passes("agent_browser_click", { selector: "#q" });
+      // The engine cannot give these the focus: its text and its Enter would both go to the Amount field, in a form that pays.
+      for (const selector of ["#disabled-in", "#inert-in", "#hidden-in"]) await refused("agent_browser_type", { selector, text: "1\n" }, /cannot take the focus/);
+      assert.equal(await valueOf("amount"), "5", "the text went into the field that had the focus");
+      // A field that can take the focus, typed at without a click first: the text goes in, and Enter is pressed there (round five).
       await passes("agent_browser_type", { selector: "#q", text: "lamps\n" });
       assert.equal(await log(), "submitted:find");
       // A modal's Buy now button has the focus, and the search box is behind the modal.
       await visit("/typed-unfocused");
       await passes("agent_browser_click", { selector: "#open" });
-      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /Click the field first/);
+      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /cannot take the focus/);
+      assert.equal(await valueOf("q"), "");
     } },
     { id: "4B", title: "a search field is no way round a money label or a card region", run: async () => {
       await visit("/search-card");
@@ -926,6 +949,57 @@ try {
       assert.match((await tool("agent_browser_eval", { script: "document.getElementById('amount').value" })).text, /"5"|: ?5\b|\b5\b/);
       // A script that only fills an object of its own still runs.
       assert.equal((await tool("agent_browser_eval", { script: "const out = {}; out.value = document.getElementById('amount').value; JSON.stringify(out)" })).isError, false);
+    } },
+    { id: "5A", title: "text with a line break typed at a field that was not clicked first: the text goes in, then the Enter is judged as its own press", run: async () => {
+      const valueOf = async (id: string) => JSON.parse((await tool("agent_browser_eval", { script: `document.getElementById(${JSON.stringify(id)}).value` })).text) as string;
+      await visit("/typed-apart");
+      // A search box and a sign-in password: the text is typed, Enter is pressed, each form is submitted once.
+      await passes("agent_browser_type", { selector: "#q", text: "lamps\n" });
+      assert.equal(await valueOf("q"), "lamps", "the text was not typed once");
+      await passes("agent_browser_type", { selector: "#pw", text: "correct-horse\n" });
+      assert.equal(await valueOf("pw"), "correct-horse", "the text was not typed once");
+      assert.equal(await log(), "submitted:find submitted:login");
+      // A chat composer: the text is typed, the Enter waits on a card, and nothing is sent before Allow.
+      await visit("/typed-apart");
+      const sending = await ask("agent_browser_type", { selector: "#chat", text: "On my way\n" });
+      assert.equal(sending.card.title, "Send on your behalf?");
+      assert.match(sending.card.subtitle, /Message #general: On my way$/m, "the card does not show the text that was typed");
+      assert.equal(await log(), "", "something was sent before the answer");
+      await respond(sending.card, "allow");
+      assert.equal((await sending.result).isError, false);
+      assert.equal(await log(), "sent:chat:On my way", "the message is not the text, typed once");
+      // A field in a disabled group, while a form that pays has the focus: nothing is typed anywhere, and no Enter is pressed.
+      await visit("/typed-apart");
+      await passes("agent_browser_click", { selector: "#amount" });
+      await refused("agent_browser_type", { selector: "#disabled-in", text: "9\n" }, /cannot take the focus/);
+      assert.equal(await valueOf("amount"), "5", "the text went into the field that had the focus");
+      // A field behind a modal, whose own field has the focus.
+      await passes("agent_browser_click", { selector: "#open" });
+      await passes("agent_browser_click", { selector: "#coupon" });
+      await refused("agent_browser_type", { selector: "#q", text: "lamps\n" }, /cannot take the focus/);
+      assert.equal(await valueOf("coupon"), "", "the text went into the modal's field");
+      assert.equal(await valueOf("q"), "");
+    } },
+    { id: "5B", title: "a frame that speaks of payment or checkout, and is no known brand's message or button, makes the page around it a card region", run: async () => {
+      for (const index of [0, 1, 2]) {
+        const page = await visit(`/unknown-frame-${index}`);
+        await heldThenDenied("agent_browser_click", { selector: refIn(page, 'button "Continue"') }, { title: "Spend money?", label: /^Continue$/ });
+      }
+    } },
+    { id: "5C", title: "a link whose address hides its scheme behind a tab, and a data: link, are buttons", run: async () => {
+      const page = await visit("/tab-scheme");
+      await heldThenDenied("agent_browser_click", { selector: "#pay" }, { title: "Spend money?", label: /^Pay now$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'link "Pay now"') }, { title: "Spend money?", label: /^Pay now$/ });
+      await heldThenDenied("agent_browser_click", { selector: refIn(page, 'link "Send"') }, { title: "Send on your behalf?", label: /^Send$/ });
+    } },
+    { id: "5D", title: "a message box is a composer although the page has a search in its header; the body of a mail form is not", run: async () => {
+      await visit("/header-search");
+      await passes("agent_browser_click", { selector: "#box" });
+      await heldThenDenied("agent_browser_press", { key: "Enter" }, { title: "Send on your behalf?", label: /^Enter in Write a message$/ });
+      await visit("/mail-form");
+      await passes("agent_browser_click", { selector: "#body" });
+      await passes("agent_browser_press", { key: "Enter" });
+      assert.equal(await log(), "");
     } },
     // ── B: an approval that covers more than was shown ──
     { id: "B9", title: "the approval is for one element: a renumbered ref is another", run: async () => {

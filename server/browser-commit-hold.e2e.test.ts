@@ -19,7 +19,7 @@ const JPEG = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBw
  * its own half. */
 const target = (extra: Record<string, unknown> = {}) => ({
   found: true, label: "Show details", role: "button", box: null, submits: false, search: false, card: false, multiline: false,
-  button: true, changes: false, typable: true, frames: false, payFrame: false, fields: [], ...extra,
+  button: true, changes: false, typable: true, field: true, reach: true, frames: false, payFrame: false, fields: [], ...extra,
 });
 const SEND = target({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = target({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
@@ -242,20 +242,27 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     expect((await api("PATCH", `/api/bots/${botId}`, { outbound: { policy: "ask", dailyCap: 25 } })).status).toBe(200);
   }, 60_000);
 
-  it("refuses a script that would act and a typed line break that would send, without a card", async () => {
+  it("refuses a script that would act, without a card; types a line of text and holds its Enter on one", async () => {
     const before = engineCalls().length;
     const open = (await cards()).length;
     const script = await tool("agent_browser_eval", { script: "document.querySelector('form').submit()" });
     expect(script.status).toBe(200);
     expect(script.body.result.isError).toBe(true);
     expect(script.body.result.content[0].text).toMatch(/did not run this script: it clicks or submits something/);
-    page({ target: target({ label: "Write a message", role: "textbox", box: "multiline", multiline: true }) });
-    const typed = await tool("agent_browser_type", { selector: "#composer", text: "On my way\n" });
-    expect(typed.body.result.isError).toBe(true);
-    expect(typed.body.result.content[0].text).toMatch(/agent_browser_fill/);
-    expect((await tool("agent_browser_eval", { script: "document.title" })).body.result.isError).not.toBe(true);
-    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_eval"]);
     expect(await cards()).toHaveLength(open);
+    // Text ending in a line break, at a message box: the text goes to the
+    // engine without the line break, and the Enter waits on a card.
+    page({ target: target({ label: "Write a message", role: "textbox", box: "multiline", multiline: true }) });
+    const typing = tool("agent_browser_type", { selector: "#composer", text: "On my way\n" });
+    const card = await pending();
+    expect(card.card).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Enter in Write a message" } });
+    expect(engineCalls().slice(before)).toEqual([{ name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way" } }]);
+    await respond(card, "deny");
+    const typed = await typing;
+    expect(typed.body.result.isError).toBe(true);
+    expect(typed.body.result.content[0].text).toMatch(/typed the text and did not press Enter/);
+    expect((await tool("agent_browser_eval", { script: "document.title" })).body.result.isError).not.toBe(true);
+    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_type", "agent_browser_eval"]);
   }, 60_000);
 
   it("judges a check like a click, sends the selector it judged, and holds a reload after the send", async () => {
