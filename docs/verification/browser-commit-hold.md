@@ -74,7 +74,7 @@ even when an earlier one failed, and prints `"case"`, its title and
 | T7 | Ordinary operations, each with the outcome it must have. Pass with no card: links that say "Blog post", "Buy tickets" and "Share prices" (each opens its page), "Save changes" on a profile with an "About you" box, "Apply" on filters, "Submit" on a sign-in, "Continue" on a sign-up, Enter in a notes box, several lines typed into it, and "Confirm" alone. Held as a send: a `#` link that says "Send", Enter in a chat composer, "Comment" on a one-field form, "Send" in a mail form, "Apply" on a form with a file to attach. Held as money: "Pay now", "Upgrade", and "Continue" in a card form. |
 | 4A | With the focus in a "Pay now" form's field, text with a line break typed at a field in a disabled group, an inert one and a hidden one is refused and the focused field keeps its value. Typed at a search box that was not clicked, the text goes in and the search is submitted once. Typed at a search box behind a modal whose "Buy now" has the focus, it is refused and nothing is typed. |
 | 4B | Enter in an address finder (`type="search"`) inside a card form with "Pay now", Enter in a `role="searchbox"` promo field inside a card form, "Continue" on a card form inside `role="search"`, and Enter in the search field of a form whose button says "Buy now" are each held as money. |
-| 4C | A product page with a pay-later message frame and an express-checkout frame, both from another origin: a size list with a change handler, a quantity stepper, "Add to cart", an accordion and a link all run with no card. "Continue" inside the express frame is held as money. So is "Continue" inside a frame known only by the name `klarna-payments-main`. |
+| 4C | A product page with a pay-later message frame and a wallet frame ("Shop Pay"), both from another origin: a size list with a change handler, a quantity stepper, "Add to cart", an accordion and a link all run with no card. "Continue" inside the wallet frame is held as money. So is "Continue" inside a frame known only by the name `klarna-payments-main`. |
 | 4D | On a page with an advert frame, three links clicked by ref open their pages with no card: a headline over 120 characters with list words in it, a link with text hidden from the snapshot, and a picture-plus-text link. |
 | 4E | Contents links to headings on the same page ("Transfer of power", "Trade") and `#/blog` and `#!/share` routes pass. A bare `#` "Send" and a link to a place the page does not have ("Post") are held. |
 | 4F | "Continue" beside card fields in a component's open shadow root is held as money. A mail form whose fields sit in shadow roots lists them on the card; the recipient changes and the approval is void. The form also holds a closed component, and the card says part of it could not be read. |
@@ -88,6 +88,8 @@ even when an earlier one failed, and prints `"case"`, its title and
 | 5B | "Continue" on a page whose only payment element is a frame from another origin titled "Checkout", "Payment" or "Secure payment" is held as money. (Case 4C keeps the pay-later message and express-button frames passing.) |
 | 5C | A "Pay now" link whose address is `java`, a tab, `script:` is held as money, by CSS selector and by ref. A "Send" link with a `data:` address is held as a send. |
 | 5D | Enter in a box labelled "Write a message", on a page with a search in its header and fields in its navigation and footer, is held as a send. Enter in the body of a mail form with To and Subject fields is a new line. |
+| 6A | A form whose "Pay now" button is disabled until its field has text, and one whose "Send" button is: text with a line break typed at the field, clicked first and not clicked first. Each time the text is in the field once, a card is raised ("Spend money?", "Send on your behalf?") and nothing is submitted before the answer; Deny submits nothing, Allow submits once. Then a search typed with a carriage return and a line feed at its end, and with a carriage return alone: submitted exactly once each. |
+| 6B | A shop page with a frame titled "Shop Pay", one titled "Donate with PayPal", a reviews widget and an advert whose addresses contain "pay" and "checkout": "Add to cart" and a link run with no card, and "Continue" inside the wallet frame is held as money. Beside a frame titled "Payment button frame", "Checkout message", "Klarna payments" or "PayPal card fields", "Continue" on the page is held as money. |
 | B9 | Two "Buy now" buttons. The card names the $1 item. The list re-renders and a snapshot gives the same ref to the $18,000 item; Allow is void and the new card names that item. |
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
@@ -105,13 +107,14 @@ pnpm exec vitest run shared/browser-commit.test.ts server/browser-commit-page.te
   server/activity.test.ts src/lib/approval-summary.test.ts src/components/ApprovalCard.test.ts
 ```
 
-`server/browser-commit-ordinary.test.ts` is a table of more than 240 ordinary
+`server/browser-commit-ordinary.test.ts` is a table of more than 270 ordinary
 operations and the outcome each must have: passes, held as a send, held as
 money, or refused. Forty are links whose text has a word from the lists. A
-second group holds what the first table missed, and a third what the last
-review found (text typed with a line break at a field that was not clicked,
-frames that speak of payment, addresses that hide their scheme, a message
-box beside a header search). The second group: same-page links and `#/`
+second group holds what the first table missed, and a third and a fourth
+what later reviews found (text typed with a line break, clicked first or
+not; frames that speak of payment, wallet frames and frames known only by
+their address; addresses that hide their scheme; a message box beside a
+header search). The second group: same-page links and `#/`
 routes, shop pages with a payment brand's frame, text-area forms with
 everyday labels, links whose snapshot name is not their text, search fields
 in card forms, fields in web components. Each row runs through the real page

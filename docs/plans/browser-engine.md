@@ -168,12 +168,13 @@ recording controls are intentionally not added to the live browser chrome.
   nowhere and the page has a frame recognised as a payment frame, a
   button-like ref is money; when it matched an element the snapshot names
   differently and it starts within a payment frame's own size, likewise.
-- Payment frames, by title, name and address. A frame that speaks of a
-  card, a payment or a checkout is a card signal for the region around it,
-  unless it calls itself a known brand's message or button (pay-later
-  messaging, a wallet or express-checkout button, a donate button) and says
-  nothing of a card: then only a click inside it is money. The exemption
-  goes by the frame's own title, name and id, not by a word in its address.
+- Payment frames, by what a frame calls itself (title, name, id, label).
+  One that speaks of a card, a payment or a checkout is a card signal for
+  the region around it. One that calls itself a wallet or pay-later brand
+  and nothing of paying besides is that brand's frame: only a click inside
+  it is money. A word in a frame's address decides nothing, except through
+  two short lists of known addresses: processors' hosted card fields (a
+  card signal) and brands' buttons (a brand's frame).
 - A card region is a form, or for a control with no form the nearest
   dialog or landmark around it (the page when there is none), that holds a
   `cc-*` autofill hint, or a card-number field beside a security-code or
@@ -188,15 +189,17 @@ recording controls are intentionally not added to the live browser chrome.
   <ref> href`. The ref table carries no addresses even with `includeUrls`,
   and the snapshot text that does can be forged by a page. An address that
   goes to another document, or a `#/` route, makes it a plain link.
-- Typed text ending in one line break, at a text field: the engine cannot
-  always give a field the focus (a modal in front, a disabled group, an
-  inert or hidden parent), and then types both the text and the Enter at
-  the current focus. When the field already has the focus and Enter there
-  commits nothing, the call runs as written. Otherwise the gate types the
-  text without the line break, reads the focus, and judges and presses the
-  Enter as a step of its own when the field has it; a field the read says
-  cannot take the focus gets nothing. Several lines, a line break alone at
-  an unfocused field, and a tab stay refused.
+- Typed text with line breaks. The engine presses Enter for each line feed
+  and carriage return, and cannot always give a field the focus (a modal in
+  front, a disabled group, an inert or hidden parent): then the text and
+  the Enter go to the current focus. And what Enter does at a field can
+  change once the text is in (a button disabled until then). So text and
+  its Enter never reach the engine in one call. The gate types what lies
+  before a line break, reads the page afresh, and judges and presses the
+  Enter as a step of its own when the field has the focus; a field the read
+  says cannot take the focus gets nothing. Several lines run only into a
+  focused multi-line field that is no composer, an Enter at a time, and
+  stop at the first that is not a plain new line. A tab stays refused.
 - A link's address is read as a browser reads it (tabs and line breaks
   dropped, leading control characters and spaces); `javascript:`, `data:`
   and `vbscript:` are no plain links.
