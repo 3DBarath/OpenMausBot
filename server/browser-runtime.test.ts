@@ -223,6 +223,12 @@ lines.on('line', line => {
   else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
   else if (m.params.name === 'agent_browser_snapshot' && process.env.FAIL_VERIFICATION === '1') result = { isError:true, content:[{type:'text',text:'Snapshot unavailable'}] };
   else if (m.params.name === 'agent_browser_eval' && process.env.FAIL_EVAL === '1') result = { isError:true, content:[{type:'text',text:'Evaluation failed'}] };
+  // SLOW_EVAL_FILE holds a page read back for as long as the file is there.
+  else if (m.params.name === 'agent_browser_eval' && process.env.SLOW_EVAL_FILE && fs.existsSync(process.env.SLOW_EVAL_FILE)) {
+    const answer = () => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:JSON.stringify(JSON.stringify({ url:'http://fixture.test/', title:'Fixture', text:pageText + '\\nSay hello' }))}]}})+'\\n');
+    const wait = () => fs.existsSync(process.env.SLOW_EVAL_FILE) ? setTimeout(wait, 20) : answer();
+    return wait();
+  }
   else if (m.params.name === 'agent_browser_eval') result = { content:[{type:'text',text:JSON.stringify(JSON.stringify({ url:'http://fixture.test/', title:'Fixture', text:pageText + '\\nSay hello' }))}] };
   else if (m.params.name === 'agent_browser_click' && m.params.arguments.selector === '#missing') result = { isError:true, content:[{type:'text',text:'Element not found: #missing'}] };
   else if (m.params.name === 'agent_browser_click') { pageText = 'Hello, Ada'; result = { content:[{type:'text',text:JSON.stringify({ data:{ clicked:m.params.arguments.selector, lifecycle:{ launched:false, relaunchedBrowser:false, launchHash:1 } }, error:null, success:true }, null, 2)}] }; }
@@ -232,15 +238,17 @@ lines.on('line', line => {
 `;
 const spec = (): BrowserSpawnSpec => ({ command: process.execPath, args: ["-e", FAKE_MCP], env: { PATH: process.env.PATH } });
 /** A fake engine whose daemon is shared by every MCP process (BUSY_FILE),
- * with a log of the commands that reached it (CALL_LOG). */
-function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => string[]; cleanup: () => void } {
+ * with a log of the commands that reached it (CALL_LOG). While the `slow`
+ * file is there, a page read waits (SLOW_EVAL_FILE). */
+function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; slow: string; calls: () => string[]; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "omb-daemon-"));
-  const busy = join(dir, "busy"), log = join(dir, "calls");
+  const busy = join(dir, "busy"), slow = join(dir, "slow"), log = join(dir, "calls");
   const value = spec();
   value.env.BUSY_FILE = busy;
+  value.env.SLOW_EVAL_FILE = slow;
   value.env.CALL_LOG = log;
   return {
-    spec: value, busy,
+    spec: value, busy, slow,
     calls: () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [],
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
@@ -694,17 +702,183 @@ describe("commit hold gate owner", () => {
 
   it("sorts engine tools into reads and actions, and keeps the bot from restarting under a hold", async () => {
     const value = runtime();
-    await value.agentRpc("s", spec(), "tools/list", {});
-    value.hold("s", "hold-1");
-    for (const name of ["agent_browser_snapshot", "agent_browser_get_text", "agent_browser_get_url", "agent_browser_screenshot", "agent_browser_wait_ms"]) {
-      await expect(value.agentRpc("s", spec(), "tools/call", { name }), name).resolves.toMatchObject({ content: [{ type: "text" }] });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      value.hold("s", "hold-1");
+      const reads = ["agent_browser_snapshot", "agent_browser_get_text", "agent_browser_get_url", "agent_browser_screenshot", "agent_browser_wait_ms"];
+      for (const name of reads) {
+        await expect(value.agentRpc("s", daemon.spec, "tools/call", { name }), name).resolves.toMatchObject({ content: [{ type: "text" }] });
+      }
+      for (const name of ["agent_browser_click", "agent_browser_press", "agent_browser_fill", "agent_browser_type", "agent_browser_eval", "agent_browser_open", "agent_browser_scroll", "agent_browser_tab_new", "made_up_tool", "restart_browser"]) {
+        await expect(value.agentRpc("s", daemon.spec, "tools/call", { name }), name).rejects.toThrow(/approval for this browser/);
+      }
+      // A refused action is refused whole: the runtime does not read the
+      // page ahead of it either.
+      expect(daemon.calls()).toEqual(reads);
+      await expect(value.agentRpc("s", daemon.spec, "tools/list", {})).resolves.toMatchObject({ initialized: true });
+      value.releaseHold("s", "hold-1");
+      // Once the hold is over the click goes out as any action does: the
+      // page is read before and after, and the result ends with what changed.
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).resolves.toMatchObject({
+        content: [{ type: "text" }, { type: "text", text: 'Text that appeared on the page: "Hello, Ada". Text that disappeared: "Ready".' }],
+      });
+      expect(daemon.calls().slice(reads.length)).toEqual(["agent_browser_eval", "agent_browser_click", "agent_browser_eval"]);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
     }
-    for (const name of ["agent_browser_click", "agent_browser_press", "agent_browser_fill", "agent_browser_type", "agent_browser_eval", "agent_browser_open", "agent_browser_scroll", "agent_browser_tab_new", "made_up_tool", "restart_browser"]) {
-      await expect(value.agentRpc("s", spec(), "tools/call", { name }), name).rejects.toThrow(/approval for this browser/);
+  });
+
+  it("does not read the page for an action while a person has the browser", async () => {
+    const value = runtime();
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      await value.take("s", "person");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).rejects.toThrow(/person controls this browser/);
+      expect(daemon.calls()).toEqual([]);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
     }
-    await expect(value.agentRpc("s", spec(), "tools/list", {})).resolves.toMatchObject({ initialized: true });
-    value.releaseHold("s", "hold-1");
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).resolves.toMatchObject({ content: [{ type: "text" }] });
+  });
+
+  // The runtime reads the page before an action. A hold that begins during
+  // that read finds the action not yet sent, and it is not sent.
+  it("does not act once a hold began while the page was read ahead of the action", async () => {
+    const value = runtime({ requestTimeoutMs: 5_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      writeFileSync(daemon.slow, "");
+      const acting = value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } });
+      const refused = expect(acting).rejects.toThrow(/approval for this browser waits on the person/);
+      await vi.waitFor(() => expect(daemon.calls()).toEqual(["agent_browser_eval"]));
+      expect(value.hold("s", "hold-1")).toBe(true);
+      rmSync(daemon.slow);
+      await refused;
+      expect(daemon.calls()).toEqual(["agent_browser_eval"]);
+      expect(value.interrupted("s")).toBe(false);
+      // The hold is the only thing in the way: released, the same click runs.
+      value.releaseHold("s", "hold-1");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).resolves.toMatchObject({ content: [{ type: "text" }, { type: "text" }] });
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+});
+
+describe("a lost call and the commit hold", () => {
+  const lost = (result: unknown) => (result as { isError?: boolean; content: Array<{ text: string }> });
+
+  it("answers for a call made while an earlier one is lost, without running anything", async () => {
+    const value = runtime({ requestTimeoutMs: 2_000, recoveryCheckMs: 1_500 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      // Nothing is lost: there is nothing to answer, and the engine is not asked.
+      await expect(value.answerInterrupted("s", daemon.spec)).resolves.toBeNull();
+      expect(daemon.calls()).toEqual([]);
+      expect(lost(await value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" })).content[0].text).toContain("did not answer this hang call");
+      // Still busy: this answer and a call of the bot's share one check of the engine.
+      const [mine, theirs] = await Promise.all([value.answerInterrupted("s", daemon.spec), value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" })]);
+      for (const result of [mine, theirs]) {
+        expect(lost(result).isError).toBe(true);
+        expect(lost(result).content[0].text).toContain("still busy with an earlier hang call");
+        expect(lost(result).content[0].text).toContain("This call did not run");
+      }
+      expect(daemon.calls()).toEqual(["hang", "agent_browser_get_url"]);
+      expect(value.interrupted("s")).toBe(true);
+      // The lost call ends: the answer says so, and the browser is usable again.
+      rmSync(daemon.busy);
+      const recovered = lost(await value.answerInterrupted("s", daemon.spec));
+      expect(recovered.isError).toBeUndefined();
+      expect(recovered.content[0].text).toContain("has ended, and it may have taken effect");
+      expect(recovered.content[0].text).toContain("This call did not run");
+      expect(recovered.content[0].text).toContain("http://fixture.test/after");
+      expect(value.interrupted("s")).toBe(false);
+      expect(daemon.calls().filter((name) => name !== "agent_browser_get_url")).toEqual(["hang"]);
+      await expect(value.answerInterrupted("s", daemon.spec)).resolves.toBeNull();
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("answers as the runtime does for what a person left behind, for a person at the browser, and for a turn that ended", async () => {
+    const value = runtime({ recoveryCheckMs: 1_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      await value.take("s", "owner");
+      value.abandonHumanInput("s", "owner"); // a key may still be held down
+      await expect(value.answerInterrupted("s", daemon.spec)).rejects.toThrow(/person controls this browser/);
+      value.release("s", "owner");
+      // Only a restart clears this: the engine is not asked.
+      expect(lost(await value.answerInterrupted("s", daemon.spec))).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Browser panel/) }] });
+      expect(daemon.calls()).toEqual([]);
+      expect(value.interrupted("s")).toBe(true);
+
+      const other = runtime({ requestTimeoutMs: 1_000, recoveryCheckMs: 1_000 });
+      await other.agentRpc("t", daemon.spec, "tools/call", { name: "hang" });
+      rmSync(daemon.busy);
+      await expect(other.answerInterrupted("t", daemon.spec, () => { throw new Error("capability revoked"); })).rejects.toThrow(/revoked/);
+      expect(daemon.calls()).toEqual(["hang"]);
+      expect(other.interrupted("t")).toBe(true);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("does not take a hold that outlasts a browser call's time limit for a lost call", async () => {
+    const value = runtime({ requestTimeoutMs: 300 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      value.hold("s", "hold-1");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      // A hold keeps no call open in the engine, so no call can time out under it.
+      expect(value.interrupted("s")).toBe(false);
+      expect(daemon.calls()).toEqual([]);
+      await expect(value.answerInterrupted("s", daemon.spec)).resolves.toBeNull();
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" })).resolves.toMatchObject({ content: [{ type: "text" }] });
+      value.releaseHold("s", "hold-1");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).resolves.toMatchObject({ content: [{ type: "text" }, { type: "text" }] });
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("keeps the hold through a call lost under it and through the recovery, and reads nothing for the held call meanwhile", async () => {
+    const value = runtime({ requestTimeoutMs: 400, recoveryCheckMs: 1_000 });
+    const daemon = daemonSpec();
+    daemon.spec.env.HANG_VERIFICATION = "1"; // a snapshot never answers
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      value.hold("s", "hold-1");
+      // A read the bot made while the card waited never answers.
+      expect(lost(await value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" })).content[0].text).toContain("did not answer this agent_browser_snapshot call");
+      expect(value.interrupted("s")).toBe(true);
+      expect(value.ownerKind("s")).toBe("hold");
+      // What the gate reads after Allow goes through here: refused, so an Allow now sends nothing.
+      await expect(value.withAgentAction("s", async () => "the page", "read")).rejects.toThrow(/stuck/);
+      // The bot cannot restart its way out of the approval either.
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "restart_browser" })).rejects.toThrow(/approval for this browser/);
+      expect(lost(await value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).content[0].text).toContain("This call did not run");
+      expect(value.interrupted("s")).toBe(false);
+      // Recovered, and still held: the browser answers again, the approval still waits.
+      expect(value.ownerKind("s")).toBe("hold");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } })).rejects.toThrow(/approval for this browser/);
+      await expect(value.withAgentAction("s", async () => "the page", "read")).resolves.toBe("the page");
+      expect(daemon.calls()).toEqual(["agent_browser_snapshot", "agent_browser_get_url"]);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
   });
 });
 
@@ -782,5 +956,68 @@ describe("the snapshot's ref table", () => {
     withRefs.env.WITH_REFS = "1";
     await value.agentRpc("s", withRefs, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } });
     expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+  });
+
+  // The engine numbers its refs anew with every snapshot it takes, whoever
+  // is still waiting for the answer. The table follows the engine.
+  it("takes the table from a snapshot whose caller had gone by the time the engine answered", async () => {
+    const value = runtime();
+    const daemon = daemonSpec();
+    daemon.spec.env.WITH_REFS = "1";
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      // The route's check passes until the engine has the snapshot: by the
+      // time it answers, the turn is over or the call was cancelled.
+      const gone = () => { if (daemon.calls().includes("agent_browser_snapshot")) throw new Error("capability revoked"); };
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" }, gone)).rejects.toThrow(/revoked/);
+      expect(daemon.calls()).toEqual(["agent_browser_snapshot"]);
+      expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+      // The same for the snapshot the runtime takes itself after a navigation.
+      await value.close("s");
+      expect(value.ref("s", "e4")).toBeUndefined();
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      const before = daemon.calls().length;
+      const goneAfterOpen = () => { if (daemon.calls().slice(before).includes("agent_browser_snapshot")) throw new Error("capability revoked"); };
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } }, goneAfterOpen)).rejects.toThrow(/revoked/);
+      expect(daemon.calls().slice(before)).toEqual(["agent_browser_open", "agent_browser_snapshot"]);
+      expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("doubts the table after a call is lost, until a snapshot is seen: the engine may have taken one nobody saw", async () => {
+    const value = runtime({ requestTimeoutMs: 500, recoveryCheckMs: 1_000 });
+    const daemon = daemonSpec();
+    daemon.spec.env.WITH_REFS = "1";
+    try {
+      expect(value.refsStale("s")).toBe(false);
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" });
+      expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+      expect(value.refsStale("s")).toBe(false);
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" });
+      expect(value.interrupted("s")).toBe(true);
+      expect(value.refsStale("s")).toBe(true);
+      expect(value.refsStale("other")).toBe(false);
+      // Recovered, the doubt stays: a click's result names no refs.
+      rmSync(daemon.busy);
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" })).resolves.toMatchObject({ content: [{ text: expect.stringContaining("This call did not run") }] });
+      expect(value.interrupted("s")).toBe(false);
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "#go" } });
+      expect(value.refsStale("s")).toBe(true);
+      // A snapshot the server sees gives the engine's refs as they are now.
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" });
+      expect(value.refsStale("s")).toBe(false);
+      expect(value.ref("s", "e4")).toEqual({ role: "button", name: "Send" });
+      // Closing the browser ends the doubt with the refs themselves.
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" });
+      expect(value.refsStale("s")).toBe(true);
+      await value.close("s");
+      expect(value.refsStale("s")).toBe(false);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
   });
 });

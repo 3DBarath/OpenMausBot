@@ -298,6 +298,9 @@ export class BrowserRuntime {
   private toolLists = new Map<string, unknown>();
   /** The engine's ref table from the last snapshot it returned, per session. */
   private refs = new Map<string, Map<string, BrowserRef>>();
+  /** Sessions whose table may no longer be the engine's: a call was lost
+   * since the last snapshot that came back (refsStale). */
+  private staleRefs = new Set<string>();
   /** recoveryCheckMs: how long the call after a lost one waits for the
    * engine to answer. It stays well inside the harness proxy's 130 s budget
    * for one call. */
@@ -381,17 +384,10 @@ export class BrowserRuntime {
     const gate = this.gate(session);
     if (gate.uncertain) {
       if (method === "tools/list") return withRestartTool(this.toolLists.get(session) ?? { tools: [] });
-      // A person still holding the browser hears the pause, not the stuck
-      // engine. Once they hand it back, the call is a tool result — not a
-      // dead MCP server — so this thread can Restart and continue.
-      if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
-      const lostCall = gate.lostCall;
-      if (lostCall === null) return stuckBrowserToolError();
-      beforeDispatch?.();
-      const url = await this.recoverAfterLoss(session, spec);
-      beforeDispatch?.(); // A turn revoked during the check receives no result.
-      return url === null ? stillBusyToolError(lostCall) : recoveredResult(lostCall, url);
+      return this.answerInterrupted(session, spec, beforeDispatch);
     }
+    // Whatever is not a read acts on the page (withAgentAction, below).
+    const acts = method === "tools/call" && !(toolName !== undefined && BROWSER_READ_TOOLS.has(toolName));
     const invoke = async () => {
       const entry = this.connect(session, spec);
       await entry.client.ready;
@@ -429,9 +425,15 @@ export class BrowserRuntime {
           beforeDispatch?.();
           if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
         }
+        // A commit hold that began while this call was made ready (the
+        // browser starting, the page read above) finds the action not yet
+        // sent, and it is not sent: no action reaches the engine under a hold.
+        if (acts && this.gate(session).hold !== null) throw new Error(BROWSER_HOLD_REFUSAL);
         let result = await entry.client.rpc(method, request);
-        beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
+        // Before the caller is asked after: a snapshot the engine took has
+        // renumbered its refs, whoever is still waiting for the answer.
         if (method === "tools/call") this.rememberRefs(session, result);
+        beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
         if (method === "tools/list") {
           const tools = withRestartTool(slimBrowserToolList(result));
           this.toolLists.set(session, tools);
@@ -464,8 +466,8 @@ export class BrowserRuntime {
             if (error instanceof TransportError) throw error;
             observation = { isError: true, content: [] };
           }
+          this.rememberRefs(session, observation); // as above: the engine's refs are these now
           beforeDispatch?.();
-          this.rememberRefs(session, observation);
           const navigation = result as { content?: unknown[] };
           const page = observation as { content?: unknown[]; isError?: boolean } | null;
           const observed = page?.isError !== true && Array.isArray(page?.content) && page.content.some((item) =>
@@ -499,9 +501,8 @@ export class BrowserRuntime {
       }
     };
     if (method !== "tools/call") return invoke();
-    const called = params && typeof params === "object" ? (params as { name?: unknown }).name : undefined;
     try {
-      const result = await this.withAgentAction(session, invoke, typeof called === "string" && BROWSER_READ_TOOLS.has(called) ? "read" : "act");
+      const result = await this.withAgentAction(session, invoke, acts ? "act" : "read");
       return this.withHandBackNote(session, result);
     } catch (error) {
       if (error instanceof Error && error.message === BROWSER_INTERRUPTED) return stuckBrowserToolError();
@@ -510,6 +511,31 @@ export class BrowserRuntime {
       if (error instanceof TransportError && gate.uncertain && gate.lostCall !== null) return lostCallToolError(toolName ?? gate.lostCall);
       throw error;
     }
+  }
+
+  /** What a call is answered with while the browser is uncertain, in place
+   * of running it: null when the browser is not uncertain. A call the engine
+   * lost is waited for (recoverAfterLoss) and the answer says what is known;
+   * what a person left behind needs a restart. Nothing the caller asked for
+   * reaches the engine from here, whatever the answer.
+   *
+   * agentRpc answers every call this way. The commit gate asks first, for
+   * the calls it judges: its own reads of the page would be refused while
+   * the browser is uncertain, and the bot would be told to restart a browser
+   * that recovers by itself. */
+  async answerInterrupted(session: string, spec: BrowserSpawnSpec, beforeDispatch?: () => void): Promise<unknown> {
+    const gate = this.gate(session);
+    if (!gate.uncertain) return null;
+    // A person still holding the browser hears the pause, not the stuck
+    // engine. Once they hand it back, the call is a tool result — not a
+    // dead MCP server — so this thread can Restart and continue.
+    if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
+    const lostCall = gate.lostCall;
+    if (lostCall === null) return stuckBrowserToolError();
+    beforeDispatch?.();
+    const url = await this.recoverAfterLoss(session, spec);
+    beforeDispatch?.(); // A turn revoked during the check receives no result.
+    return url === null ? stillBusyToolError(lostCall) : recoveredResult(lostCall, url);
   }
 
   /** This session's MCP client, started on first use. */
@@ -531,7 +557,12 @@ export class BrowserRuntime {
    * still needs a restart. */
   private latchLostCall(session: string, call: string): void {
     const gate = this.gate(session);
-    if (gate.closing || gate.uncertain) return;
+    if (gate.closing) return;
+    // The engine may run what was lost yet, and a snapshot among it numbers
+    // the refs anew, unseen: the names the last snapshot gave them are no
+    // longer known to be the engine's (refsStale).
+    this.staleRefs.add(session);
+    if (gate.uncertain) return;
     gate.uncertain = true;
     gate.lostCall = call;
   }
@@ -648,8 +679,15 @@ export class BrowserRuntime {
     });
   }
 
-  /** The role and name the browser gave a ref in the snapshot this session's bot last saw. */
+  /** The role and name the browser gave a ref in the last snapshot it
+   * answered for this session: the one its refs are numbered by. */
   ref(session: string, ref: string): BrowserRef | undefined { return this.refs.get(session)?.get(ref); }
+
+  /** A call was lost since the last snapshot that came back, so the engine
+   * may have numbered its refs anew without anyone seeing: `ref` may name
+   * another element than the engine would act on. The next snapshot that
+   * comes back, or closing the browser, ends it. */
+  refsStale(session: string): boolean { return this.staleRefs.has(session); }
 
   private rememberRefs(session: string, result: unknown): void {
     const refs = (result as { structuredContent?: { response?: { data?: { refs?: unknown } } } } | null)?.structuredContent?.response?.data?.refs;
@@ -660,11 +698,13 @@ export class BrowserRuntime {
       if (typeof role === "string") seen.set(ref, { role, name: typeof name === "string" ? name : "" });
     }
     this.refs.set(session, seen);
+    this.staleRefs.delete(session);
   }
 
   /** The browser was closed: its refs are gone, and so is the page a person may have touched. */
   private forgetPage(session: string, gate: Gate): void {
     this.refs.delete(session);
+    this.staleRefs.delete(session);
     gate.touched = false;
     gate.handedBack = false;
   }
