@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { DATA_DIR } from "./config.ts";
-import { peerProvenanceAuthor } from "./peer-provenance.ts";
+import { peerProvenanceAuthor, type WorkOrigin } from "./peer-provenance.ts";
 import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { Message } from "./store.ts";
 import type { UsageTrigger } from "./usage-ledger.ts";
@@ -243,6 +243,9 @@ export interface FollowupPayload {
   /** Who the usage ledger books the turn these words start to. Absent on
    * rows written before this existed. */
   trigger?: UsageTrigger;
+  /** A thread a bot opened on itself: where the opener's work started
+   * (peer-provenance.ts). Absent is outside. */
+  origin?: WorkOrigin;
   /** The request that queued these words was proven the installation
    * owner's (server/shared-notes-owner.ts). Kept with the row so a restart
    * does not lose it. Absent, on rows written before this existed and on
