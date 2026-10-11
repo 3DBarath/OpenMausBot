@@ -4,13 +4,14 @@
 // commands from a file the test writes, so no page, account or user data
 // is opened; the model is the repository's fake engine, parked mid-turn.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { launchVerificationServer, type VerificationServer } from "../scripts/control-omb.ts";
+import { OBSERVE_PAGE_SCRIPT } from "./browser-tool-shape.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 const JPEG = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
@@ -23,6 +24,11 @@ const target = (extra: Record<string, unknown> = {}) => ({
 });
 const SEND = target({ label: "Send", submits: true, multiline: true, fields: [{ name: "Message", type: "textarea", value: "Hello there" }] });
 const PAY = target({ label: "Continue", submits: true, card: true, fields: [{ name: "Card number", type: "card", length: 16 }] });
+/** The runtime's own read of the page, before and after an action that
+ * reaches the engine: what the result's last line ("what changed") is made
+ * from. The inert browser's page text names the last call it ran. */
+const OBSERVE = { name: "agent_browser_eval", arguments: { script: OBSERVE_PAGE_SCRIPT, timeoutMs: 5_000 } };
+const changedBy = (name: string) => new RegExp(`^Text that appeared on the page: "Call \\d+: ${name}"\\. Text that disappeared: "Call \\d+: `);
 
 describe.skipIf(process.platform === "win32")("browser commit hold", () => {
   let session: VerificationServer;
@@ -64,9 +70,10 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     const browser = join(fixture, "agent-browser");
     writeFileSync(browser, [
       "#!/usr/bin/env node",
-      'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+      'import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";',
       'import { createInterface } from "node:readline";',
       `const dir = ${JSON.stringify(fixture)};`,
+      `const OBSERVE = ${JSON.stringify(OBSERVE_PAGE_SCRIPT)};`,
       "const args = process.argv.slice(2);",
       'const page = () => JSON.parse(readFileSync(dir + "/page.json", "utf8"));',
       "const answer = (data) => process.stdout.write(JSON.stringify({ success: true, data, error: null }));",
@@ -82,13 +89,27 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
       'else if (args[0] === "set") answer({});',
       'else if (args[0] === "session") answer({ sessions: [] });',
       'else if (args[0] === "mcp") {',
+      // The page's visible text names the last call that ran, so every action changes it.
+      '  let calls = 0, last = "nothing yet";',
       '  createInterface({ input: process.stdin }).on("line", (line) => {',
       "    const message = JSON.parse(line); if (message.id === undefined) return;",
       '    if (message.method === "tools/call") appendFileSync(dir + "/calls.ndjson", JSON.stringify(message.params) + "\\n");',
+      // The runtime's read around an action is answered the way the engine answers an eval: JSON, as a string.
+      '    const observe = message.method === "tools/call" && message.params.name === "agent_browser_eval" && message.params.arguments.script === OBSERVE;',
+      '    if (message.method === "tools/call" && !observe) { calls += 1; last = message.params.name; }',
+      // A click the engine never answers, once: its connection goes away mid-call, as when a call times out.
+      '    if (message.method === "tools/call" && message.params.name === "agent_browser_click" && existsSync(dir + "/lose-click")) { rmSync(dir + "/lose-click"); process.exit(1); }',
       '    const result = message.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "inert-browser", version: "1" } }',
       '      : message.method === "tools/list" ? { tools: [{ name: "agent_browser_click", inputSchema: { type: "object" } }] }',
+      '      : observe ? { content: [{ type: "text", text: JSON.stringify(JSON.stringify({ url: page().url, title: "Inert page", text: "Call " + calls + ": " + last })) }] }',
+      '      : message.params.name === "agent_browser_get_url" ? { content: [{ type: "text", text: page().url }] }',
+      // Like the engine, a snapshot answers with its table of refs. This page's is empty: the tests' refs have no names.
+      '      : message.params.name === "agent_browser_snapshot" ? { content: [{ type: "text", text: "inert browser did agent_browser_snapshot" }], structuredContent: { response: { data: { refs: {} } } } }',
       '      : { content: [{ type: "text", text: "inert browser did " + message.params.name }] };',
-      '    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");',
+      '    const reply = () => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");',
+      // The runtime's read of the page waits for as long as the slow-observe file is there.
+      '    const wait = () => existsSync(dir + "/slow-observe") ? setTimeout(wait, 20) : reply();',
+      "    if (observe) wait(); else reply();",
       "  });",
       '} else process.stdout.write("1.0.0\\n");',
     ].join("\n"), { mode: 0o700 });
@@ -129,9 +150,14 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
 
   it("relays an ordinary click, and holds a send until the person allows it", async () => {
     page({ target: target() });
+    const start = engineCalls().length;
     const plain = await click("#details");
     expect(plain.status, JSON.stringify(plain.body)).toBe(200);
     expect(plain.body.result.content[0].text).toBe("inert browser did agent_browser_click");
+    // The runtime reads the page around the click and says what it changed.
+    expect(plain.body.result.content).toHaveLength(2);
+    expect(plain.body.result.content[1].text).toMatch(changedBy("agent_browser_click"));
+    expect(engineCalls().slice(start)).toEqual([OBSERVE, { name: "agent_browser_click", arguments: { selector: "#details" } }, OBSERVE]);
     expect(await cards()).toEqual([]);
 
     page({ target: SEND });
@@ -161,13 +187,18 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     const blocked = await tool("agent_browser_fill", { selector: "@e3", text: "something else" });
     expect(blocked.status).not.toBe(200);
     expect(blocked.body.error).toMatch(/approval for this browser waits on the person/);
-    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_snapshot"]);
+    // Nothing of the held click or of the refused fill has reached the
+    // engine, not even the runtime's read of the page ahead of an action.
+    expect(engineCalls().slice(before)).toEqual([{ name: "agent_browser_snapshot", arguments: {} }]);
 
     expect((await respond(card, "allow")).body).toMatchObject({ ok: true, outcome: "allowed-once" });
     const result = await held;
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     expect(result.body.result.content[0].text).toBe("inert browser did agent_browser_click");
-    expect(engineCalls().at(-1)).toEqual({ name: "agent_browser_click", arguments: { selector: "@e4" } });
+    // Once allowed, the click goes out like any other: read, click, read,
+    // and the bot is told what the click changed.
+    expect(result.body.result.content.at(-1).text).toMatch(changedBy("agent_browser_click"));
+    expect(engineCalls().slice(before + 1)).toEqual([OBSERVE, { name: "agent_browser_click", arguments: { selector: "@e4" } }, OBSERVE]);
     const settled = (await cards()).find((row) => row.card.requestId === card.card.requestId);
     expect(settled.card.answered).toBe("allow");
     expect(settled.card.browserCommit.shot).toBeUndefined();
@@ -256,13 +287,19 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     const typing = tool("agent_browser_type", { selector: "#composer", text: "On my way\n" });
     const card = await pending();
     expect(card.card).toMatchObject({ title: "Send on your behalf?", browserCommit: { label: "Enter in Write a message" } });
-    expect(engineCalls().slice(before)).toEqual([{ name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way" } }]);
+    // The text is typed as its own call, with the runtime's reads around
+    // it. Nothing of the Enter is there: no press, and no read ahead of one.
+    const typedText = [OBSERVE, { name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way" } }, OBSERVE];
+    expect(engineCalls().slice(before)).toEqual(typedText);
     await respond(card, "deny");
     const typed = await typing;
     expect(typed.body.result.isError).toBe(true);
+    // The refusal is the gate's own words: what typing changed on the page is not passed on with it.
+    expect(typed.body.result.content).toHaveLength(1);
     expect(typed.body.result.content[0].text).toMatch(/typed the text and did not press Enter/);
+    expect(typed.body.result.content[0].text).not.toMatch(/Call \d+|appeared on the page/);
     expect((await tool("agent_browser_eval", { script: "document.title" })).body.result.isError).not.toBe(true);
-    expect(engineCalls().slice(before).map((call) => call.name)).toEqual(["agent_browser_type", "agent_browser_eval"]);
+    expect(engineCalls().slice(before)).toEqual([...typedText, { name: "agent_browser_eval", arguments: { script: "document.title" } }]);
   }, 60_000);
 
   it("judges a check like a click, sends the selector it judged, and holds a reload after the send", async () => {
@@ -272,7 +309,7 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     expect(card.card).toMatchObject({ title: "Send on your behalf?", tool: "agent_browser_check" });
     await respond(card, "allow");
     expect((await checking).body.result.isError).not.toBe(true);
-    expect(engineCalls().at(-1)).toEqual({ name: "agent_browser_check", arguments: { selector: "@e4" } });
+    expect(engineCalls().slice(-3)).toEqual([OBSERVE, { name: "agent_browser_check", arguments: { selector: "@e4" } }, OBSERVE]);
 
     const before = engineCalls().length;
     const reloading = tool("agent_browser_reload");
@@ -310,6 +347,119 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
     page({ target: target() });
   }, 60_000);
 
+  // A call the engine never answered leaves the browser uncertain until the
+  // engine answers again (the runtime's recovery). The next call is the
+  // runtime's to answer, also when it is one the gate would judge.
+  it("recovers from a call the engine lost before it judges the next one, and holds that one as usual once the bot has looked again", async () => {
+    page({ target: target() });
+    const before = engineCalls().length;
+    const open = (await cards()).length;
+    writeFileSync(join(fixture, "lose-click"), "");
+    const lost = await click("#details");
+    expect(lost.status, JSON.stringify(lost.body)).toBe(200);
+    expect(lost.body.result.isError).toBe(true);
+    expect(lost.body.result.content[0].text).toMatch(/did not answer this agent_browser_click call\. It may still be running, or it may already have taken effect/);
+    // The bot's next call would send. It does not run: not read, not
+    // judged, no card. The bot hears that the lost call has ended.
+    page({ target: SEND });
+    const next = await click("@e4");
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(next.body.result.isError).not.toBe(true);
+    expect(next.body.result.content).toHaveLength(1);
+    expect(next.body.result.content[0].text).toMatch(/the earlier agent_browser_click call that did not answer has ended, and it may have taken effect\. This call did not run\. The current page is https:\/\/mail\.example\.com\/compose#top\./);
+    expect(await cards()).toHaveLength(open);
+    const sofar = [OBSERVE, { name: "agent_browser_click", arguments: { selector: "#details" } }, { name: "agent_browser_get_url", arguments: {} }];
+    expect(engineCalls().slice(before)).toEqual(sofar);
+    // The engine numbers its refs anew with every snapshot, and one may
+    // have been lost with that call: a ref from before it is not acted on.
+    const stale = await click("@e4");
+    expect(stale.status, JSON.stringify(stale.body)).toBe(200);
+    expect(stale.body.result.isError).toBe(true);
+    expect(stale.body.result.content[0].text).toMatch(/an earlier browser call was lost, and the browser may have renumbered its refs since your last snapshot.*Take a new snapshot and use the @ref it gives\./);
+    expect(await cards()).toHaveLength(open);
+    expect(engineCalls().slice(before)).toEqual(sofar);
+    // With a snapshot seen, the same click is judged like any other that would send, and held.
+    expect((await tool("agent_browser_snapshot")).status).toBe(200);
+    const held = click("@e4");
+    const card = await pending();
+    expect(card.card).toMatchObject({ title: "Send on your behalf?", tool: "agent_browser_click", browserCommit: { label: "Send" } });
+    await respond(card, "deny");
+    expect((await held).body.result.content[0].text).toMatch(/the user declined/);
+    expect(engineCalls().slice(before)).toEqual([...sofar, { name: "agent_browser_snapshot", arguments: {} }]);
+  }, 60_000);
+
+  /** The engine's side of a browser call: the real stdio proxy, in front of the real route. */
+  const engineProxy = () => {
+    const proxy = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./harness-mcp-proxy.ts", import.meta.url)), "browser"], {
+      env: { OMB_HARNESS_URL: session.info.url, OMB_MCP_TOKEN: token, OMB_MCP_CALL_TIMEOUT_MS: "570000" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const out = { answered: "" };
+    proxy.stdout.on("data", (chunk) => { out.answered += chunk; });
+    const send = (message: unknown) => proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...(message as object) })}\n`);
+    const stop = async () => {
+      if (proxy.exitCode !== null || proxy.signalCode !== null) return;
+      proxy.kill();
+      await new Promise<void>((resolve) => proxy.once("close", () => resolve()));
+    };
+    return { proxy, out, send, stop };
+  };
+
+  // After Allow the click goes out, and the runtime reads the page first.
+  // A call the engine cancels during that read is one nobody waits for.
+  it("makes no click when the call is cancelled after Allow, while the page is read ahead of it", async () => {
+    page({ target: SEND });
+    const before = engineCalls().length;
+    const engine = engineProxy();
+    const slow = join(fixture, "slow-observe");
+    try {
+      writeFileSync(slow, "");
+      engine.send({ id: 43, method: "tools/call", params: { name: "agent_browser_click", arguments: { selector: "@e4" } } });
+      const card = await pending();
+      expect(engineCalls().slice(before)).toEqual([]);
+      expect((await respond(card, "allow")).body).toMatchObject({ ok: true, outcome: "allowed-once" });
+      // The approved click is on its way: the read ahead of it is at the engine, the click is not.
+      await expect.poll(() => engineCalls().slice(before), { timeout: 5_000 }).toEqual([OBSERVE]);
+      engine.send({ method: "notifications/cancelled", params: { requestId: 43, reason: "the engine stopped waiting" } });
+      // The proxy takes its input in order: once it answers this, it has closed the cancelled call's request.
+      engine.send({ id: 44, method: "ping" });
+      await expect.poll(() => engine.out.answered, { timeout: 5_000 }).toContain('"id":44');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      rmSync(slow);
+      // Time for that read to be answered, and for a click to follow it were one still coming.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect((await tool("agent_browser_snapshot")).status).toBe(200);
+      expect(engineCalls().slice(before)).toEqual([OBSERVE, { name: "agent_browser_snapshot", arguments: {} }]);
+      expect(engine.out.answered).not.toContain('"id":43');
+      // The browser is the bot's again.
+      page({ target: target() });
+      expect((await click("#details")).status).toBe(200);
+    } finally {
+      rmSync(slow, { force: true });
+      await engine.stop();
+    }
+  }, 60_000);
+
+  // The engine itself goes away mid-hold: its proxy's input closes.
+  it("ends the hold when the proxy's input closes, and a late Allow sends nothing", async () => {
+    page({ target: SEND });
+    const before = engineCalls().length;
+    const engine = engineProxy();
+    try {
+      engine.send({ id: 45, method: "tools/call", params: { name: "agent_browser_click", arguments: { selector: "@e4" } } });
+      const card = await pending();
+      engine.proxy.stdin.end();
+      await expect.poll(async () => (await cards()).find((row) => row.card.requestId === card.card.requestId).card.answered, { timeout: 5_000 }).toBe("unavailable");
+      expect((await respond(card, "allow")).body).toMatchObject({ outcome: "unavailable" });
+      // The browser is the bot's again, and the click whose caller went away was never made.
+      page({ target: target() });
+      expect((await click("#details")).status).toBe(200);
+      expect(engineCalls().slice(before)).toEqual([OBSERVE, { name: "agent_browser_click", arguments: { selector: "#details" } }, OBSERVE]);
+      expect(engine.out.answered).toBe("");
+    } finally {
+      await engine.stop();
+    }
+  }, 60_000);
+
   // The engine reaches the route through the stdio proxy, and abandons a
   // call by sending notifications/cancelled. The real proxy, the real route.
   it("ends the hold when the engine cancels the call through its MCP proxy, and a late Allow sends nothing", async () => {
@@ -329,7 +479,7 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
       // The browser is the bot's again, and the cancelled call was never made.
       page({ target: target() });
       expect((await click("#details")).status).toBe(200);
-      expect(engineCalls().slice(before)).toEqual([{ name: "agent_browser_click", arguments: { selector: "#details" } }]);
+      expect(engineCalls().slice(before)).toEqual([OBSERVE, { name: "agent_browser_click", arguments: { selector: "#details" } }, OBSERVE]);
       expect(answered).toBe("");
     } finally {
       proxy.kill();
@@ -339,11 +489,16 @@ describe.skipIf(process.platform === "win32")("browser commit hold", () => {
 
   it("closes the card and frees the browser when the turn is stopped mid-hold", async () => {
     page({ target: SEND });
+    const before = engineCalls().length;
     const held = click();
     const card = await pending();
     expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId })).status).toBe(200);
     expect((await held).status).toBe(401);
     await expect.poll(async () => (await cards()).find((row) => row.card.requestId === card.card.requestId).card.answered, { timeout: 5_000 }).toBe("unavailable");
     expect((await respond(card, "allow")).body).toMatchObject({ outcome: "unavailable" });
+    // Nothing of the held click reached the engine, before the stop or after the late Allow.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(engineCalls().slice(before)).toEqual([]);
+    expect((await cards()).find((row) => row.card.requestId === card.card.requestId).card.answered).toBe("unavailable");
   }, 60_000);
 });

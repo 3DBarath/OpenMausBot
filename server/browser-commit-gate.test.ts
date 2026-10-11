@@ -74,11 +74,16 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     dropped: [] as string[],
     shots: 0,
     resumed: 0,
+    /** How often the gate asked whether an earlier call of this browser is lost. */
+    recovers: 0,
+    /** A call was lost since the bot's last snapshot: the engine's refs may not be the ones it saw. */
+    refsStale: false,
   };
   const gate = new BrowserCommitGate({
     runtime: {
       hold: runtime.hold.bind(runtime), releaseHold: runtime.releaseHold.bind(runtime), personReleased: runtime.personReleased.bind(runtime),
-      withAgentAction: runtime.withAgentAction.bind(runtime), ref: (_session, ref) => refs.get(ref),
+      withAgentAction: runtime.withAgentAction.bind(runtime), ref: (_session, ref) => refs.get(ref), refsStale: () => state.refsStale,
+      interrupted: runtime.interrupted.bind(runtime),
     },
     requests, counts, holdMs: options.holdMs ?? 5_000, handBackMs: options.handBackMs ?? 1_000,
     policy: () => state.policy ?? null,
@@ -104,6 +109,7 @@ function fixture(options: { policy?: OutboundPolicy; holdMs?: number; handBackMs
     },
     shot: async () => { state.shots += 1; return "/data/attachments/shot.jpg"; },
     admit: () => {},
+    recover: async () => { state.recovers += 1; return null; },
     active: () => state.active,
     signal: abort.signal,
     dispatch: async (sent) => { state.dispatched.push(sent); state.onDispatch?.(sent); return state.result ?? CLICKED; },
@@ -2164,6 +2170,255 @@ describe("scripts", () => {
     await expect(f.call(evaluate("document.title"))).resolves.toBe(CLICKED);
     await expect(f.call(evaluate(42))).resolves.toBe(CLICKED);
     expect(f.state.dispatched).toHaveLength(2);
+  });
+});
+
+// The runtime lost an earlier call of this browser (it timed out in the
+// engine) and waits for the engine to answer again. The runtime answers the
+// bot's next call itself, and that call does not run.
+describe("a call made while an earlier one is lost", () => {
+  const RECOVERED = { content: [{ type: "text", text: "The browser answers again: the earlier agent_browser_click call that did not answer has ended, and it may have taken effect. This call did not run." }] };
+  const judgedCalls = [
+    click(),
+    { name: "agent_browser_check", arguments: { selector: "@e4" } },
+    { name: "agent_browser_press", arguments: { key: "Enter" } },
+    { name: "agent_browser_type", arguments: { selector: "#composer", text: "On my way\n" } },
+  ];
+
+  it("gives the bot the runtime's answer for a call it would judge, and reads, holds and sends nothing", async () => {
+    const f = fixture();
+    let asked = 0;
+    for (const params of judgedCalls) {
+      await expect(f.call(params, { recover: async () => { asked += 1; return RECOVERED; } })).resolves.toBe(RECOVERED);
+    }
+    expect(asked).toBe(judgedCalls.length);
+    expect(f.state.reads).toEqual([]);
+    expect(f.state.details).toEqual([]);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.state.shots).toBe(0);
+    expect(f.cards.size).toBe(0);
+    expect(f.rows).toEqual([]);
+    expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+
+  it("gives the same answer when the earlier call is lost while this one is still being looked at", async () => {
+    const f = fixture();
+    const answers: unknown[] = [null, RECOVERED];
+    // Nothing is lost when the call arrives. During its first read another
+    // call of the bot's times out, and the browser becomes uncertain: the
+    // read for the card's evidence is refused by the runtime.
+    f.state.onRead = () => {
+      f.runtime.take("s", "person").catch(() => {});
+      f.runtime.abandonHumanInput("s", "person");
+      f.runtime.release("s", "person");
+    };
+    await expect(f.call(click(), { recover: async () => answers.shift() })).resolves.toBe(RECOVERED);
+    expect(answers).toEqual([]);
+    expect(f.runtime.interrupted("s")).toBe(true);
+    expect(f.state.reads).toHaveLength(1);
+    expect(f.state.details).toEqual([]);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+    // When the runtime has no answer either, the bot hears what the runtime said.
+    f.state.onRead = undefined;
+    await expect(f.call(click())).rejects.toThrow(/browser engine is stuck/);
+    expect(f.state.dispatched).toEqual([]);
+  });
+
+  it("does the same for a reload it would hold", async () => {
+    const f = fixture();
+    const sent = f.call(click());
+    await f.answer("allow");
+    await sent;
+    const cards = f.cards.size, reads = f.state.reads.length;
+    await expect(f.call({ name: "agent_browser_reload", arguments: {} }, { recover: async () => RECOVERED })).resolves.toBe(RECOVERED);
+    expect(f.cards.size).toBe(cards);
+    expect(f.state.reads).toHaveLength(reads);
+    expect(f.state.dispatched).toHaveLength(1);
+  });
+
+  it("asks once per judged call, after the route admitted it, and goes on as usual when nothing is lost", async () => {
+    const f = fixture();
+    await expect(f.call(click(), { admit: () => { throw new Error("another thread is using this browser"); } })).rejects.toThrow(/another thread/);
+    expect(f.state.recovers).toBe(0);
+    f.state.target = element();
+    await expect(f.call(click())).resolves.toBe(CLICKED);
+    expect(f.state.recovers).toBe(1);
+    f.state.target = SEND;
+    const held = f.call(click());
+    await f.answer("deny");
+    expect(text(await held)).toMatch(/the user declined/);
+    expect(f.state.recovers).toBe(2);
+  });
+
+  it("leaves a call it does not judge, and a script it refuses, as they were: the runtime answers the first in its own place", async () => {
+    const f = fixture();
+    await expect(f.call({ name: "agent_browser_snapshot", arguments: {} })).resolves.toBe(CLICKED);
+    await expect(f.call({ name: "agent_browser_fill", arguments: { selector: "@e3", text: "hello" } })).resolves.toBe(CLICKED);
+    expect((await f.call({ name: "agent_browser_eval", arguments: { script: "document.forms[0].submit()" } }) as { isError: boolean }).isError).toBe(true);
+    expect(f.state.recovers).toBe(0);
+    expect(f.state.dispatched).toHaveLength(2);
+  });
+
+  // A snapshot may have been among what was lost, or queued behind it: the
+  // engine numbers its refs anew with each one. Until the bot has seen a
+  // snapshot again, a ref is not known to be the element its name was for.
+  it("does not act on a ref from before the lost call until the bot has taken a snapshot again", async () => {
+    const f = fixture();
+    f.refs.set("e4", { role: "button", name: "Show details" });
+    f.state.target = element();
+    f.state.refsStale = true;
+    for (const params of [click("@e4"), click("ref=e4"), { name: "agent_browser_check", arguments: { selector: "@e4" } }, { name: "agent_browser_type", arguments: { selector: "@e4", text: "hello\n" } }]) {
+      const result = await f.call(params) as { isError: boolean };
+      expect(result.isError).toBe(true);
+      expect(text(result)).toMatch(/an earlier browser call was lost/);
+      expect(text(result)).toMatch(/Take a new snapshot and use the @ref it gives/);
+    }
+    expect(f.state.reads).toEqual([]);
+    expect(f.state.dispatched).toEqual([]);
+    expect(f.cards.size).toBe(0);
+    // A selector is no ref: it is read and judged as ever. So is an Enter press.
+    await expect(f.call(click("#details"))).resolves.toBe(CLICKED);
+    await expect(f.call({ name: "agent_browser_press", arguments: { key: "Enter" } })).resolves.toBe(CLICKED);
+    // The snapshot is seen: the same ref is read and judged again.
+    f.state.refsStale = false;
+    await expect(f.call(click("@e4"))).resolves.toBe(CLICKED);
+    expect(f.state.dispatched).toHaveLength(3);
+  });
+
+  it("does not send an approved click by ref when the refs came into doubt while the card waited", async () => {
+    const f = fixture();
+    f.refs.set("e4", { role: "button", name: "Send" });
+    const held = f.call(click("@e4"));
+    await f.pending();
+    f.state.refsStale = true;
+    await f.answer("allow");
+    const result = await held as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/an earlier browser call was lost/);
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+
+  // The other way round: a call is lost while a card waits. The person's
+  // Allow must not send into a browser nobody can read.
+  it("sends nothing on an Allow given while the browser is uncertain, and closes the card", async () => {
+    const f = fixture();
+    const held = f.call(click());
+    await f.pending();
+    await f.runtime.take("s", "person");
+    f.runtime.abandonHumanInput("s", "person"); // leaves the browser uncertain
+    f.runtime.release("s", "person");
+    expect(f.runtime.interrupted("s")).toBe(true);
+    expect(f.runtime.ownerKind("s")).toBe("hold");
+    await f.answer("allow");
+    const result = await held as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/could not read the page to check it first/);
+    expect(f.state.dispatched).toEqual([]);
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect(f.rows.at(-1)).toMatchObject({ decision: "auto-denied", rule: "browser-commit:send:unreadable" });
+    // The hold is over; the uncertainty is the runtime's to clear, not the gate's.
+    expect(f.runtime.ownerKind("s")).toBeNull();
+    expect(f.runtime.interrupted("s")).toBe(true);
+  });
+});
+
+// Typed text with a line break goes to the engine in steps. A step the
+// engine lost may have happened: the bot must not be told it did not.
+describe("a step of typed text that the engine lost", () => {
+  const typed = (selector: string, value: string) => ({ name: "agent_browser_type", arguments: { selector, text: value } });
+  const ENTER = { name: "agent_browser_press", arguments: { key: "Enter" } };
+  const SEARCH = element({ label: "Search", role: "searchbox", box: "search", search: true, button: false, typable: false });
+  const NOTES = element({ label: "Notes", role: "textbox", box: "multiline", multiline: true, button: false, hint: false, only: false, says: "Notes", near: [] });
+  const COMPOSER = element({ label: "Message #general", role: "textbox", box: "multiline", multiline: true, button: false, typable: false, hint: false, only: true, says: "Message #general", near: ["Send"] });
+  const lostCall = (name: string) => ({ isError: true, content: [{ type: "text", text: `The browser did not answer this ${name} call. It may still be running, or it may already have taken effect. Do not repeat it yet: your next browser call first waits for the browser, then tells you where the page is.` }] });
+  /** The engine gives a field the focus as it types there, and loses the step that `loses` picks: as the runtime reports it, with the browser left uncertain. */
+  const engine = (f: ReturnType<typeof fixture>, loses: (sent: { name: string; arguments: { text?: string } }) => boolean) => {
+    f.state.onDispatch = (value) => {
+      const sent = value as { name: string; arguments: { text?: string } };
+      if (sent.name === "agent_browser_type" && typeof f.state.target !== "string") f.state.target = { ...f.state.target, typable: true };
+      if (!loses(sent)) return;
+      f.state.result = lostCall(sent.name);
+      f.runtime.take("s", "person").catch(() => {});
+      f.runtime.abandonHumanInput("s", "person");
+      f.runtime.release("s", "person");
+    };
+  };
+  const STEPS = /^OpenMausBot typed this in steps: the text, and each Enter as a key press of its own\. The steps before this one were made, and this one did not come back\. The browser did not answer this /;
+
+  it("passes on what the runtime said of a lost Enter, and does not say Enter was not pressed", async () => {
+    const f = fixture();
+    f.state.target = SEARCH;
+    engine(f, (sent) => sent.name === "agent_browser_press");
+    const result = await f.call(typed("#q", "lamps\n")) as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(STEPS);
+    expect(text(result)).toMatch(/did not answer this agent_browser_press call\. It may still be running, or it may already have taken effect/);
+    expect(text(result)).not.toMatch(/did not press Enter|could not press Enter|was not typed/);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps"), ENTER]);
+  });
+
+  it("does the same for an Enter the person allowed", async () => {
+    const f = fixture();
+    f.state.target = COMPOSER;
+    engine(f, (sent) => sent.name === "agent_browser_press");
+    const held = f.call(typed("#chat", "On my way\n"));
+    await f.pending();
+    await f.answer("allow");
+    const result = await held as { isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(STEPS);
+    expect(text(result)).toMatch(/agent_browser_press call\. It may still be running, or it may already have taken effect/);
+    expect(text(result)).not.toMatch(/did not press Enter/);
+    expect(f.state.dispatched).toEqual([typed("#chat", "On my way"), ENTER]);
+    // The Enter may have sent the message: a reload is held from here on.
+    expect([...f.cards.values()][0]).toMatchObject({ answered: "allow" });
+  });
+
+  it("does the same for a later line, and for the Enter between lines", async () => {
+    for (const [loses, name] of [
+      [(sent: { name: string; arguments: { text?: string } }) => sent.arguments.text === "second", "agent_browser_type"],
+      [(sent: { name: string; arguments: { text?: string } }) => sent.name === "agent_browser_press", "agent_browser_press"],
+    ] as const) {
+      const f = fixture();
+      f.state.target = NOTES;
+      engine(f, loses);
+      const result = await f.call(typed("#notes", "first\nsecond")) as { isError: boolean };
+      expect(result.isError, name).toBe(true);
+      expect(text(result), name).toMatch(STEPS);
+      expect(text(result), name).toContain(`did not answer this ${name} call`);
+      expect(text(result), name).not.toMatch(/could not press Enter there as a plain new line|The rest was not typed|did not press Enter/);
+    }
+  });
+
+  it("gives the runtime's own answer when the very first step is lost, and nothing else was done", async () => {
+    const f = fixture();
+    f.state.target = SEARCH;
+    engine(f, (sent) => sent.name === "agent_browser_type");
+    const result = await f.call(typed("#q", "lamps\n"));
+    expect(text(result)).toMatch(/^The browser did not answer this agent_browser_type call/);
+    expect(f.state.dispatched).toEqual([typed("#q", "lamps")]);
+  });
+
+  it("still says Enter was not pressed when it was declined, refused, or failed with an answer", async () => {
+    const f = fixture();
+    f.state.target = COMPOSER;
+    engine(f, () => false);
+    const held = f.call(typed("#chat", "On my way\n"));
+    await f.pending();
+    await f.answer("deny");
+    expect(text(await held)).toMatch(/^OpenMausBot typed the text and did not press Enter\. .*the user declined/);
+    // A failure the engine answered is over: the Enter was tried and did nothing.
+    const g = fixture();
+    g.state.target = SEARCH;
+    g.state.onDispatch = (value) => {
+      const sent = value as { name: string };
+      if (sent.name === "agent_browser_type" && typeof g.state.target !== "string") g.state.target = { ...g.state.target, typable: true };
+      if (sent.name === "agent_browser_press") g.state.result = { isError: true, content: [{ type: "text", text: "Key press failed: no page" }] };
+    };
+    expect(text(await g.call(typed("#q", "lamps\n")))).toMatch(/^OpenMausBot typed the text and did not press Enter\. Key press failed: no page/);
   });
 });
 

@@ -138,7 +138,7 @@ async function outcomeOf(op: Op): Promise<Outcome> {
   const gate = new BrowserCommitGate({
     runtime: {
       hold: runtime.hold.bind(runtime), releaseHold: runtime.releaseHold.bind(runtime), personReleased: runtime.personReleased.bind(runtime),
-      withAgentAction: runtime.withAgentAction.bind(runtime),
+      withAgentAction: runtime.withAgentAction.bind(runtime), refsStale: () => false, interrupted: () => false,
       ref: (_session, ref) => {
         if (op.inFrame) return ref === "e1" ? { role: op.inFrame.role, name: op.inFrame.name } : undefined;
         const el = refs.get(ref);
@@ -167,7 +167,7 @@ async function outcomeOf(op: Op): Promise<Outcome> {
     botId: "bot-1", botName: "Pepper", threadId: "thread-1", session: "s", params,
     page: browserPageReader(engine),
     shot: async () => "/data/attachments/shot.jpg",
-    admit: () => {}, active: () => true, signal: new AbortController().signal,
+    admit: () => {}, recover: async () => null, active: () => true, signal: new AbortController().signal,
     dispatch: async (sent) => { dispatched.push(sent as (typeof dispatched)[number]); engineDoes(sent); return { content: [{ type: "text", text: "done" }] }; },
   });
   const first = await Promise.race([result.then(() => null), raised]);

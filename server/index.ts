@@ -17714,15 +17714,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             throw Object.assign(new Error("another thread is using this browser — pause browser work until that thread finishes"), { status: 409 });
           }
         };
-        const dispatch = (params: unknown = body.params) => browserRuntime.agentRpc(browser.session, browser.spec, body.method, params, admit);
+        // The bot's request closed before it was answered: its engine
+        // cancelled the call or is gone, and nobody is waiting for it.
+        const abort = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) abort.abort(); });
+        // The runtime asks this at each step of a call on its way to the
+        // engine. A call nobody is waiting for takes no further step: an
+        // approved click is asked for the last time after the runtime has
+        // read the page ahead of it, just before the click itself.
+        const waited = () => {
+          admit();
+          if (abort.signal.aborted) throw Object.assign(new Error("The browser call was cancelled."), { status: 499 });
+        };
+        const dispatch = (params: unknown = body.params) => browserRuntime.agentRpc(browser.session, browser.spec, body.method, params, body.method === "tools/call" ? waited : admit);
         let result: unknown;
         if (body.method === "tools/call") {
           // ── the commit hold ──
           // A click or an Enter press that would send something or spend
           // money waits for the person here, inside the request, the way an
           // outbound connector call does. Every other call relays untouched.
-          const abort = new AbortController();
-          res.once("close", () => { if (!res.writableEnded) abort.abort(); });
           const engine = { binaryPath: browser.spec.command, env: browser.spec.env };
           result = await browserCommitGate.guard({
             botId: bot.id,
@@ -17736,6 +17746,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               return browserHoldShots.keep(saveImage(Buffer.from(frame.png, "base64"), "image/jpeg").path);
             },
             admit,
+            recover: () => browserRuntime.answerInterrupted(browser.session, browser.spec, waited),
             active: () => internalCapabilityIsActive(internalCapability),
             signal: abort.signal,
             dispatch,

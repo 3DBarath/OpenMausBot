@@ -19,6 +19,25 @@
 // When the gate cannot tell what a call would act on, it refuses or asks. It
 // never sends.
 //
+// Beside the runtime's own work on a call (browser-runtime.ts):
+//
+// - The runtime reads the page before and after an action and adds what
+//   changed to the result. It does that inside agentRpc, and the gate calls
+//   agentRpc only to send: a call that is held or refused is not read for
+//   it, and a refusal is the gate's own words with nothing of the page. The
+//   typed text, the separate Enter and an approved click are each read
+//   around like any action. After its read the runtime asks the route once
+//   more and looks at the session's gate, so a call whose request closed
+//   meanwhile, or one a new hold or a person now stands before, is not sent.
+// - A call the engine lost leaves the browser uncertain until the engine
+//   answers again, and the runtime answers the next call in its place. The
+//   gate asks the runtime first (CommitCall.recover), because its own reads
+//   are refused in that state. An Allow that arrives in it reads nothing and
+//   sends nothing. A ref is not acted on between a lost call and the bot's
+//   next snapshot: the engine numbers its refs anew with every snapshot,
+//   seen or not, and the snapshot's name for a ref is part of how a click
+//   on one is judged.
+//
 // It is a guard against a bot over-acting on ordinary pages, not a wall. It
 // goes by what a page shows (a label, a form, card fields), so it is tuned
 // to pass ordinary browsing (shared/browser-commit.ts has the rules, and
@@ -120,12 +139,16 @@ const TYPED_UNREACHABLE = "OpenMausBot did not type this: the field it is aimed 
 const TYPED_NOT_TAKEN = "OpenMausBot typed the text, but the field did not take the focus, so it did not press Enter: that Enter would have landed on something else. Take a new snapshot to see where the text went, then press Enter or click the button as its own step.";
 /** Before the reason an Enter was not pressed, once its text is in the field. */
 const TYPED_THEN = "OpenMausBot typed the text and did not press Enter. ";
+/** A step the engine lost may have happened. What the runtime said of it follows; nothing is claimed about it here. */
+const TYPED_LOST = "OpenMausBot typed this in steps: the text, and each Enter as a key press of its own. The steps before this one were made, and this one did not come back. ";
 /** Several lines, stopped part-way. */
 const TYPED_PART = "OpenMausBot typed the text up to a line break and stopped: it could not press Enter there as a plain new line. The rest was not typed. Enter text of several lines with agent_browser_fill. ";
 /** How many line breaks one typed text may have: each is an Enter the gate checks and presses by itself. */
 const MAX_TYPED_BREAKS = 50;
 const TYPED_MANY = `OpenMausBot did not type this: it has more than ${MAX_TYPED_BREAKS} line breaks, and each one is an Enter key press it checks by itself. Enter the text with agent_browser_fill instead.`;
 const UNDESCRIBED = "OpenMausBot did not do this: it could not check what this would act on. The element is inside a frame or has no visible area, and the last snapshot gave it no name. Take a new snapshot and use the element's @ref from a new snapshot.";
+/** A ref, after a call the engine lost: it may have numbered its refs anew since the snapshot the bot saw. */
+const REFS_LOST = "OpenMausBot did not do this: an earlier browser call was lost, and the browser may have renumbered its refs since your last snapshot, so it could not check what this ref would act on. Take a new snapshot and use the @ref it gives.";
 const BAD_SELECTOR = "OpenMausBot did not do this: it could not check that selector. Use an @ref from a snapshot, or a shorter selector that does not start with a dash.";
 /** Enter or Space with the focus where the read cannot look. */
 const KEY_UNSEEN = (key: string, where: string): string => `OpenMausBot did not press ${key}: the focus is inside ${where} it cannot read, so it could not check what ${key} would send or pay for there. Click the button for this step instead, by its @ref from a snapshot.`;
@@ -133,7 +156,7 @@ const TYPED_IN_FRAME = "OpenMausBot did not type this: a line break typed with a
 const FRAME_CLICK = "OpenMausBot did not do this: it would land inside a frame it cannot read, on whatever is at that point. Take a snapshot and use the @ref of the element inside the frame.";
 
 export interface CommitGateDeps {
-  runtime: Pick<BrowserRuntime, "hold" | "releaseHold" | "personReleased" | "ref" | "withAgentAction">;
+  runtime: Pick<BrowserRuntime, "hold" | "releaseHold" | "personReleased" | "ref" | "refsStale" | "interrupted" | "withAgentAction">;
   /** Shared with the connector hold, so the respond route settles both. */
   requests: Pick<OutboundRequestService, "open" | "forget">;
   counts: Pick<OutboundCounts, "reserve">;
@@ -166,6 +189,10 @@ export interface CommitCall {
   shot(): Promise<string | undefined>;
   /** The route's admission checks. Throws when the call may not touch this browser. */
   admit(): void;
+  /** What the runtime answers this call with while an earlier call of this
+   * browser is lost (it timed out in the engine and may still be running):
+   * the call is not run. Null when nothing is lost. */
+  recover(): Promise<unknown>;
   /** The turn that made this call is still running. */
   active(): boolean;
   /** Aborts when the bot's request went away. */
@@ -235,7 +262,7 @@ interface Sighting {
  * - "framed": the call would act inside a frame the read cannot look into.
  * - "sealed": the focus is inside a closed part of the page.
  * - "unusable": the selector is one the read will not hand to the engine. */
-type Blind = "unreadable" | "undescribed" | "untypable" | "unreachable" | "one-line" | "framed" | "sealed" | "unusable";
+type Blind = "unreadable" | "undescribed" | "untypable" | "unreachable" | "one-line" | "framed" | "sealed" | "unusable" | "renumbered";
 
 /** What the bot is told when its call could not be judged. */
 function blindReason(intent: Intent, blind: Blind): string {
@@ -248,6 +275,7 @@ function blindReason(intent: Intent, blind: Blind): string {
   if (blind === "unreachable") return TYPED_UNREACHABLE;
   if (blind === "one-line") return TYPED_LINES;
   if (blind === "undescribed") return intent.typed ? TYPED_BLIND : UNDESCRIBED;
+  if (blind === "renumbered") return REFS_LOST;
   return blind === "unusable" ? BAD_SELECTOR : UNREADABLE;
 }
 
@@ -450,8 +478,25 @@ export class BrowserCommitGate {
     if (intent === "blind") return refusal(TYPED_BLIND);
     if (intent === "many") return refusal(TYPED_MANY);
     call.admit();
+    // An earlier call of this browser was lost. The runtime waits for the
+    // engine and answers in this call's place, as it does for a call that
+    // is not judged. Nothing is read or judged meanwhile: the gate's own
+    // reads would be refused, and the bot told to restart a browser that
+    // recovers by itself, with the page that shows what the lost call did.
+    const lost = await call.recover();
+    if (lost !== null) return lost;
     const deadline = Date.now() + this.deps.holdMs;
-    const first = await this.look(call, intent);
+    let first: Awaited<ReturnType<BrowserCommitGate["look"]>>;
+    try {
+      first = await this.look(call, intent);
+    } catch (error) {
+      // A call can be lost while this one is being looked at, and the
+      // runtime then refuses the rest of the reads. Nothing of this call
+      // has run: it gets the runtime's answer here too, when there is one.
+      const since = await call.recover();
+      if (since !== null) return since;
+      throw error;
+    }
     if (!intent.typed) return this.judged(call, intent, name, first, deadline);
     // Typed text with a line break. The text and its Enter never go to the
     // engine in one call: what Enter does at a field can only be judged once
@@ -484,11 +529,26 @@ export class BrowserCommitGate {
     let last: unknown;
     /** Is the selector's own field known to have the focus? */
     let sure = focused;
+    // A step the engine lost (it never answered, and the browser is left
+    // uncertain) is not a step that failed: it may have happened. The bot
+    // is then told what the runtime said of it, and never that the text was
+    // not typed or that Enter was not pressed.
+    let lost = false;
+    const step: CommitCall = {
+      ...call,
+      dispatch: async (params) => {
+        const result = await call.dispatch(params);
+        lost = failed(result) && this.deps.runtime.interrupted(call.session);
+        return result;
+      },
+    };
+    const stopped = (why: string): unknown => typed === undefined ? last : refusal((lost ? TYPED_LOST : why) + text(last));
     for (let at = 0; at < pieces.length; at += 1) {
       const words = pieces[at]!;
+      lost = false;
       if (words) {
-        last = await call.dispatch({ ...(intent.params as object), arguments: { ...args, selector, text: words } });
-        if (failed(last)) return typed === undefined ? last : refusal(TYPED_PART + text(last));
+        last = await step.dispatch({ ...(intent.params as object), arguments: { ...args, selector, text: words } });
+        if (failed(last)) return stopped(TYPED_PART);
         typed ??= last;
         sure = false;
       }
@@ -505,11 +565,11 @@ export class BrowserCommitGate {
       if (intent.lines) {
         // Several lines: every Enter has to be a plain new line.
         if (seen !== null) return refusal(TYPED_PART);
-        last = await call.dispatch(press.params);
-        if (failed(last)) return refusal(TYPED_PART + text(last));
+        last = await step.dispatch(press.params);
+        if (failed(last)) return lost && typed === undefined ? last : refusal((lost ? TYPED_LOST : TYPED_PART) + text(last));
       } else {
-        last = await this.judged(call, press, name, seen, deadline);
-        if (failed(last)) return typed === undefined ? last : refusal(TYPED_THEN + text(last));
+        last = await this.judged(step, press, name, seen, deadline);
+        if (failed(last)) return stopped(TYPED_THEN);
       }
       // The Enter may have moved the focus.
       sure = false;
@@ -691,6 +751,13 @@ export class BrowserCommitGate {
       return { class: sent.class, host, label: `Reload, which can repeat an earlier ${sent.class === "money" ? "payment" : "send"}`, context: "", shown: [], more: 0, others: 0, partial: false, digest, loose: digest, picture: false, repeat: true };
     }
     const enter = intent.via === "enter";
+    const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
+    // A call was lost since the bot's last snapshot, and the engine numbers
+    // its refs anew with every snapshot it takes, seen or not. The name the
+    // bot's snapshot gave this ref may be another element's by now, and
+    // that name is part of what a ref is judged by. Not knowing, the gate
+    // does not act on the ref; the bot's next snapshot settles it.
+    if (ref && this.deps.runtime.refsStale(call.session)) return "renumbered";
     // The first read: what the call would act on, enough to judge it.
     const found = await this.deps.runtime.withAgentAction(call.session, () => call.page.target(intent.selector, enter), "read");
     // Only "missing" says there is nothing to act on. For typed text it
@@ -698,7 +765,6 @@ export class BrowserCommitGate {
     // resolves to nothing (measured), so that Enter would land unseen.
     if (found === "missing") return intent.typed ? "untypable" : null;
     if (found === "unreadable" || found === "unusable" || found === "framed" || found === "sealed") return found;
-    const ref = intent.selector ? /^(?:@|ref=)?(e\d+)$/.exec(intent.selector)?.[1] : undefined;
     const known = ref ? this.deps.runtime.ref(call.session, ref) : undefined;
     // The snapshot's own name for a ref, as a target of its own: a click on
     // it, with nothing known about a form. `card` when it is most likely
