@@ -32,7 +32,12 @@ it("continues signed owner messages in one unselected Ask task without leaking k
     const result = await response.json() as T; expect(response.status, JSON.stringify(result)).toBe(expected); return result;
   };
   const messages = async (threadId: string) => (await api<{ messages: Message[] }>("GET", `/api/threads/${threadId}/messages?limit=100`)).messages;
-  const sends = (): Send[] => existsSync(sendFile) ? readFileSync(sendFile, "utf8").trim().split("\n").filter(Boolean).map(row => JSON.parse(row) as Send) : [];
+  // A turn that takes longer than the channel waits is first answered with the
+  // "still working" notice and its result follows. That notice is correct and
+  // depends only on how fast the machine is, so it is not one of the sends
+  // this test counts.
+  const sends = (): Send[] => (existsSync(sendFile) ? readFileSync(sendFile, "utf8").trim().split("\n").filter(Boolean).map(row => JSON.parse(row) as Send) : [])
+    .filter(send => !/still working on this task/.test(send.body.text));
   const evidence: Record<string, unknown> = { fixtureUrl: url, liveHttpsForbidden: true };
   try {
     const bot = (await api<{ bot: Bot }>("POST", "/api/bots", { name: "Owner messaging fixture", useDefaults: false }, 201)).bot;
