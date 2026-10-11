@@ -25,7 +25,8 @@ It exits 0 and prints `"ok": true` with one evidence entry per step:
 2. A click on **Send** waits. The card is titled "Send on your behalf?", its
    subtitle is the site, the label and the message, and its screenshot is
    served as a JPEG. During the hold a snapshot works and a fill is refused.
-   Allow clicks it: the page reports `submitted:message`.
+   Allow clicks it: the page reports `submitted:message`, and the click's
+   result ends with that line as the text that appeared on the page.
 3. On a second page with a sign-in and a card form, **Log in** passes
    without a card. A submit on the card form waits as "Spend money?". The
    card number is never on the card, only "16 characters, not shown", and no
@@ -96,6 +97,8 @@ even when an earlier one failed, and prints `"case"`, its title and
 | B10 | A dialog with no form: the card shows the recipient and the message. The page swaps both; Allow is void and the new card shows the new ones. |
 | B11 | A form with a 3,000-character text and 35 more fields: the card says the text was shortened and that 24 fields are not shown. Field 33 changes; Allow is void. |
 | C13 | A field named `cardnumber`, a plain CVC field, a one-time code, a password shown as text, a PIN, the name on a card and an unlabelled card number are on the card, and in the decision log, by length only. The page is not pictured, and the card says so. |
+| M1 | The runtime reads the page before and after every action that reaches the engine and adds what changed to the result. Text typed with a line break at a search box: the result ends with the line the Enter made appear. At a chat box the Enter waits; declined, the bot gets the refusal and no page text; allowed, the result holds what the text and the Enter each changed. A "Pay now" click: declined, the refusal only; allowed, the result ends with what the click changed. A script that would act is refused with no page text. |
+| M2 | A click keeps the page busy for 125 seconds, longer than a browser call may take. The call ends at 120 seconds with "did not answer". The bot's next call, a click on Send by ref, is not read, judged or held: it is answered with "the earlier call has ended, and it may have taken effect. This call did not run", and no card is raised. The same ref again is refused until a new snapshot ("an earlier browser call was lost"). A click on Send by selector is held and Deny sends nothing. After a snapshot the ref is held again, and Allow sends once. No restart: the page still shows what the lost click did. This case takes a little over two minutes. |
 
 Keep the printed JSON and the log path as evidence.
 
@@ -125,7 +128,13 @@ clicks. Add a row there before changing a rule or a word list.
 
 `server/browser-commit-hold.e2e.test.ts` runs the same route, respond route,
 decision log and attachment store against an inert browser executable, so it
-runs anywhere. It does not prove the page read: only the script above reads a
+runs anywhere. It also ends a hold three ways, through the real MCP proxy
+where the engine is involved: the engine cancels the call, the proxy's
+input closes, and the turn is stopped. Each time the card closes as
+unavailable, the browser is the bot's again, a late Allow is answered as
+unavailable, and the engine was never asked to click. It cancels a call
+after Allow as well, while the runtime reads the page ahead of the click:
+the click is not made. It does not prove the page read: only the script above reads a
 real page. Run the script on Windows before a Windows release; the engine
 pinned there is older than the one these reads were checked on, and the
 reads use its `eval --stdin` and `get attr`.

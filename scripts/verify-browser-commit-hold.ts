@@ -172,6 +172,9 @@ const CASE_PAGES: Record<string, string> = {
     <script>document.getElementById("chat").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); window.note("sent:chat:" + event.target.textContent); } });</script>`),
   ...Object.fromEntries(STRICT_FRAMES.map((title, index) => [`/unknown-frame-${index}`, doc("Order", `<main><h1>Your order</h1><p>Lamp, $40.00</p>
     <button type="button" onclick="note('continued')">Continue</button><iframe title="${title}" src="${frameOrigin}/message-frame" width="320" height="60"></iframe></main>`)])),
+  // A click that keeps the page busy for longer than a browser call may take (120 s).
+  "/freeze": doc("Slow report", `<button id="freeze" type="button" onclick="const end = Date.now() + 125000; while (Date.now() < end) {} note('thawed')">Show details</button>
+    <form id="message"><textarea aria-label="Message">Hello</textarea><button>Send</button></form>`),
   "/tab-scheme": doc("Tab scheme", `<p><a id="pay" href="java&#9;script:note('paid')">Pay now</a> <a id="data" href="data:text/html,<p>sent</p>">Send</a></p>`),
   "/header-search": doc("Messages", `<header><input type="search" aria-label="Search the site"> <nav><input aria-label="Jump to a page"></nav></header>
     <div id="box" contenteditable="true" role="textbox" aria-label="Write a message">Hello</div><footer><input aria-label="Newsletter email"></footer>
@@ -365,7 +368,10 @@ try {
   assert.equal((await tool("agent_browser_snapshot")).status, 200, "a read was refused during the hold");
   assert.match((await tool("agent_browser_fill", { selector: "#body", text: "changed" })).text, /approval for this browser waits on the person/);
   await respond(send, "allow");
-  assert.equal((await sending).isError, false);
+  const sentResult = await sending;
+  assert.equal(sentResult.isError, false);
+  // Once allowed the click goes out like any other: the page is read around it, and the bot is told what it changed.
+  assert.match(sentResult.text, /\nText that appeared on the page: "[^"]*submitted:message"\.[^\n]*$/);
   assert.equal(await log(), "submitted:message");
   evidence.push({ step: "send held, evidence shown, Allow clicked it", card: { title: send.title, subtitle: send.subtitle, screenshotBytes: (await picture.arrayBuffer()).byteLength } });
 
@@ -1168,6 +1174,89 @@ try {
       assert.equal(card.browserCommit.shot, undefined, "a page with secret fields was pictured");
       assert.equal(card.browserCommit.noShot, true);
       return { subtitle: card.subtitle };
+    } },
+    // ── M: beside the runtime's own work on a call (what an action changed; a call the engine lost) ──
+    { id: "M1", title: "what an action changed is read around every call the gate sends, and a refusal carries none of it", run: async () => {
+      const CHANGE = /Text that appeared on the page|Text that disappeared|visible text of the page did not change|The page is now/;
+      await visit("/typed-apart");
+      // Typed text and its Enter are two calls to the engine, and the bot is told what the last one changed.
+      const searched = await passes("agent_browser_type", { selector: "#q", text: "lamps\n" });
+      assert.match(searched.text, /\nText that appeared on the page: "[^"]*submitted:find"\.[^\n]*$/);
+      // A script that would act is refused in the gate's own words.
+      const script = await tool("agent_browser_eval", { script: "document.forms.pay.submit()" });
+      assert.equal(script.isError, true);
+      assert.doesNotMatch(script.text, CHANGE);
+      // An Enter that would send waits with the text in the box. Declined, the bot gets the refusal and nothing of the page.
+      await visit("/typed-apart");
+      const declined = await ask("agent_browser_type", { selector: "#chat", text: "On my way\n" });
+      await respond(declined.card, "deny");
+      const refusal = await declined.result;
+      assert.equal(refusal.isError, true);
+      assert.match(refusal.text, /typed the text and did not press Enter/);
+      assert.doesNotMatch(refusal.text, CHANGE, "a refusal carried what typing changed on the page");
+      assert.equal(await log(), "");
+      // Allowed, the Enter goes out as its own call, and the result says what the text and the Enter each changed.
+      await visit("/typed-apart");
+      const sending = await ask("agent_browser_type", { selector: "#chat", text: "On my way\n" });
+      await respond(sending.card, "allow");
+      const sent = await sending.result;
+      assert.equal(sent.isError, false, sent.text);
+      assert.match(sent.text, /Text that appeared on the page: "On my way"\./);
+      assert.match(sent.text, /\nText that appeared on the page: "[^"]*sent:chat:On my way"\.[^\n]*$/);
+      assert.equal(await log(), "sent:chat:On my way", "the message is not the text, typed once");
+      // A click that pays: declined, the gate's words only; allowed, what the click changed.
+      const page = await visit("/typed-apart");
+      const pay = refIn(page, 'button "Pay now"');
+      const denied = await ask("agent_browser_click", { selector: pay });
+      await respond(denied.card, "deny");
+      assert.doesNotMatch((await denied.result).text, CHANGE);
+      assert.equal(await log(), "");
+      const paying = await ask("agent_browser_click", { selector: pay });
+      await respond(paying.card, "allow");
+      const paidFor = await paying.result;
+      assert.equal(paidFor.isError, false, paidFor.text);
+      assert.match(paidFor.text, /\nText that appeared on the page: "[^"]*submitted:pay"\.[^\n]*$/);
+      return { typed: sent.text.slice(-260), click: paidFor.text.slice(-130) };
+    } },
+    // Last, and slow: it waits out the 120 seconds a browser call may take.
+    { id: "M2", title: "a call the engine does not answer in time is recovered without a restart, and what the bot does next is still judged", run: async () => {
+      const page = await visit("/freeze");
+      const send = refIn(page, 'button "Send"');
+      const open = (await cards()).length;
+      const started = Date.now();
+      // The click keeps the page busy for 125 seconds: the call is given up as lost at 120.
+      const lost = await tool("agent_browser_click", { selector: "#freeze" });
+      const lostAfterMs = Date.now() - started;
+      assert.equal(lost.isError, true, lost.text);
+      assert.match(lost.text, /did not answer this agent_browser_click call\. It may still be running, or it may already have taken effect/);
+      // The bot's next call would send. It is not read, judged or held: the
+      // runtime waits for the engine, and tells the bot the lost call has ended.
+      let next = await tool("agent_browser_click", { selector: send });
+      for (let attempt = 0; attempt < 4 && /still busy with an earlier agent_browser_click call/.test(next.text); attempt += 1) next = await tool("agent_browser_click", { selector: send });
+      assert.equal(next.status, 200, next.text);
+      assert.equal(next.isError, false, next.text);
+      assert.match(next.text, /the earlier agent_browser_click call that did not answer has ended, and it may have taken effect\. This call did not run\./);
+      assert.equal((await cards()).length, open, "a card was raised for a call that did not run");
+      assert.equal(await log(), "thawed", "the page is not as the lost click left it");
+      // A ref from before the lost call is not acted on: the engine may have numbered its refs anew.
+      const stale = await tool("agent_browser_click", { selector: send });
+      assert.equal(stale.isError, true, stale.text);
+      assert.match(stale.text, /an earlier browser call was lost/);
+      assert.equal((await cards()).length, open, "a card was raised for a ref that could not be checked");
+      // A selector is no ref: read and judged as ever, held, and Deny sends nothing.
+      const bySelector = await ask("agent_browser_click", { selector: "#message button" });
+      assert.equal(bySelector.card.title, "Send on your behalf?");
+      await respond(bySelector.card, "deny");
+      assert.match((await bySelector.result).text, /the user declined/);
+      assert.equal(await log(), "thawed");
+      // After a snapshot the ref is judged again: held, and Allow sends once.
+      const again = await tool("agent_browser_snapshot");
+      const held = await ask("agent_browser_click", { selector: refIn(again.text, 'button "Send"') });
+      assert.equal(held.card.title, "Send on your behalf?");
+      await respond(held.card, "allow");
+      assert.equal((await held.result).isError, false);
+      assert.equal(await log(), "thawed submitted:message");
+      return { lostAfterMs, recovered: next.text.slice(0, 200) };
     } },
   ];
   // OMB_VERIFY_CASES=A4,B9 runs only those cases.

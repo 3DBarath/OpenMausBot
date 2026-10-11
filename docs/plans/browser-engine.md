@@ -181,6 +181,28 @@ recording controls are intentionally not added to the live browser chrome.
   whatever its enabled state: a page can enable the button between the
   gate's read and its key press. That read-then-press gap remains for
   anything that is not a form's submit control.
+- The runtime's own page read around an action (`OBSERVE_PAGE_SCRIPT`,
+  "what an action changed") runs inside `agentRpc`, so it runs for every
+  call the gate sends (the typed text, the separate Enter, an approved
+  click) and for none it holds or refuses: the gate calls `agentRpc` only
+  to send. The read before the action sits in the read-then-press gap
+  (about 25 ms on agent-browser 0.37.0). After it, `agentRpc` asks the
+  route again and checks the session's gate: a call whose request closed,
+  a person at the browser, or a commit hold that began meanwhile, and the
+  action is not sent. No action reaches the engine under a hold.
+- A call the engine lost (`latchLostCall`): `agentRpc` answers the next
+  call itself (`answerInterrupted`) and does not run it. The gate asks
+  `answerInterrupted` first for every call it judges, and again when its
+  first look is refused part-way, because its own reads go through
+  `withAgentAction` and are refused while the browser is uncertain. An
+  Allow given in that state reads nothing and sends nothing. The ref table
+  is in doubt from a lost call until the next snapshot that comes back
+  (`refsStale`): the engine numbers its refs anew with every snapshot, seen
+  or not, so the gate refuses a judged call by ref until then. A snapshot's
+  table is recorded before the route is asked again, so one whose caller
+  was gone by the time it answered still updates it. Measured on 0.37.0:
+  every snapshot that succeeds carries its ref table, empty on a page with
+  nothing to name.
 - A card region is a form, or for a control with no form the nearest
   dialog or landmark around it (the page when there is none), that holds a
   `cc-*` autofill hint, or a card-number field beside a security-code or

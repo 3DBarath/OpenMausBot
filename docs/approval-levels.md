@@ -490,8 +490,8 @@ The bot's call waits up to nine minutes, the same as a connected-app send, or
 up to the configured MCP call timeout when that is shorter. Then the card
 closes and the bot is told nobody answered. The card also closes, and the
 browser is the bot's again, as soon as the call behind it is gone: the turn
-was stopped, the engine cancelled the call, or the hold itself failed
-part-way. A card that has closed cannot be allowed afterwards. On Deny the
+was stopped, the engine cancelled the call or went away, or the hold itself
+failed part-way. Allowing a card that has closed clicks nothing. On Deny the
 bot is told not to retry and to ask you what you want instead. Each hold and
 each answer is in the bot's activity log and the decision log, with the site
 and the label.
@@ -500,6 +500,38 @@ While a card is open the bot can still read that browser but cannot act in
 it. You can use the browser yourself at any time, and your own clicks are
 never held. When you hand it back after touching the page, the bot's next
 browser result starts with a line telling it to re-read the page.
+
+**What an action changed.** After a click, a fill, typed text, a key press,
+a select or a check, the server reads the page's address, title and visible
+text before and after, and the bot's result ends with what changed, so it
+does not have to read the page back. This is the same for an action you
+allowed on a card, for typed text and for the Enter after it: each is read
+around once it is sent. A call that is waiting on a card, or that was
+refused, is not read for this, and a refusal never carries any of it: the
+bot gets the refusal in the server's own words. No action is sent, and no
+page is read ahead of one, while a card is open or while you have the
+browser: an action that was already on its way when a card opened is
+stopped before it reaches the page. The read sits between the server's last
+look at the page and the action itself; on a local test page it took about
+25 milliseconds. If the bot's call is cancelled during it, the action is not
+made.
+
+**A browser call that never answered.** A call that outlasts its time limit
+(a page waiting on a slow server) may still be running, and may already have
+taken effect. The browser is not restarted for it: the bot's next call first
+waits for the browser to answer again, and is then told that the earlier call
+has ended, where the page is now, and that this call did not run. That next
+call is not judged and raises no card, whatever it was. Asked again, it is
+judged like any other. Until the bot has taken a new snapshot, a click, a
+check, a select or typed text with a line break aimed at a `@ref` from
+before the lost call is refused: the browser gives its refs new numbers with
+every snapshot, and one may have been lost with that call, so the server can
+no longer tell what such a ref would act on. A selector that is not a ref is
+read and judged as ever. A card is not a lost call: a
+call that waits on you keeps nothing running in the browser, however long
+you take. And when a call is lost while a card is open, Allow sends nothing
+until the browser answers again: the card closes, and the bot is told the
+page could not be read.
 
 ### Page scripts
 
@@ -632,7 +664,13 @@ catch:
   gap is closed: the form's submit button is judged even while it is
   disabled. For anything else it remains: a button outside a form, or a
   script that starts listening for Enter a moment after the last key, is
-  judged as it was when the server looked.
+  judged as it was when the server looked. The server's read of the page
+  for "what an action changed" is inside that gap, and makes it about 25
+  milliseconds longer.
+- **A turn stopped with a card open.** The card closes at once; the call
+  behind it notices within a second. An Allow sent in that second is
+  recorded as allowed and then as closed because the call was gone. Nothing
+  is clicked.
 - After OpenMausBot restarts while a browser stays open, a reload in that
   browser is no longer held: what was sent before the restart is not
   remembered.
