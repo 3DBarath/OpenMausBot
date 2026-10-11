@@ -1378,7 +1378,8 @@ export function ComputerPanel({
   // or a regular 2-column grid — never a ragged 3+1 wrap.
   const tabCount = 3 + (advanced ? 1 : 0) + (advanced && androidConnected ? 1 : 0) + (!advanced ? 1 : 0);
   const measuredWidth = separatorWidth ?? panelWidth;
-  const narrowTabs = measuredWidth < (tabCount > 4 ? 560 : 480);
+  // Reserve header margins/padding as well as the icon and label in each cell.
+  const narrowTabs = measuredWidth < (tabCount > 4 ? 760 : 620);
   // With an odd count the narrow grid's final row holds one tab; stretch
   // it across both columns so the bar stays a tidy rectangle.
   const lastTabSpan = narrowTabs && tabCount % 2 === 1 ? "col-span-2" : "";
