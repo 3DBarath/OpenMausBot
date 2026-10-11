@@ -189,13 +189,13 @@ beforeEach(() => {
 });
 
 describe("Computer panel tabs", () => {
-  it("centres the tabs as a pill with close pinned right, in both modes", () => {
+  it("centres the tabs as an even grid with close pinned right, in both modes", () => {
     for (const advanced of [false, true]) {
       fixture.advanced = advanced;
       fixture.values = [];
       const rendered = render(makeBot());
       const bar = rendered.nodes.find((node) => node.props["data-testid"] === "computer-tabs")!;
-      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["justify-center", "rounded-full", "mx-9"]));
+      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["grid", "rounded-2xl", "mx-9"]));
       const row = rendered.nodes.find((node) => Children.toArray(node.props.children)
         .some((child) => isValidElement(child) && (child as Node).props["data-testid"] === "computer-tabs"))!;
       expect(String(row.props.className).split(" ")).toEqual(expect.arrayContaining(["relative", "flex", "justify-center"]));
