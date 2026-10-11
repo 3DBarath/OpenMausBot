@@ -168,16 +168,17 @@ recording controls are intentionally not added to the live browser chrome.
   nowhere and the page has a frame recognised as a payment frame, a
   button-like ref is money; when it matched an element the snapshot names
   differently and it starts within a payment frame's own size, likewise.
-- Two kinds of payment frame, by title, name and address. A frame for
-  typing a card in (card number, expiry, security code, hosted fields,
-  payment input) is a card signal for the region around it. A frame that
-  only names a payment or a brand (a pay-later message, an express or
-  donate button) is not: only a click inside it is money.
+- Payment frames, by title, name and address. A frame that speaks of a
+  card, a payment or a checkout is a card signal for the region around it,
+  unless it calls itself a known brand's message or button (pay-later
+  messaging, a wallet or express-checkout button, a donate button) and says
+  nothing of a card: then only a click inside it is money. The exemption
+  goes by the frame's own title, name and id, not by a word in its address.
 - A card region is a form, or for a control with no form the nearest
   dialog or landmark around it (the page when there is none), that holds a
   `cc-*` autofill hint, or a card-number field beside a security-code or
   expiry field by name, or a Luhn-valid value with a card scheme's prefix
-  or beside one of those names, or a frame for typing a card in. Fields in
+  or beside one of those names, or a payment frame as above. Fields in
   open shadow roots count. Any button-like control there is money, by
   click, Enter or Space; so is an option, a tab or a switch. A search
   skips the send rules only: a money label on its button, or a card region
@@ -187,10 +188,21 @@ recording controls are intentionally not added to the live browser chrome.
   <ref> href`. The ref table carries no addresses even with `includeUrls`,
   and the snapshot text that does can be forged by a page. An address that
   goes to another document, or a `#/` route, makes it a plain link.
-- Typed text with a line break runs only when the read resolved the
-  selector to a text field that already has the focus: the engine cannot
+- Typed text ending in one line break, at a text field: the engine cannot
   always give a field the focus (a modal in front, a disabled group, an
-  inert or hidden parent), and types at the current focus when it cannot.
+  inert or hidden parent), and then types both the text and the Enter at
+  the current focus. When the field already has the focus and Enter there
+  commits nothing, the call runs as written. Otherwise the gate types the
+  text without the line break, reads the focus, and judges and presses the
+  Enter as a step of its own when the field has it; a field the read says
+  cannot take the focus gets nothing. Several lines, a line break alone at
+  an unfocused field, and a tab stay refused.
+- A link's address is read as a browser reads it (tabs and line breaks
+  dropped, leading control characters and spaces); `javascript:`, `data:`
+  and `vbscript:` are no plain links.
+- A multi-line field is the only text field of its form or region when no
+  other counts: search fields, and fields in a header, navigation, footer
+  or sidebar the field is not itself in, do not.
 - The hold is a guard with stated limits, tuned to pass ordinary browsing:
   a plain link is never a commitment by its text; a form with a multi-line
   field and a harmless label, a sign-in form, and "Apply" where nothing is

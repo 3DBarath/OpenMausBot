@@ -175,9 +175,10 @@ What passes, so that ordinary browsing is not interrupted:
   Somewhere is another page, a place on the same page that exists (a
   contents link to a heading), or a `#/…` or `#!…` route of a single-page
   app. A link that acts as a button is judged as a button: one whose address
-  is a bare `#`, empty, a place the page does not have, or `javascript:`;
-  one with a button or menu item role; or one with a click handler written
-  on it. Inside a card region a link is money like any other control. For a
+  is a bare `#`, empty, a place the page does not have, or `javascript:`,
+  `data:` or `vbscript:`; one with a button or menu item role; or one with a
+  click handler written on it. The address is read the way a browser reads
+  it, so `java`, a tab, `script:` is `javascript:`. Inside a card region a link is money like any other control. For a
   link clicked by a ref whose snapshot name is not its text (a long
   headline, a picture with text), the server asks the engine for that
   ref's own address and goes by it.
@@ -204,8 +205,11 @@ What passes, so that ordinary browsing is not interrupted:
   new line. The field is a composer when its keyboard hint says send
   (`enterkeyhint="send"`); or when it is the only text field in its form or
   region and either a control there has a Send label or its own label or
-  placeholder says message, reply, comment or chat. In a composer Enter is
-  held, as before. Enter with another key held (`Control+Enter`) is never a
+  placeholder says message, reply, comment or chat. A search field, and a
+  field in the page's header, navigation, footer or a sidebar, does not
+  count as another text field: a box called "Write a message" on a page
+  with a search in its header is a composer. The body of a mail form with To
+  and Subject fields is not. In a composer Enter is held, as before. Enter with another key held (`Control+Enter`) is never a
   new line and is held in any multi-line field. So is Enter in any
   multi-line field inside a card region: nothing is relaxed there.
 - A click that only puts the cursor in a text box, or ticks a checkbox with
@@ -234,16 +238,21 @@ signals are:
   beside one of the name signs. A number that only passes the check (an
   IMEI, a tracking number) is not one, and neither is anything typed in a
   search form;
-- **a frame for typing a card in**, from another site: one whose title, name
-  or address says card, card number, expiry, security code, hosted fields or
-  payment input (a processor's hosted card fields). A frame of the page's
-  own site counts when it holds any of the signs above.
+- **a frame from another site that speaks of a card, a payment or a
+  checkout**, in its title, name or address: a processor's hosted card
+  fields, and equally a frame titled only "Checkout", "Payment" or "Secure
+  payment". A frame of the page's own site counts when it holds any of the
+  signs above.
 
-A frame that only names a payment or a payment brand (a pay-later message,
-an express-checkout or donate button, a wallet button) is **not** a card
-signal: the page around it is an ordinary shop page, and "Add to cart", a
-size list or a link there is judged like anywhere else. A click *inside*
-such a frame is still money (see "Inside a frame" below).
+One kind of payment frame is **not** a card signal: a frame that calls
+itself a known brand's message or button and says nothing of a card. That is
+pay-later messaging, a wallet or express-checkout button, a donate button
+("Klarna On-site messaging", "PayPal Message", "Secure express checkout
+frame", "Donate with PayPal button"). The page around one is an ordinary
+shop page, and "Add to cart", a size list or a link there is judged like
+anywhere else. A click *inside* any payment frame is still money (see
+"Inside a frame" below). A frame is taken for a brand's message or button by
+what it calls itself, not by a word in its address.
 
 One name sign alone is not a card region: a library card number with a PIN,
 or a gift card code, is left as it is. Inside a card region the label does
@@ -304,13 +313,32 @@ browser session is saved across a restart to keep it in.
 **Typed text with a line break.** `agent_browser_type` presses Enter for a
 line break. The engine tries to give its selector's element the focus first,
 and when it cannot (the element is no field, is behind a modal, in a
-disabled group, hidden, or the selector resolves to nothing) the Enter lands
-on whatever has the focus. So text with a line break runs only when its
-target is a text field that **already has the focus**, and it is then judged
-exactly as Enter in that field. Several lines run into a focused multi-line
-field that is not a composer: a notes box takes them as lines. Anything else
-is refused, and the bot is told to click the field first and then type, or
-to fill the field and then press Enter or click the button.
+disabled group, hidden, or the selector resolves to nothing) both the text
+and the Enter go to whatever has the focus. So the server never sends text
+and its Enter in one go where that matters. For text that ends in one line
+break, aimed at a text field:
+
+1. When the field already has the focus and Enter there commits nothing, the
+   call runs as the bot wrote it.
+2. Otherwise the server does it in two steps. It types the text, without the
+   line break, at that field. It then reads where the focus is. When the
+   focus is on that same field, the Enter is judged exactly as an Enter
+   press there, and pressed as a step of its own: a search or a sign-in
+   goes through, and in a message composer the text is in the box and the
+   Enter waits on a card. When the focus is anywhere else, Enter is not
+   pressed, and the bot is told the text was typed but the field did not
+   take the focus.
+3. A field the read can tell cannot take the focus (disabled, in a disabled
+   group, under an inert parent, hidden, or outside a modal that is open)
+   gets nothing: no text, no Enter. The engine would have put the text into
+   whichever field had the focus.
+
+The text is typed once: the call as the bot wrote it is never sent after the
+server has typed its text. Everything else stays refused, with the bot told
+to click the field first, or to fill it and then press Enter: a target that
+is no text field, a selector that resolves to nothing, a line break alone at
+a field without the focus, several lines anywhere but a focused multi-line
+field that is no composer, and any text with a tab.
 
 **Selectors.** The server reads the same element the engine would act on,
 and for a click by ref it also judges the name the last snapshot gave that
@@ -484,9 +512,10 @@ catch:
   the largest gap. A check on the payment request itself is planned as
   separate work.
 - **A page with a payment brand's button or message in a frame, and no card
-  field of its own.** The frame does not make the page a card region, so a
+  field of its own.** That frame does not make the page a card region, so a
   "Continue" on the page beside a wallet button is judged by its label and
-  passes. Only a click inside the frame is money.
+  passes. Only a click inside the frame is money. Any other frame that
+  speaks of payment, checkout or a card does make it one.
 - A card region with no autofill hints and only one sign (a field called
   "Card number" and nothing called a security code or an expiry, with no
   card number typed in yet) is not read as one. A library or membership card
@@ -500,9 +529,9 @@ catch:
   its label alone. The other way round, on a page with no regions at all,
   every button outside a form counts as inside the page's card region when
   the page holds a card signal, so an unrelated button there asks too.
-- A frame for typing a card in whose title, name and address say nothing of
-  a card or a payment is not recognised: a button inside it is judged by its
-  name. A list inside a payment frame that submits when its choice changes
+- A payment frame whose title, name and address say nothing of a card, a
+  payment or a checkout is not recognised: the page around it is no card
+  region, and a button inside it is judged by its name. A list inside a payment frame that submits when its choice changes
   passes: nothing can be read in there, and only a button, link, menu item,
   option, tab or switch is taken for money.
 - A plain element with the default cursor that pays when clicked, inside a
@@ -565,10 +594,15 @@ catch:
 
 **Where it asks, or refuses, more than it needs to**
 
-- **Buttons that only open something.** A label on the lists is held even
-  when the button only opens a dialog or the next page: "Forward", "Share
-  screen", "Subscribe", "Renew", "Charge", "Book appointment", "Notify me
-  when in stock", "Upgrade", "Sell", "Trade", "Reply".
+- **Buttons that only open something, but carry a word from the lists,
+  still ask.** The rules go by the label, and cannot tell a button that
+  sends or pays from one that opens a dialog or the next page. Measured on
+  ordinary pages: "Forward", "Share screen", "Subscribe", "Notify me",
+  "Renew", "Sell", "Message", "Proceed to checkout", "Book appointment" and
+  "Charge" each raise a card. So do "Upgrade", "Trade" and "Reply".
+- **A page with a frame that speaks of payment and is not a known brand's
+  message or button** (one titled "Checkout", say) is a card region: every
+  button around it asks, not only the one that pays.
 - Under **Allow a daily amount**, the shared count goes up for every browser
   press the rules read as a send, and some of those send nothing: a "Reply"
   button that only opens a box to type in. The daily number is used up
@@ -578,11 +612,14 @@ catch:
 - On a page in another language, every form with a multi-line field asks
   unless its button has one of the listed harmless labels: "Speichern" on a
   notes form asks.
-- **Typed text with a line break is refused unless its field already has the
-  focus.** The bot has to click the field first. On a page with a frame,
-  text with a line break typed by ref into a field the snapshot gives no
-  name (or another name than the read does) is refused even then: use
+- **Some typed text with a line break is still refused** where it would
+  have been harmless: a line break alone, or several lines, at a field that
+  was not clicked first; text at a field the read wrongly takes for
+  unreachable; and, on a page with a frame, text typed by ref into a field
+  the snapshot gives no name (or another name than the read does). Use
   `agent_browser_fill` and press Enter.
+- When the server types the text itself and the Enter is then declined or
+  refused, the text stays in the field.
 - **More than 5,000 fields in one form or region:** a commitment there is
   refused, not held. The approval could not be bound to all of them.
 - **A reading script that fills a result it did not start empty.** `const
