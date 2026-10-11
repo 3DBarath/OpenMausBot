@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ClipboardPaste, File as FileIcon, Image as ImageIcon, LoaderCircle, MessageSquareText, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
 import {
   attachmentImageUrl,
   intakeFiles,
@@ -142,6 +143,12 @@ export function ComposerAttachments({
                 onChange={onChangeCitation}
                 onRemove={() => onRemove(a.id)}
               />
+            ) : a.kind === "conversation" ? (
+              <Chip key={a.id} label={t("composer.conversation.chip")} conversation title={a.text.slice(0, 4000)} removeLabel={t("composer.conversation.remove")} onRemove={() => onRemove(a.id)}>
+                <div className="truncate text-[13px] font-medium text-ink">{a.title}</div>
+                <div className="mt-1 truncate text-[11px] text-ink-secondary">{a.botName}</div>
+                <div className="mt-2 text-[10.5px] text-ink-tertiary">{t(a.truncated ? "composer.conversation.limited" : "composer.conversation.snapshot")}</div>
+              </Chip>
             ) : a.kind === "paste" ? (
               <Chip
                 key={a.id}
@@ -221,14 +228,18 @@ function Chip({
   children,
   label,
   title,
+  removeLabel,
+  conversation = false,
   onRemove,
 }: {
   children: React.ReactNode;
-  label: "PASTED" | "FILE" | "IMAGE";
+  label: string;
   title: string;
+  removeLabel?: string;
+  conversation?: boolean;
   onRemove: () => void;
 }) {
-  const Icon = label === "PASTED" ? ClipboardPaste : label === "IMAGE" ? ImageIcon : FileIcon;
+  const Icon = conversation ? MessageSquareText : label === "PASTED" ? ClipboardPaste : label === "IMAGE" ? ImageIcon : FileIcon;
   return (
     <div
       title={title}
@@ -248,7 +259,7 @@ function Chip({
           way to drop a chip out of reach of the keyboard */}
       <button
         onClick={onRemove}
-        aria-label={`Remove ${label === "PASTED" ? "pasted text" : "file"}`}
+        aria-label={removeLabel ?? `Remove ${label === "PASTED" ? "pasted text" : "file"}`}
         className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full border border-hairline/60 bg-panel text-ink-secondary opacity-0 transition-opacity hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 touch:opacity-100"
       >
         <X size={11} />

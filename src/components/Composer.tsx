@@ -31,6 +31,7 @@ import { BotAvatar } from "./Avatar";
 import { ComposerMenuRow } from "./ComposerMenuRow";
 import { MentionTextarea } from "./MentionTextarea";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
+import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
@@ -130,6 +131,11 @@ export function Composer({
   const { state, dispatch } = useStore();
   const ownerOrAdmin = useOwnerOrAdmin();
   const { threads, currentBotId } = useThreadRefs();
+  const conversationThreads = useMemo(() => {
+    const activity = new Map([...state.bots, ...state.groups].flatMap((owner) =>
+      (owner.tasks ?? []).map((task) => [task.threadId, task.updatedAt ?? task.createdAt] as const)));
+    return threads.map((thread) => ({ ...thread, activeAt: activity.get(thread.threadId) ?? thread.activeAt }));
+  }, [threads, state.bots, state.groups]);
   const { capabilities } = useDesktopCapabilities();
   // Simple leaves where a conversation works to its bot's Works on (Auto by
   // default); pinning a place per conversation is an Advanced control.
@@ -533,6 +539,8 @@ export function Composer({
     return () => window.clearTimeout(timeout);
   }, [busy, pendingCount, steering]);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  useEffect(() => setAttachmentMenuOpen(false), [draftId]);
   const [approvalWarning, setApprovalWarning] = useState<{
     mode: "auto" | "full";
     botId: string;
@@ -1031,13 +1039,15 @@ export function Composer({
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
-                onClick={() => fileInput.current?.click()}
-                aria-label={t("composer.attach")}
-                title={t("composer.attach")}
+                onClick={() => setAttachmentMenuOpen(true)}
+                aria-label={t("composer.attachMenu")}
+                title={t("composer.attachMenu")}
                 className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink"
               >
                 <Paperclip size={17} />
               </button>
+              {attachmentMenuOpen && <ComposerAttachmentMenu threads={conversationThreads} threadId={threadId} draftId={draftId}
+                onFiles={() => fileInput.current?.click()} onClose={() => setAttachmentMenuOpen(false)} />}
               {group && !group.dm && (
                 <button
                   type="button"
