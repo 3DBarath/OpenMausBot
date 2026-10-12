@@ -198,8 +198,9 @@ export interface CommitCall {
   /** Aborts when the bot's request went away. */
   signal: AbortSignal;
   /** Run these tools/call params: the bot's own, or the same call with its
-   * selector tidied. What was judged is what is sent. */
-  dispatch(params: unknown): Promise<unknown>;
+   * selector tidied. The hold identity comes only from this gate, never
+   * the bot's parameters. What was judged is what is sent. */
+  dispatch(params: unknown, holdId?: string): Promise<unknown>;
 }
 
 interface Intent {
@@ -536,8 +537,8 @@ export class BrowserCommitGate {
     let lost = false;
     const step: CommitCall = {
       ...call,
-      dispatch: async (params) => {
-        const result = await call.dispatch(params);
+      dispatch: async (params, holdId) => {
+        const result = await call.dispatch(params, holdId);
         lost = failed(result) && this.deps.runtime.interrupted(call.session);
         return result;
       },
@@ -611,25 +612,21 @@ export class BrowserCommitGate {
       if (remaining <= 0 || !call.active()) return refusal(UNANSWERED);
       const answer = await this.ask(call, intent, seen, row, remaining, voids >= 2);
       if (answer.next === "refuse") return refusal(answer.why);
-      if (answer.next === "send") {
-        // The hold is released and the card settled: the call goes out as it was judged.
-        this.remember(call.session, seen);
-        return call.dispatch(intent.params);
-      }
+      if (answer.next === "sent") return answer.result;
       seen = answer.seen;
     }
   }
 
   /** One card for what was seen, and the person's answer to it: send the
    * call, refuse it with a reason, or ask again because the page changed.
-   * Whatever happens in here, an answer, a timeout or a throw, the hold on
+   * Whatever happens in here, dispatch, a timeout or a throw, the hold on
    * the browser, the waiting request and the screenshot are gone when it
    * returns, and the card is not left looking answerable. A hold that
    * outlived a failure would refuse every action in that browser until the
    * server restarted. */
   private async ask(
     call: CommitCall, intent: Intent, seen: Sighting, row: Pick<DecisionRow, "threadId" | "botId" | "botName" | "tool">, timeoutMs: number, changing: boolean,
-  ): Promise<{ next: "send" } | { next: "refuse"; why: string } | { next: "ask"; seen: Sighting }> {
+  ): Promise<{ next: "sent"; result: unknown } | { next: "refuse"; why: string } | { next: "ask"; seen: Sighting }> {
     const tool = row.tool ?? "";
     const held = this.deps.requests.open({ botId: call.botId, threadId: call.threadId, tool, timeoutMs });
     if (!this.deps.runtime.hold(call.session, held.requestId)) {
@@ -688,7 +685,10 @@ export class BrowserCommitGate {
           return { next: "refuse", why: UNANSWERED };
         }
         settle();
-        return { next: "send" };
+        // Keep other agents out until the approved action finishes, including
+        // the runtime's pre-action page read. Only this dispatch owns the hold.
+        this.remember(call.session, seen);
+        return { next: "sent", result: await call.dispatch(intent.params, held.requestId) };
       }
       if (typeof now === "string") {
         settle(unavailable);

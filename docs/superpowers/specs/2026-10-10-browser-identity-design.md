@@ -122,8 +122,10 @@ route before `BrowserRuntime.agentRpc`. The classifier and word lists live in
 
 ### What counts as a commitment
 
-Only `agent_browser_click` and `agent_browser_press` (Enter) can commit. For
-each, the gate describes the target before deciding:
+Clicks, checks, unchecks, selections, Enter/Space key presses and typed line
+breaks can commit. Reloads after an earlier commitment are held too. The
+reviewed rules below supersede the initial click/Enter-only design; for each
+judged target the gate describes it before deciding:
 
 - **Label and role.** For an `@eN` ref, from the snapshot text the server last
   returned to this bot for this session; the gate now retains that text per
@@ -331,8 +333,9 @@ pin. It gets its own spec section and plan before any code.
 
 Checks 9 and 10 were run on 2026-10-10 against agent-browser 0.37.0 while the
 plan for this part was written
-(`docs/superpowers/plans/2026-10-10-browser-commit-hold.md`). Where this
-section and the text above disagree, this section is right.
+(`docs/superpowers/plans/2026-10-10-browser-commit-hold.md`). These are historical
+findings: the later “What Part 1 does after review (2026-10-11)” section above
+supersedes them, including typed line breaks, Space and frame handling.
 
 - **Typed line breaks.** `agent_browser_type` types `"\n"` as a real Enter
   press. A `type` call whose text holds a line break is refused where that
@@ -362,7 +365,8 @@ section and the text above disagree, this section is right.
   is refused at the cap today; the docs state both.
 - **Not held, stated as limits:** Space on a focused submit button, Enter
   inside a frame, and a one-line box outside any form that sends on Enter.
-- **Windows.** The reads use `get box`, `get url` and `eval -b`. They were run
+- **Windows.** The current reads use `get box`, `get url`, `get attr` and
+  `eval --stdin`. They were run
   on 0.37.0 only; the Windows pin is `0.36.0-omb.1`, whose upstream README
   documents the first two. If any is missing there, every bot click and Enter
   is refused, so the verification recipe must pass on Windows before a

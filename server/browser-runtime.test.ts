@@ -658,6 +658,61 @@ describe("browser MCP shaping at the runtime boundary", () => {
 });
 
 describe("commit hold gate owner", () => {
+  it("admits only the approved dispatch's current hold identity", async () => {
+    const value = runtime();
+    value.hold("s", "hold-1");
+    const action = vi.fn(async () => "clicked");
+    await expect(value.withAgentAction("s", action, "act", "wrong")).rejects.toThrow(/approval/);
+    await expect(value.withAgentAction("other", action, "act", "hold-1")).rejects.toThrow(/approval/);
+    expect(action).not.toHaveBeenCalled();
+    await expect(value.withAgentAction("s", action, "act", "hold-1")).resolves.toBe("clicked");
+    value.releaseHold("s", "hold-1");
+    await expect(value.withAgentAction("s", action, "act", "hold-1")).rejects.toThrow(/approval/);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an approved engine dispatch exclusive during its pre-action read", async () => {
+    const value = runtime({ requestTimeoutMs: 5_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      value.hold("s", "hold-1");
+      writeFileSync(daemon.slow, "");
+      const acting = value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } }, undefined, "hold-1");
+      await vi.waitFor(() => expect(daemon.calls()).toEqual(["agent_browser_eval"]));
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_fill", arguments: { selector: "#message", text: "Changed" }, holdId: "hold-1" })).rejects.toThrow(/approval/);
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_snapshot" })).resolves.toHaveProperty("content");
+      rmSync(daemon.slow);
+      await expect(acting).resolves.toHaveProperty("content");
+      expect(daemon.calls()).toEqual(["agent_browser_eval", "agent_browser_snapshot", "agent_browser_click", "agent_browser_eval"]);
+      expect(value.ownerKind("s")).toBe("hold");
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it.each([false, true])("rejects a hold released or replaced during the pre-action read (replaced=%s)", async (replace) => {
+    const value = runtime({ requestTimeoutMs: 5_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      value.hold("s", "hold-1");
+      writeFileSync(daemon.slow, "");
+      const acting = value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_click", arguments: { selector: "@e4" } }, undefined, "hold-1");
+      const refused = expect(acting).rejects.toThrow(/approval/);
+      await vi.waitFor(() => expect(daemon.calls()).toEqual(["agent_browser_eval"]));
+      value.releaseHold("s", "hold-1");
+      if (replace) value.hold("s", "hold-2");
+      rmSync(daemon.slow);
+      await refused;
+      expect(daemon.calls()).toEqual(["agent_browser_eval"]);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
   it("refuses the bot's actions, lets reads and preview frames through, and holds one approval per session", async () => {
     const value = runtime();
     expect(value.ownerKind("s")).toBeNull();

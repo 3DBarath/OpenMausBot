@@ -336,10 +336,10 @@ export class BrowserRuntime {
     for (const notify of gate.changed) notify();
   }
 
-  async withAgentAction<T>(session: string, fn: () => Promise<T>, access: BrowserAccess = "act"): Promise<T> {
+  async withAgentAction<T>(session: string, fn: () => Promise<T>, access: BrowserAccess = "act", holdId?: string): Promise<T> {
     const gate = this.gate(session);
     if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
-    if (gate.hold !== null && access === "act") throw new Error(BROWSER_HOLD_REFUSAL);
+    if (access === "act" && gate.hold !== (holdId ?? null)) throw new Error(BROWSER_HOLD_REFUSAL);
     if (gate.uncertain) throw new Error(BROWSER_INTERRUPTED);
     if (gate.closing) throw new Error("The browser is closing. Try again shortly.");
     gate.agents++;
@@ -365,7 +365,7 @@ export class BrowserRuntime {
     return this.withAgentAction(session, capture, "read");
   }
 
-  async agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void): Promise<unknown> {
+  async agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void, holdId?: string): Promise<unknown> {
     if (method !== "tools/list" && method !== "tools/call") throw new Error("Unsupported browser method.");
     // tools/list bypasses withAgentAction (a human may hold control), so it
     // must refuse the closing window itself or its client outlives restart().
@@ -427,8 +427,9 @@ export class BrowserRuntime {
         }
         // A commit hold that began while this call was made ready (the
         // browser starting, the page read above) finds the action not yet
-        // sent, and it is not sent: no action reaches the engine under a hold.
-        if (acts && this.gate(session).hold !== null) throw new Error(BROWSER_HOLD_REFUSAL);
+        // sent, and it is not sent. An approved action must still own the
+        // exact hold, even when it was released or replaced during that read.
+        if (acts && this.gate(session).hold !== (holdId ?? null)) throw new Error(BROWSER_HOLD_REFUSAL);
         let result = await entry.client.rpc(method, request);
         // Before the caller is asked after: a snapshot the engine took has
         // renumbered its refs, whoever is still waiting for the answer.
@@ -502,7 +503,7 @@ export class BrowserRuntime {
     };
     if (method !== "tools/call") return invoke();
     try {
-      const result = await this.withAgentAction(session, invoke, acts ? "act" : "read");
+      const result = await this.withAgentAction(session, invoke, acts ? "act" : "read", holdId);
       return this.withHandBackNote(session, result);
     } catch (error) {
       if (error instanceof Error && error.message === BROWSER_INTERRUPTED) return stuckBrowserToolError();

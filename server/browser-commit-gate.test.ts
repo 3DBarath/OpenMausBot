@@ -198,6 +198,47 @@ describe("what the gate looks at", () => {
 });
 
 describe("policy", () => {
+  it.each(["click", "typed"])("keeps the approved %s exclusive until dispatch settles", async (mode) => {
+    const f = fixture();
+    let finish!: () => void;
+    const dispatching = new Promise<void>((resolve) => { finish = resolve; });
+    let entered = false;
+    let token: string | undefined;
+    const params = mode === "click" ? click() : { name: "agent_browser_type", arguments: { selector: "#message", text: "Hello\n" } };
+    const held = f.call(params, { dispatch: async (sent, holdId?: string) => {
+      if ((sent as { name: string }).name === "agent_browser_type") return CLICKED;
+      token = holdId;
+      entered = true;
+      await dispatching;
+      return CLICKED;
+    } });
+    try {
+      await f.answer("allow");
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(f.runtime.ownerKind("s")).toBe("hold");
+      expect(token).toBeTruthy();
+      await expect(f.runtime.withAgentAction("s", async () => "parallel fill")).rejects.toThrow(/approval/);
+      await expect(f.runtime.withAgentAction("s", async () => "snapshot", "read")).resolves.toBe("snapshot");
+    } finally {
+      finish();
+      await held;
+    }
+    expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+
+  it("releases the approved hold when dispatch throws", async () => {
+    const f = fixture();
+    const held = f.call(click(), { dispatch: async (_sent, holdId?: string) => {
+      expect(f.runtime.ownerKind("s")).toBe("hold");
+      expect(holdId).toBeTruthy();
+      throw new Error("engine refused the action");
+    } });
+    const observed = expect(held).rejects.toThrow("engine refused the action");
+    await f.answer("allow");
+    await observed;
+    expect(f.runtime.ownerKind("s")).toBeNull();
+  });
+
   it("asks by default: a send waits on a card that carries the send marker and the evidence", async () => {
     const f = fixture();
     const held = f.call(click());
