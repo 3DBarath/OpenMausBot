@@ -137,53 +137,62 @@ describe("threads follow their bot's model", () => {
     expect(ownModel(open(), "legacy", "copy")).toBeUndefined();
   });
 
-  it("followBotModel clears exactly the listed threads' own model, in one write, and Ask where the bot's engine would have to confirm", () => {
+  it("followBotModel clears exactly the listed threads' own model, in one write, and Ask where the bot's engine cannot run the level", () => {
     const store = open();
     const bot = store.createBot();
     const first = bot.threadId;
     store.patchBot(bot.id, { modelSelection: codex });
     const full = store.createTask(bot.id, "Full on Claude")!;
+    const edits = store.createTask(bot.id, "Edits on Claude")!;
     const asks = store.createTask(bot.id, "Ask on Claude")!;
     const same = store.createTask(bot.id, "Full on the same engine")!;
     const untouched = store.createTask(bot.id, "Not listed")!;
     store.switchTaskModel(bot.id, full.threadId, sonnet, false, false, { approvalMode: "full", autoApprove: false, alwaysAllow: ["Bash"] });
+    store.switchTaskModel(bot.id, edits.threadId, sonnet, false, false, { approvalMode: "edits", autoApprove: false, alwaysAllow: ["Bash"] });
     store.switchTaskModel(bot.id, asks.threadId, sonnet, false, false, { approvalMode: "ask" });
     store.switchTaskModel(bot.id, same.threadId, { ...codex, effort: "high" }, false, false, { approvalMode: "full" });
     store.switchTaskModel(bot.id, untouched.threadId, opus, false, false);
     const resets: Array<[ModelSelection, ModelSelection]> = [];
-    const moved = store.followBotModel(bot.id, [full.threadId, asks.threadId, same.threadId, first], (from, to) => {
+    const moved = store.followBotModel(bot.id, [full.threadId, edits.threadId, asks.threadId, same.threadId, first], (from, to) => {
       resets.push([from, to]);
       return { rewound: true };
     });
-    expect(moved.sort()).toEqual([full.threadId, asks.threadId, same.threadId].sort());
-    expect(store.taskByThread(bot.id, full.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [], rewound: true });
+    expect(moved.sort()).toEqual([full.threadId, edits.threadId, asks.threadId, same.threadId].sort());
+    // Full carries to any engine that runs it (modelSwitchNeedsAsk, #2697).
+    expect(store.taskByThread(bot.id, full.threadId)).toMatchObject({ approvalMode: "full", autoApprove: false, alwaysAllow: ["Bash"], rewound: true });
     expect(store.taskByThread(bot.id, full.threadId)?.modelSelection).toBeUndefined();
+    // Codex has no auto-accept-edits level, so that one goes back to Ask.
+    expect(store.taskByThread(bot.id, edits.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [], rewound: true });
     expect(store.taskByThread(bot.id, asks.threadId)).toMatchObject({ approvalMode: "ask" });
     // Another model on the same engine: the level stays.
     expect(store.taskByThread(bot.id, same.threadId)).toMatchObject({ approvalMode: "full" });
     expect(ownModel(store, bot.id, untouched.threadId)).toEqual(opus);
-    expect(resets.map(([, to]) => to)).toEqual([codex, codex, codex]);
+    expect(resets.map(([, to]) => to)).toEqual([codex, codex, codex, codex]);
     const reloaded = open();
     expect(ownModel(reloaded, bot.id, full.threadId)).toBeUndefined();
-    expect(reloaded.taskByThread(bot.id, full.threadId)?.approvalMode).toBe("ask");
+    expect(reloaded.taskByThread(bot.id, full.threadId)?.approvalMode).toBe("full");
+    expect(reloaded.taskByThread(bot.id, edits.threadId)?.approvalMode).toBe("ask");
     expect(ownModel(reloaded, bot.id, untouched.threadId)).toEqual(opus);
   });
 
-  it("a following thread's Full access goes back to Ask when the bot moves to another engine, never on the same engine", () => {
+  it("a following thread's Full access carries when the bot moves to another engine; Custom rules go back to Ask", () => {
     const store = open();
     const bot = store.createBot();
     const full = store.createTask(bot.id, "Full")!;
     store.patchTask(bot.id, full.threadId, { approvalMode: "full", autoApprove: false, alwaysAllow: ["Bash"] });
     store.patchBot(bot.id, { modelSelection: opus });
     expect(store.taskByThread(bot.id, full.threadId)).toMatchObject({ approvalMode: "full", alwaysAllow: ["Bash"] });
+    // The person gave this bot Full access; changing its engine does not take it back (#2697).
     store.patchBot(bot.id, { modelSelection: codex });
-    expect(store.taskByThread(bot.id, full.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    expect(open().taskByThread(bot.id, full.threadId)?.approvalMode).toBe("ask");
+    expect(store.taskByThread(bot.id, full.threadId)).toMatchObject({ approvalMode: "full", autoApprove: false, alwaysAllow: ["Bash"] });
+    expect(open().taskByThread(bot.id, full.threadId)?.approvalMode).toBe("full");
 
-    const other = store.createTask(bot.id, "Full again")!;
-    store.patchTask(bot.id, other.threadId, { approvalMode: "full", autoApprove: false });
+    // Custom rules belong to Codex's tool semantics, so they never cross engines.
+    const custom = store.createTask(bot.id, "Custom on Codex")!;
+    store.patchTask(bot.id, custom.threadId, { approvalMode: "custom", autoApprove: false, alwaysAllow: ["Bash"] });
     store.applyModelDefault(bot.id, sonnet);
-    expect(store.taskByThread(bot.id, other.threadId)?.approvalMode).toBe("ask");
+    expect(store.taskByThread(bot.id, custom.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
+    expect(store.taskByThread(bot.id, full.threadId)?.approvalMode).toBe("full");
   });
 
   it("the wire carries the model a thread runs on and whether it follows the bot", () => {

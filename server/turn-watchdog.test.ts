@@ -124,7 +124,7 @@ describe("the stall handler", () => {
       { id: "a", role: "bot", kind: "activity", at: 1, turnId: "turn-1", tool: { name: "Bash", ok: true, itemId: "i1" } } as Message,
       { id: "b", role: "bot", kind: "text", at: 2, turnId: "turn-1", text: "Exporting the second half now." } as Message,
     ];
-    const settled: Array<{ generation?: string; text: string }> = [], delegations: string[] = [];
+    const settled: Array<{ generation?: string; text: string }> = [];
     const context = vm.createContext({
       process: { env: {} },
       RoomTurnStallRegistry: class { stall() {} },
@@ -138,19 +138,19 @@ describe("the stall handler", () => {
       runningTurnInstance: () => ({ adapter: { interruptTurn: async () => {} } }),
       failedTurnTool: (name: string) => ({ name, ok: false }), reportIncident() {},
       settleDirectFollowup: (generation: string | undefined, outcome: { text: string }) => settled.push({ generation, text: outcome.text }),
-      finalizeDelegationWatch: (_threadId: string, _ok: boolean, _reply: string, why: string) => delegations.push(why),
       setTimeout: () => ({ unref() {} }),
     });
     vm.runInContext(code, context, { filename: "index.ts (stall handler fixture)" });
-    return { context, settled, delegations };
+    return { context, settled };
   }
 
   it("tells a stalled turn's requester why it stopped and what it did", () => {
-    const { context, settled, delegations } = load();
+    const { context, settled } = load();
     context.watchdog.options.onStall({ threadId: "t1", botId: "eli" });
     const told = 'No activity for 20 minutes — the turn was stopped. Before it stopped it made 1 tool call: Bash ×1.\nIts last message, quoted: "Exporting the second half now."';
+    // settleDirectFollowup is the one path to the requester: the runtime
+    // settles the assignment and composes the report from this text.
     expect(settled).toEqual([{ generation: "gen-1", text: told }]);
-    expect(delegations).toEqual([`Delegated turn did not finish — ${told}`]);
   });
 
   // A harness stop that leaves its engine attached (a Company change) notes

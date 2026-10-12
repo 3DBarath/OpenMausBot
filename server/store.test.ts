@@ -508,9 +508,10 @@ describe("Store", () => {
     store.switchTaskModel(bot.id, picked.threadId, opus, false, false);
     const next = { instanceId: "codex", model: "fixture-model" };
     const save = vi.spyOn(store as unknown as { saveBots(bots: BotRecord[]): void }, "saveBots");
-    store.switchTaskModel(bot.id, first.threadId, next, false, true);
+    // Full carries to Codex (modelSwitchNeedsAsk), so the caller passes no reset.
+    store.switchTaskModel(bot.id, first.threadId, next, false, false);
     expect(save).toHaveBeenCalledTimes(1);
-    expect(store.projectBotForTask(bot.id, first.threadId)).toMatchObject({ modelSelection: next, approvalMode: "ask", alwaysAllow: [] });
+    expect(store.projectBotForTask(bot.id, first.threadId)).toMatchObject({ modelSelection: next, approvalMode: "full", alwaysAllow: ["old-tool"] });
     expect(bot).toMatchObject({ modelSelection: selection(), approvalMode: "full" });
     expect(sibling).toMatchObject({ approvalMode: "full", alwaysAllow: ["old-tool"] });
     expect(sibling.modelSelection).toBeUndefined();
@@ -518,21 +519,22 @@ describe("Store", () => {
     delete sibling.autoApprove;
     delete sibling.alwaysAllow;
     save.mockImplementationOnce(() => { throw new Error("disk full"); });
-    expect(() => store.switchTaskModel(bot.id, first.threadId, next, true, true)).toThrow("disk full");
+    expect(() => store.switchTaskModel(bot.id, first.threadId, next, true, false)).toThrow("disk full");
     expect(bot).toMatchObject({ modelSelection: selection(), approvalMode: "full" });
     expect(sibling.modelSelection).toBeUndefined();
-    store.switchTaskModel(bot.id, first.threadId, next, true, true);
-    expect(bot).toMatchObject({ modelSelection: next, approvalMode: "ask", alwaysAllow: [] });
+    store.switchTaskModel(bot.id, first.threadId, next, true, false);
+    expect(bot).toMatchObject({ modelSelection: next, approvalMode: "full", alwaysAllow: ["old-tool"] });
     // The thread it was changed from now follows the bot; a sibling that
-    // follows moves to the new engine and, its Full access belonging to the
-    // old one, back to Ask; a thread's own model and level stay.
+    // follows moves to the new engine with the Full access the person gave
+    // the bot (Full carries to any engine that runs it); a thread's own
+    // model and level stay.
     expect(first.modelSelection).toBeUndefined();
-    expect(sibling).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
+    expect(sibling).toMatchObject({ approvalMode: "full", alwaysAllow: ["old-tool"] });
     expect(store.projectBotForTask(bot.id, sibling.threadId)?.modelSelection).toEqual(next);
     expect(picked).toMatchObject({ modelSelection: opus, approvalMode: "full", alwaysAllow: ["old-tool"] });
     const reloaded = new Store(selection);
-    expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: next, approvalMode: "ask" });
-    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask" });
+    expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: next, approvalMode: "full" });
+    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "full" });
     expect(reloaded.taskByThread(bot.id, picked.threadId)).toMatchObject({ modelSelection: opus, approvalMode: "full" });
   });
 
