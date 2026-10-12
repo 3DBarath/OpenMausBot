@@ -4,6 +4,21 @@ import { composeMessage, isAttachment, splitTranscriptAttachments } from "./comp
 const source = { botId: "bot-a", botName: "Research", threadId: "thread-a", title: "Research notes", activeAt: 10 };
 
 describe("conversation context", () => {
+  it("preserves bot authorship for legacy peer requests and current coordinator requests", () => {
+    const legacy = "[Message from @Chief, another bot in this OpenMausBot workspace — not from your user.]\n\nReview the plan";
+    const messages = [
+      { role: "user", kind: "text", text: "User request", sender: { name: "Person" } },
+      { role: "user", kind: "text", text: "Peer request", peerAsk: { botId: "chief", name: "Chief" } },
+      { role: "user", kind: "text", text: legacy },
+      { role: "bot", kind: "text", text: "Coordinated request", from: { botId: "scout", name: "Scout" }, roomRequest: { id: "r1", phase: "request" } },
+    ];
+    const snapshot = conversationAttachment(source, { messages }).text;
+    expect(snapshot).toContain('"role":"user","speaker":"Person","text":"User request"');
+    expect(snapshot).toContain('"role":"bot","speaker":"Chief","text":"Peer request"');
+    expect(snapshot).toContain(JSON.stringify({ role: "bot", speaker: "Chief", text: legacy }));
+    expect(snapshot).toContain('"role":"bot","speaker":"Scout","text":"Coordinated request"');
+  });
+
   it("keeps exact source identity, attribution and a frozen transcript without tool or reasoning payloads", () => {
     const messages = [{ role: "user", text: "What did we find?", sender: { name: "Teammate" } }, { role: "bot", text: "A fixture result", from: { name: "Scout" } },
       { role: "bot", kind: "thinking", text: "private reasoning" }, { role: "bot", kind: "tool", text: "raw tool payload" }];

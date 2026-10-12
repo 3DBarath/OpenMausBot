@@ -35,7 +35,6 @@ import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
-import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
@@ -542,7 +541,7 @@ export function Composer({
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   useEffect(() => setAttachmentMenuOpen(false), [draftId]);
   const [approvalWarning, setApprovalWarning] = useState<{
-    mode: "auto" | "full";
+    mode: "auto";
     botId: string;
     threadId: string;
   } | null>(null);
@@ -553,6 +552,7 @@ export function Composer({
   const approvalEngine = modeBot
     ? state.instances.find((instance) => instance.instanceId === modeBot.modelSelection.instanceId)
     : undefined;
+  // Custom needs the packaged desktop's private channel; Full does not.
   const trustedThreadAccess = Boolean(!remoteClient && window.ogb?.approvals && capabilities.host.packaged);
   const uploadImage = useCallback(async (file: File): Promise<Attachment | null> => {
     const optimistic = optimisticImageAttachment(file);
@@ -599,11 +599,8 @@ export function Composer({
   };
   const setApprovalMode = (mode: ApprovalMode) => {
     if (!modeBot || modeBot.busy || mode === approvalModeFor(modeBot)) return;
-    if ((mode === "full" || mode === "custom") && !trustedThreadAccess) return;
-    if (mode === "full") {
-      setApprovalWarning({ mode, botId: modeBot.id, threadId: modeBot.threadId });
-      return;
-    }
+    if (mode === "custom" && !trustedThreadAccess) return;
+    // Full applies at once, with no confirmation (owner decision, Oct 12).
     // Safe Auto still needs its dedicated warning when it can drive the host.
     if (mode === "auto" && modeBot.computer === "local") {
       setApprovalWarning({ mode: "auto", botId: modeBot.id, threadId: modeBot.threadId });
@@ -1301,18 +1298,6 @@ export function Composer({
         {...commandAllowlistTarget}
         onClose={() => setCommandAllowlistTarget(null)}
       />}
-      <FullAccessWarning
-        open={approvalWarning?.mode === "full"}
-        scope="thread"
-        onCancel={() => setApprovalWarning(null)}
-        onConfirm={() => {
-          const target = approvalWarning;
-          setApprovalWarning(null);
-          if (target?.mode !== "full" || !trustedThreadAccess) return;
-          dispatch({ type: "updateTask", botId: target.botId, threadId: target.threadId,
-            patch: { approvalMode: "full", confirmFullAccess: true } });
-        }}
-      />
       <LocalComputerAutoWarning
         open={approvalWarning?.mode === "auto"}
         onCancel={() => setApprovalWarning(null)}

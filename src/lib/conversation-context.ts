@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { peerLine } from "./peer-message";
 import type { ConversationAttachment } from "./composer-attachments";
 import { threadRefMarkdown, type ThreadRefCandidate } from "./thread-refs";
 
@@ -32,8 +33,9 @@ export function conversationAttachment(source: ThreadRefCandidate, page: unknown
   const latest = [...messages].reverse();
   for (const [index, message] of latest.entries()) {
     let text = message.text as string;
-    const speaker = message.from?.name ?? message.sender?.name;
-    const encode = () => JSON.stringify({ role: message.role, speaker: typeof speaker === "string" ? speaker.slice(0, 120)
+    const peer = peerLine(message);
+    const speaker = peer?.name ?? message.from?.name ?? message.sender?.name;
+    const encode = () => JSON.stringify({ role: peer ? "bot" : message.role, speaker: typeof speaker === "string" ? speaker.slice(0, 120)
       : message.role === "bot" ? source.botName.slice(0, 120) : "User", text }).replaceAll("<", "\\u003c");
     let line = encode();
     if (line.length > budget) {

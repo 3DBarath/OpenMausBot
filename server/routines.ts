@@ -250,7 +250,7 @@ export interface RoutineInput {
 
 interface RoutineFile {
   version: 1;
-  /** The destinations v0.1.98 to v0.1.104 saved as a default
+  /** The destinations v0.1.98 to v0.1.107 saved as a default
    * (RoutineManagerOptions.frozenResultsThread) are cleared. */
   frozenResultsCleared?: true;
   routines: Routine[];
@@ -298,11 +298,11 @@ export interface RoutineManagerOptions {
    * (`main`: never saved on the routine, since the next run asks again), else
    * a Cloud guest's routine allocates its own. `forceNew` ignores the choice. */
   resolveResultsThread?: (routine: Routine, forceNew: boolean) => { threadId: string; main?: true } | undefined;
-  /** The thread v0.1.98 to v0.1.104 saved on every bot routine that had no
-   * destination of its own: its bot's oldest open thread, saved as if a
-   * person had chosen it. A file from then has it cleared, once
-   * (clearFrozenResultsThreads). */
-  frozenResultsThread?: (botId: string) => string | undefined;
+  /** Whether `threadId` can be the thread v0.1.98 to v0.1.107 saved on every
+   * bot routine that had no destination of its own: its bot's oldest open
+   * thread then, saved as if a person had chosen it. A file from then has it
+   * cleared, once (clearFrozenResultsThreads). */
+  frozenResultsThread?: (botId: string, threadId: string) => boolean;
   /** Compensate an uncommitted allocation, only while still empty. */
   discardResultsThread?: (botId: string, threadId: string) => void;
   startTurn: (
@@ -922,10 +922,18 @@ export class RoutineManager {
         console.error(`routines: ignoring unreadable ${this.file}: ${reason}`);
       }
     }
-    // A local process cannot still own these turns after a full restart.
+    // A local process cannot still own these turns after a full restart. A
+    // run whose teammates' work the job runtime still carries goes on with
+    // it (the runtime's restart policy reruns a cut turn and resumes the
+    // run with the results); every other cut run failed.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
       if (run.status === "running" || run.status === "waiting") {
+        if (run.threadId && run.target === "bot" && this.options.hasPendingDelegations?.(run.threadId) === true) {
+          run.status = "waiting";
+          run.attention = "Waiting for delegated work to finish";
+          continue;
+        }
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
         run.error = ROUTINE_RESTARTED;
@@ -947,7 +955,7 @@ export class RoutineManager {
     return this.routines.map(routine => this.routineWithHealth(routine));
   }
 
-  /** Clear the destination v0.1.98 to v0.1.104 saved on routines as if a
+  /** Clear the destination v0.1.98 to v0.1.107 saved on routines as if a
    * person had chosen it (RoutineManagerOptions.frozenResultsThread), once:
    * a later pick of that same thread is a person's. Called once it is
    * settled who opened which conversation (a Cloud home's earlier device
@@ -956,7 +964,7 @@ export class RoutineManager {
     if (!this.frozenPending) return;
     for (const routine of this.routines) {
       if (routine.target === "bot" && routine.resultsThreadId !== undefined &&
-        routine.resultsThreadId === this.options.frozenResultsThread?.(routine.botId)) delete routine.resultsThreadId;
+        this.options.frozenResultsThread?.(routine.botId, routine.resultsThreadId)) delete routine.resultsThreadId;
     }
     this.frozenPending = false;
     this.save();
