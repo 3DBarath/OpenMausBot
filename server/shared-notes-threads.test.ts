@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OwnerThreads } from "./shared-notes-threads.ts";
+import { cpuOf, expectWithin } from "./testing/relative-time.ts";
 
 let dir: string;
 let file: string;
@@ -106,18 +107,27 @@ describe("the owner's conversations", () => {
     const before = readFileSync(file, "utf8");
     const record = new OwnerThreads(file);
     expect(record.since).toBe(1_700_000_000_000);
-    const started = process.cpuUsage();
-    for (let index = 0; index < 300; index += 1) record.prove("busy-thread", `message-${index}`);
-    const spent = process.cpuUsage(started);
-    // nothing was written while the lines were being recorded, and recording them cost next to nothing
+    const recording = await cpuOf(() => {
+      for (let index = 0; index < 300; index += 1) record.prove("busy-thread", `message-${index}`);
+    });
+    // nothing was written while the lines were being recorded
     expect(readFileSync(file, "utf8")).toBe(before);
-    expect((spent.user + spent.system) / 1000).toBeLessThan(300);
     // the proof holds at once, in memory
     expect(record.ownerOnly("busy-thread", Array.from({ length: 300 }, (_, index) => `message-${index}`))).toBe(true);
     // a shutdown writes what is pending
     await record.flush();
     const after = new OwnerThreads(file);
     expect(after.ownerOnly("busy-thread", Array.from({ length: 300 }, (_, index) => `message-${index}`))).toBe(true);
+    // And recording those 300 lines cost next to nothing: less than writing the
+    // record five times does on this machine, measured here. (Written on every
+    // line, it was three hundred writes.)
+    const writing = await cpuOf(async () => {
+      for (let round = 0; round < 5; round += 1) {
+        record.prove("other-thread", `message-${round}`);
+        await record.flush();
+      }
+    });
+    expectWithin("recording 300 lines, against writing the record five times", recording.cpu, writing.cpu);
     // and without a shutdown it is written by itself a moment later
     record.prove("later-thread", "m1");
     await expect.poll(() => new OwnerThreads(file).ownerOnly("later-thread", ["m1"]), { timeout: 10_000, interval: 50 }).toBe(true);

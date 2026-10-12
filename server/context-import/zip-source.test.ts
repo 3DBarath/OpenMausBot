@@ -4,12 +4,15 @@
 // reported, and nothing is written next to the upload.
 import { randomBytes } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deflateSync, strToU8, zipSync } from "fflate";
 
+import { hostTimeout } from "../testing/host-timeout.ts";
+import { cpuOf, expectAtLeast, expectNoLongStretch, expectWithin, least, watch, type Watched } from "../testing/relative-time.ts";
 import { ExportReadError, LIST_MAX_ITEMS, readExport, REFUSED_MAX_LINES, setZipEntryMaxBytesForTests, SHAPELESS_MAX_ELEMENTS, UPLOAD_MAX_ITEMS, ZIP_MAX_DIRECTORY_BYTES, ZIP_MAX_ENTRIES, ZIP_MAX_LISTS } from "./zip-source.ts";
 
 let scratch: string;
@@ -278,24 +281,36 @@ const used = () => {
   return memory.heapUsed + memory.external + memory.arrayBuffers;
 };
 
-/** While `work` runs: the most memory in use, and the longest the event loop went without turning, in milliseconds. */
-async function watch<T>(work: () => Promise<T>): Promise<{ result: T; peak: number; stall: number }> {
+/** The most memory in use while `work` runs. */
+async function peakMemory<T>(work: () => Promise<T>): Promise<{ result: T; peak: number }> {
   let peak = used();
-  let last = performance.now();
-  let stall = 0;
-  const sample = () => {
-    peak = Math.max(peak, used());
-    const now = performance.now();
-    stall = Math.max(stall, now - last);
-    last = now;
-  };
+  const sample = () => { peak = Math.max(peak, used()); };
   const timer = setInterval(sample, 2);
   try {
     const result = await work();
     sample();
-    return { result, peak, stall };
+    return { result, peak };
   } finally {
     clearInterval(timer);
+  }
+}
+
+// Every bound on time below is a multiple of something the same test
+// measures on the same machine (server/testing/relative-time.ts): the cost
+// of a smaller read of the same kind, or the whole of the read a stretch
+// belongs to. None is a number of milliseconds.
+
+/** How many times `work` read from a file. The reader waits for each read,
+ * and other work gets a turn while it waits: a count no machine changes. */
+async function countingReads<T>(work: () => Promise<T>): Promise<{ result: T; reads: number }> {
+  const probe = await open(join(scratch, "."), "r");
+  const read = vi.spyOn(Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => unknown }, "read");
+  await probe.close();
+  try {
+    const result = await work();
+    return { result, reads: read.mock.calls.length };
+  } finally {
+    read.mockRestore();
   }
 }
 
@@ -314,7 +329,7 @@ describe("a zip entry the import does not read", () => {
     const grew: number[] = [];
     // the import reads its upload twice: once to scan it, once to read what was picked
     for (const pass of ["scan", "read pass"]) {
-      const { result, peak } = await watch(() => read(zip));
+      const { result, peak } = await peakMemory(() => read(zip));
       expect(result.elements, pass).toEqual([{ id: "a" }, { id: "b" }]);
       expect(result.report, pass).toMatchObject({ entries: ["media/video.mp4", "conversations.json"], read: ["conversations.json"], refused: [] });
       grew.push(Math.round((peak - baseline) / 1024 / 1024));
@@ -329,25 +344,30 @@ describe("a zip is read from its list of contents", () => {
   /** Where a zip made by zipSync keeps its list of contents. */
   const directoryOf = (zip: Uint8Array) => Buffer.from(zip.buffer, zip.byteOffset, zip.length).readUInt32LE(zip.length - 6);
 
-  it("refuses a zip that declares or holds more entries than the cap, quickly, and reads one at the cap", async () => {
+  it("refuses a zip that declares or holds more entries than the cap for no more than reading one at the cap costs, and reads one at the cap", async () => {
+    const REFUSED = "That zip file holds more than 100,000 files, which is more than can be read here. Upload the conversations.json from inside it by itself.";
+    const ghosts = (count: number) => Array.from({ length: count }, (_, index) => ghost(`media/${index}.png`, 1));
     const declares = writeZip("declares.zip", [stored("conversations.json", LIST)], { zip64: true, declare: ZIP_MAX_ENTRIES + 1 });
-    // the old-style end record of this one says 34,465; its list holds all 100,001
-    const holds = writeZip("holds.zip", [stored("user.json", "{}"), ...Array.from({ length: ZIP_MAX_ENTRIES }, (_, index) => ghost(`media/${index}.png`, 1))]);
-    // quickly by the processor's time, not the clock: on a busy machine every read of the file waits its turn
-    const worked = () => {
-      const { user, system } = process.cpuUsage();
-      return (user + system) / 1000;
-    };
-    for (const zip of [declares, holds]) {
-      const before = worked();
+    // nine times the cap, all of them in its list; its old-style end record says 48,033
+    const holds = writeZip("holds.zip", [stored("user.json", "{}"), ...ghosts(9 * ZIP_MAX_ENTRIES)]);
+    const most = writeZip("most.zip", [deflated("conversations.json", LIST), ...ghosts(ZIP_MAX_ENTRIES - 1)]);
+    // The reference: reading a zip at the cap, which walks every one of the 100,000 lines of its list.
+    const atTheCap = await least(3, async () => {
+      const { result, cpu } = await cpuOf(() => read(most));
+      expect(result.elements).toEqual([{ id: "a" }, { id: "b" }]);
+      return cpu;
+    });
+    const refusing = (zip: string) => least(3, async () => (await cpuOf(async () => {
       const reading = read(zip);
-      await expect(reading, zip).rejects.toThrow("That zip file holds more than 100,000 files, which is more than can be read here. Upload the conversations.json from inside it by itself.");
+      await expect(reading, zip).rejects.toThrow(REFUSED);
       await expect(reading, zip).rejects.toBeInstanceOf(ExportReadError);
-      expect(worked() - before, zip).toBeLessThan(2_000);
-    }
-    const most = writeZip("most.zip", [deflated("conversations.json", LIST), ...Array.from({ length: ZIP_MAX_ENTRIES - 1 }, (_, index) => ghost(`media/${index}.png`, 1))]);
-    expect((await read(most)).elements).toEqual([{ id: "a" }, { id: "b" }]);
-  }, 120_000);
+    })).cpu);
+    // Said in its end record: refused before a line of the list is walked.
+    expectWithin("refusing a zip that declares too many entries, against half of reading one at the cap", await refusing(declares), atTheCap / 2);
+    // Found by walking: the walk stops one line past the cap, however long the list goes on,
+    // so it costs what the reference does. Walked to its end, this list would cost nine times that.
+    expectWithin("refusing a zip that holds nine times the cap, against three times reading one at the cap", await refusing(holds), atTheCap * 3);
+  }, hostTimeout(180_000));
 
   it("refuses a zip whose list of contents is longer than it will walk, without walking it", async () => {
     expect(ZIP_MAX_DIRECTORY_BYTES).toBe(ZIP_MAX_ENTRIES * 1024);
@@ -367,22 +387,29 @@ describe("a zip is read from its list of contents", () => {
     await expect(reading).rejects.toBeInstanceOf(ExportReadError);
   });
 
-  it("lists 20,000 entries it does not read without opening them, and without stalling the server", async () => {
+  it("lists 100,000 entries it does not read without opening them, and without stalling the server", async () => {
     // each of these claims 512 MB at a place in the file where no entry starts
-    const media = (from: number) => Array.from({ length: 10_000 }, (_, index) => ghost(`media/${from + index}.png`, 512));
-    const zip = writeZip("many.zip", [stored("user.json", "{}"), ...media(0), deflated("conversations.json", LIST), ...media(10_000)]);
-    // The best of three reads: a busy machine can hold any one of them up, and a reader that stalls would stall them all.
-    const stalls: number[] = [];
+    const half = (ZIP_MAX_ENTRIES - 2) / 2;
+    const media = (from: number) => Array.from({ length: half }, (_, index) => ghost(`media/${from + index}.png`, 512));
+    const zip = writeZip("many.zip", [stored("user.json", "{}"), ...media(0), deflated("conversations.json", LIST), ...media(half)]);
+    // The list is about 6 MB and is read 64 KB at a time, and other work gets a
+    // turn while each read is waited for: about a hundred reads, on any machine.
+    const counted = await countingReads(() => read(zip));
+    expect(counted.result.elements).toEqual([{ id: "a" }, { id: "b" }]);
+    expectAtLeast("reads of the file while listing 100,000 entries", counted.reads, 60);
+    // Three reads: a busy machine can hold any one of them up, and a reader that stalls would stall them all.
+    const runs: Array<Watched<Awaited<ReturnType<typeof read>>>> = [];
     for (let run = 0; run < 3; run += 1) {
-      const { result, stall } = await watch(() => read(zip));
-      expect(result.elements).toEqual([{ id: "a" }, { id: "b" }]);
-      expect(result.report).toMatchObject({ kind: "zip", read: ["conversations.json"], refused: [] });
-      expect(result.report.entries).toHaveLength(500);
-      expect(result.report.entries.slice(0, 3)).toEqual(["user.json", "media/0.png", "media/1.png"]);
-      stalls.push(stall);
+      const watched = await watch(() => read(zip));
+      expect(watched.result.elements).toEqual([{ id: "a" }, { id: "b" }]);
+      expect(watched.result.report).toMatchObject({ kind: "zip", read: ["conversations.json"], refused: [] });
+      expect(watched.result.report.entries).toHaveLength(500);
+      expect(watched.result.report.entries.slice(0, 3)).toEqual(["user.json", "media/0.png", "media/1.png"]);
+      runs.push(watched);
     }
-    expect(Math.min(...stalls)).toBeLessThan(250);
-  }, 120_000);
+    // And no one stretch is a large part of the read. Walked in one go, the longest stretch would be nearly all of it.
+    expectNoLongStretch("the longest stretch of listing 100,000 entries, against a fifth of the whole read", runs, (run) => run.wall / 5);
+  }, hostTimeout(120_000));
 
   it("lists at most 20 refused entries and counts the rest in one more line", async () => {
     const refused = Object.fromEntries(Array.from({ length: REFUSED_MAX_LINES + 5 }, (_, index) => [`part${index}/conversations.json`, strToU8('{"not":"a list"}')]));
@@ -594,46 +621,50 @@ describe("a zip is read from its list of contents", () => {
     expect(report.refused).toEqual(["5 more conversation lists than the 1,000 one import reads: not read"]);
   });
 
-  it("reads lists that are nearly all whitespace in bounded time, without holding the server up", async () => {
-    // three lists of 256 MB of spaces each: under a megabyte as a zip
-    const blank = Buffer.alloc(256 * 1024 * 1024, " ");
-    const parts = ["a", "b", "c"].map((id): Part => {
-      const raw = Buffer.concat([Buffer.from("["), blank, Buffer.from(`{"id":"${id}"}`), blank.subarray(0, 1024), Buffer.from("]")]);
+  it("reads lists that are nearly all whitespace in step with their size, a little at a time", async () => {
+    const MB = 1024 * 1024;
+    const blank = Buffer.alloc(256 * MB, " ");
+    const IDS = ["a", "b", "c"];
+    /** Three lists, each this many megabytes of spaces around one element: a few hundred kilobytes as a zip. */
+    const zipOf = (name: string, megabytes: number) => writeZip(name, IDS.map((id): Part => {
+      const raw = Buffer.concat([Buffer.from("["), blank.subarray(0, megabytes * MB), Buffer.from(`{"id":"${id}"}`), blank.subarray(0, 1024), Buffer.from("]")]);
       return { name: `${id}/conversations.json`, method: 8, packed: deflateRawSync(raw), unpacked: raw.length, crc: crc32(raw) };
+    }));
+    const whole = (found: Awaited<ReturnType<typeof read>>) => {
+      expect(found.elements).toEqual(IDS.map((id) => ({ id })));
+      expect(found.report.read).toHaveLength(3);
+    };
+    const cost = (path: string) => least(2, async () => {
+      const { result, cpu } = await cpuOf(() => read(path));
+      whole(result);
+      return cpu;
     });
-    const path = writeZip("blank.zip", parts);
-    let longest = Infinity;
-    let cpu = Infinity;
-    let turns = 0;
-    // the best of three: another process may hold this one up, but not three times in a row
-    for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 2_200); attempt += 1) {
-      let gap = 0;
-      let seen = 0;
-      let last = performance.now();
-      const beat = setInterval(() => {
-        const at = performance.now();
-        gap = Math.max(gap, at - last);
-        last = at;
-        seen += 1;
-      }, 1);
-      const started = process.cpuUsage();
-      const { elements, report } = await read(path);
-      clearInterval(beat);
-      const spent = process.cpuUsage(started);
-      expect(elements).toEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
-      expect(report.read).toHaveLength(3);
-      longest = Math.min(longest, gap);
-      cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
-      turns = Math.max(turns, seen);
+    const large = zipOf("blank.zip", 256); // 768 MB in all
+    const small = zipOf("blank-small.zip", 64); // 192 MB: a quarter of it
+    // Four times the bytes cost about four times as much: 4.4 times here, since
+    // the first reads of a list unpack to more than the later ones and cost
+    // less a megabyte, which favours a short list. It may cost eight times.
+    // Work that grew with the square of the size would cost sixteen.
+    const reference = await cost(small);
+    expectWithin("reading 768 MB of whitespace, against twice four times what 192 MB cost", await cost(large), reference * 4 * 2);
+
+    // A read of the zip unpacks to about a megabyte, and other work gets a turn
+    // while each read is waited for: many hundreds of reads for 768 MB, on any
+    // machine. (It was 16 MB a read: about a hundred and fifty.)
+    const counted = await countingReads(() => read(large));
+    whole(counted.result);
+    expectAtLeast("reads of the file while reading 768 MB of whitespace", counted.reads, 500);
+    // Three watched reads: a busy machine can hold any one of them up.
+    const runs: Array<Watched<Awaited<ReturnType<typeof read>>>> = [];
+    for (let run = 0; run < 3; run += 1) {
+      const watched = await watch(() => read(large));
+      whole(watched.result);
+      runs.push(watched);
     }
-    // Other work got a turn at a bounded interval: a timer can fire once per
-    // step at most, and 768 MB unpacked in steps of about a megabyte is
-    // hundreds of steps (it was 16 MB a step: fewer than fifty).
-    expect(turns).toBeGreaterThan(150);
-    expect(longest).toBeLessThan(250);
-    // and the whole read took a couple of seconds of processor time, not several
-    expect(cpu).toBeLessThan(2_200);
-  }, 120_000);
+    // The longest stretch is the first read of a list, which can unpack to 16 MB
+    // before the reads shrink: a forty-eighth of the whole. It may be a sixteenth.
+    expectNoLongStretch("the longest stretch of reading 768 MB of whitespace, against a sixteenth of the whole read", runs, (run) => run.wall / 16);
+  }, hostTimeout(180_000));
 
   it("stops unpacking once the lists of one zip have unpacked to four times the limit for one", async () => {
     // six lists of about 3 KB each, with a limit of 4 KB for one: the budget for all is 16 KB
@@ -701,39 +732,45 @@ describe("a zip is read from its list of contents", () => {
       expect(report.refused).toEqual([]);
     });
 
-    it("costs little in a zip of many such lists, holds the server up for none of it, and still reads the real list among them", async () => {
-      // twelve lists of two million numbers each, a few kilobytes apiece once packed, and one real list
-      const raw = Buffer.from(zeros(2_000_000));
-      const packed = deflateRawSync(raw);
-      const sum = crc32(raw);
+    it("costs what its first 10,000 items cost in a zip of many such lists, however long they go on, and the real list among them is still read", async () => {
+      const LISTS = 24;
       const real = Buffer.from('[{"mapping":{},"title":"the real one"}]');
-      const parts: Part[] = [
-        ...Array.from({ length: 6 }, (_, index): Part => ({ name: `a${index}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })),
-        { name: "real/conversations.json", method: 8, packed: deflateRawSync(real), unpacked: real.length, crc: crc32(real) },
-        ...Array.from({ length: 6 }, (_, index): Part => ({ name: `b${index}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })),
-      ];
-      const path = writeZip("numbers.zip", parts);
-      let longest = Infinity;
-      let cpu = Infinity;
-      // the best of three: another process may hold this one up, but not three times in a row
-      for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 1_500); attempt += 1) {
+      /** Twenty-four lists of this many numbers each, with the one real list in their middle. */
+      const zipOf = (name: string, numbers: number) => {
+        const raw = Buffer.from(zeros(numbers - 1));
+        const packed = deflateRawSync(raw);
+        const sum = crc32(raw);
+        const lists = (prefix: string) => Array.from({ length: LISTS / 2 }, (_, index): Part => ({ name: `${prefix}${index}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum }));
+        return writeZip(name, [...lists("a"), { name: "real/conversations.json", method: 8, packed: deflateRawSync(real), unpacked: real.length, crc: crc32(real) }, ...lists("b")]);
+      };
+      /** One read, checked: 10,000 items of each list and the one conversation, whatever the lists hold after that. */
+      const reading = async (path: string) => {
         const all = taking();
-        const started = process.cpuUsage();
-        const { result: report, stall } = await watch(() => readExport(path, all.take));
-        const spent = process.cpuUsage(started);
-        // 10,000 elements of each of the twelve, and the one conversation
-        expect(all.seen).toHaveLength(12 * SHAPELESS_MAX_ELEMENTS + 1);
+        const report = await readExport(path, all.take);
+        expect(all.seen).toHaveLength(LISTS * SHAPELESS_MAX_ELEMENTS + 1);
         expect(all.seen.filter(shaped)).toEqual([{ mapping: {}, title: "the real one" }]);
         expect(report.read).toEqual(["real/conversations.json"]);
-        expect(report.refused).toHaveLength(12);
+        expect(report.refused).toHaveLength(REFUSED_MAX_LINES + 1);
         expect(report.refused[0]).toBe(`a0/conversations.json: ${NOT_ONE}`);
-        longest = Math.min(longest, stall);
-        cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
-      }
-      // 24 million elements were never parsed: this is a fraction of a second of work, in short steps
-      expect(cpu).toBeLessThan(1_500);
-      expect(longest).toBeLessThan(250);
-    }, 180_000);
+        expect(report.refused.at(-1)).toBe(`${LISTS - REFUSED_MAX_LINES} more entries, not listed here`);
+      };
+      // two million numbers in each list: 48 million items that must not be parsed
+      const long = zipOf("numbers.zip", 2_000_000);
+      // The reference: the same zip with nothing after the 10,000 items that are looked at anyway.
+      const short = zipOf("numbers-short.zip", SHAPELESS_MAX_ELEMENTS);
+      const cost = (path: string) => least(3, async () => (await cpuOf(() => reading(path))).cpu);
+      const reference = await cost(short);
+      // Each long list is unpacked by one read of the zip before its first items
+      // are looked at: that is three or four times the reference, and what the
+      // room here is for. Parsed to its end, a long list costs two hundred times
+      // the reference.
+      expectWithin("reading lists two hundred times as long, against twenty times what their first 10,000 items cost", await cost(long), reference * 20);
+      // And no one stretch of that read is longer than the whole of the short one.
+      const whole = await least(3, async () => (await watch(() => reading(short))).wall);
+      const runs: Array<Watched<void>> = [];
+      for (let run = 0; run < 3; run += 1) runs.push(await watch(() => reading(long)));
+      expectNoLongStretch("the longest stretch of reading the long lists, against the whole read of the short ones", runs, () => whole);
+    }, hostTimeout(180_000));
   });
 
   // One conversation at the head of a list is enough to have it read, and
@@ -770,34 +807,61 @@ describe("a zip is read from its list of contents", () => {
       expect(under.read).toEqual(["conversations.json"]);
     });
 
-    it("reads four million items of one upload in all, in a couple of seconds and without holding the server up, and leaves the other lists", async () => {
+    it("reads four million items of one upload in all, for what four million items cost and a slice at a time, and leaves the other lists", async () => {
       expect(UPLOAD_MAX_ITEMS).toBe(4_000_000);
+      const zipOf = (name: string, ids: string[], numbers: number) => {
+        const raw = padded(numbers);
+        const packed = deflateRawSync(raw);
+        const sum = crc32(raw);
+        return writeZip(name, ids.map((id): Part => ({ name: `${id}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })));
+      };
       // six lists, each one conversation and then twenty million numbers: 40 MB apiece, a few dozen kilobytes packed
-      const raw = padded(20_000_000);
-      const packed = deflateRawSync(raw);
-      const sum = crc32(raw);
-      const path = writeZip("long.zip", ["a", "b", "c", "d", "e", "f"].map((id): Part => ({ name: `${id}/conversations.json`, method: 8, packed, unpacked: raw.length, crc: sum })));
-      let longest = Infinity;
-      let cpu = Infinity;
-      let handed = 0;
-      let report!: Awaited<ReturnType<typeof readExport>>;
-      // the best of three: another process may hold this one up, but not three times in a row
-      for (let attempt = 0; attempt < 3 && (longest > 250 || cpu > 3_000); attempt += 1) {
-        handed = 0;
-        const started = process.cpuUsage();
-        const watched = await watch(() => readExport(path, (value) => { handed += 1; return shaped(value); }));
-        const spent = process.cpuUsage(started);
-        report = watched.result;
-        longest = Math.min(longest, watched.stall);
-        cpu = Math.min(cpu, (spent.user + spent.system) / 1000);
+      const long = zipOf("long.zip", ["a", "b", "c", "d", "e", "f"], 20_000_000);
+      // The reference: a zip that holds just under what one upload is read for, in two lists that are read to their ends.
+      const full = zipOf("full.zip", ["a", "b"], LIST_MAX_ITEMS - 2);
+      /** One read: how many items were handed over, the most in any one turn of the event loop, and the report. */
+      const reading = (path: string) => {
+        let handed = 0;
+        let thisTurn = 0;
+        let mostInOneTurn = 0;
+        const read = () => readExport(path, (value) => {
+          handed += 1;
+          thisTurn += 1;
+          mostInOneTurn = Math.max(mostInOneTurn, thisTurn);
+          return shaped(value);
+        });
+        return { read, turned: () => { thisTurn = 0; }, counts: () => ({ handed, mostInOneTurn }) };
+      };
+      const cost = (path: string, items: number) => least(2, async () => {
+        const one = reading(path);
+        const { cpu } = await cpuOf(one.read);
+        expect(one.counts().handed).toBe(items);
+        return cpu;
+      });
+      const reference = await cost(full, UPLOAD_MAX_ITEMS - 2);
+      // 120 million items are in the zip; four million are read. Read to its end, it would cost thirty times the reference.
+      expectWithin("reading four million items of a zip that holds 120 million, against three times reading a zip of four million", await cost(long, UPLOAD_MAX_ITEMS), reference * 3);
+
+      // What one read of the zip unpacks to is handed on 256 KB at a time, with a
+      // turn for other work in between: 131,072 of these two-byte items, on any
+      // machine. (It was all of a read at once: over eight million.)
+      const whole = await least(2, async () => (await watch(reading(full).read)).wall);
+      const runs: Array<Watched<Awaited<ReturnType<typeof readExport>>>> = [];
+      for (let run = 0; run < 3; run += 1) {
+        const one = reading(long);
+        const watched = await watch(one.read, one.turned);
+        expect(one.counts().handed).toBe(UPLOAD_MAX_ITEMS);
+        expect(one.counts().mostInOneTurn).toBeLessThanOrEqual(140_000);
+        runs.push(watched);
       }
-      // 120 million items took 20 seconds and more, with stalls of over a second: now a bounded read, in short steps
-      expect(cpu).toBeLessThan(3_000);
-      expect(longest).toBeLessThan(250);
-      expect(handed).toBe(UPLOAD_MAX_ITEMS);
+      const report = runs[0]!.result;
+      // The longest stretch is a first read of a list (16 MB unpacked) and one
+      // slice of it parsed: about a twelfth of the reference read. It may be a third.
+      // (All of a read parsed at once was three times the whole reference read.)
+      expectNoLongStretch("the longest stretch of reading the long zip, against a third of the whole read of four million items", runs, () => whole / 3);
       expect(report.read).toEqual(["a/conversations.json", "b/conversations.json"]);
       expect(report.cut).toEqual(["a/conversations.json: stopped after its first 2,000,000 items", "b/conversations.json: stopped after its first 2,000,000 items"]);
       expect(report.refused).toEqual(["c", "d", "e", "f"].map((id) => `${id}/conversations.json: left unread: this upload holds more than 4,000,000 items in all`));
-    }, 300_000);
+    }, hostTimeout(300_000));
   });
 });

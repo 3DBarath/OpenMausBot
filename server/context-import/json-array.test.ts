@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { hostTimeout } from "../testing/host-timeout.ts";
+import { cpuOf, expectWithin, least } from "../testing/relative-time.ts";
 import { createArraySplitter, NotAListError } from "./json-array.ts";
 
 function split(text: string | Uint8Array, chunkBytes: number, maxElementBytes?: number) {
@@ -100,25 +102,47 @@ describe("splitting a JSON list", () => {
     }
   }, 180_000);
 
-  it("passes over a long run of whitespace quickly, wherever it is", () => {
-    // 192 MB of spaces and line breaks around three small elements: nothing to keep, so nothing to dwell on
-    const blank = Buffer.alloc(8 * 1024 * 1024, " \n\t\r");
-    const elements: unknown[] = [];
-    const splitter = createArraySplitter({ onElement: (element) => elements.push(JSON.parse(element.toString("utf8"))), onOversized: () => undefined });
-    const started = process.cpuUsage();
-    splitter.push(Buffer.from("["));
-    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
-    splitter.push(Buffer.from('{"a":1},'));
-    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
-    splitter.push(Buffer.from('"two" ,'));
-    for (let piece = 0; piece < 8; piece += 1) splitter.push(blank);
-    splitter.push(Buffer.from("3 ]"));
-    const spent = process.cpuUsage(started);
-    expect(elements).toEqual([{ a: 1 }, "two", 3]);
-    expect(splitter.closed()).toBe(true);
-    // processor time, so a busy machine does not decide: a quarter of a second for 192 MB
-    expect((spent.user + spent.system) / 1000).toBeLessThan(250);
-  });
+  // No bound here is a number of milliseconds: each is a multiple of what the
+  // same machine takes for a reference, measured in this test
+  // (server/testing/relative-time.ts).
+  it("passes over a long run of whitespace for a fraction of what content costs, in step with its length, wherever it is", async () => {
+    const MB = 1024 * 1024;
+    const blank = Buffer.alloc(8 * MB, " \n\t\r");
+    const filled = Buffer.alloc(8 * MB, "x");
+    /** The processor time to split a list with `pieces` times 8 MB of whitespace before, between and after three small elements. */
+    const whitespace = (pieces: number) => least(3, async () => (await cpuOf(() => {
+      const elements: unknown[] = [];
+      const splitter = createArraySplitter({ onElement: (element) => elements.push(JSON.parse(element.toString("utf8"))), onOversized: () => undefined });
+      splitter.push(Buffer.from("["));
+      for (let piece = 0; piece < pieces; piece += 1) splitter.push(blank);
+      splitter.push(Buffer.from('{"a":1},'));
+      for (let piece = 0; piece < pieces; piece += 1) splitter.push(blank);
+      splitter.push(Buffer.from('"two" ,'));
+      for (let piece = 0; piece < pieces; piece += 1) splitter.push(blank);
+      splitter.push(Buffer.from("3 ]"));
+      expect(elements).toEqual([{ a: 1 }, "two", 3]);
+      expect(splitter.closed()).toBe(true);
+    })).cpu);
+    /** …and to split as many bytes that each have to be looked at: the inside of one long string. */
+    const content = (pieces: number) => least(3, async () => (await cpuOf(() => {
+      let oversized = 0;
+      const splitter = createArraySplitter({ onElement: () => undefined, onOversized: () => { oversized += 1; } });
+      splitter.push(Buffer.from('["'));
+      for (let piece = 0; piece < 3 * pieces; piece += 1) splitter.push(filled);
+      splitter.push(Buffer.from('"]'));
+      expect(oversized).toBe(1);
+      expect(splitter.closed()).toBe(true);
+    })).cpu);
+    // 192 MB of spaces and line breaks around three small elements: nothing to keep, so nothing to dwell on.
+    const long = await whitespace(8);
+    // Whitespace between elements is passed over in a loop of its own, at about a
+    // quarter of what a byte of content costs. It may cost half. (Before it had
+    // that loop it cost nine tenths.)
+    expectWithin("192 MB of whitespace, against half of what 192 MB of content costs", long, (await content(8)) / 2);
+    // And four times the whitespace costs about four times as much. It may cost
+    // eight times; work that grew with the square of the size would cost sixteen.
+    expectWithin("192 MB of whitespace, against twice four times what 48 MB of it costs", long, (await whitespace(2)) * 4 * 2);
+  }, hostTimeout(60_000));
 
   it("stops for good when the caller says so: nothing after that element is handed over or looked at", () => {
     const seen: unknown[] = [];

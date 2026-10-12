@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { adoptConversations, adoptionPlan, type AdoptableConversation, type AdoptionFacts } from "./shared-notes-adopt.ts";
 import { cardProofId, ownerProofIds } from "./shared-notes-owner.ts";
 import { OwnerThreads } from "./shared-notes-threads.ts";
+import { expectNoLongStretch, watch, type Watched } from "./testing/relative-time.ts";
 
 const SINCE = 1_000_000;
 const OLD = SINCE - 5_000;
@@ -188,41 +189,29 @@ describe("adopting", () => {
   });
 
   it("does not hold the server up or keep what it read: it gives way between batches of conversations", async () => {
-    // 3,000 conversations of 120 lines, handed over one at a time and never kept
+    // 3,000 conversations of 120 lines, handed over one at a time and never kept.
+    // Three times over, with conversations of their own each time: the stretch
+    // that counts is the least of the three, since a busy machine only adds.
     const LINES = 120;
-    let turns = 0;
-    let readThisTurn = 0;
-    let mostReadInOneTurn = 0;
-    let worstStall = 0;
-    let last = performance.now();
-    let watching = true;
-    const tick = (): void => {
-      const now = performance.now();
-      worstStall = Math.max(worstStall, now - last);
-      last = now;
-      turns += 1;
-      readThisTurn = 0;
-      if (watching) setImmediate(tick);
-    };
-    function* offered(): Generator<AdoptableConversation> {
-      for (let index = 0; index < 3_000; index += 1) {
-        readThisTurn += LINES;
-        mostReadInOneTurn = Math.max(mostReadInOneTurn, readThisTurn);
-        yield conversation(Array.from({ length: LINES }, (_, line) => (line % 2 ? bot(`b${index}-${line}`) : mine(`m${index}-${line}`))), { threadId: `thread-${index}` });
+    const runs: Array<Watched<Awaited<ReturnType<typeof run>>>> = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let readThisTurn = 0;
+      let mostReadInOneTurn = 0;
+      function* offered(): Generator<AdoptableConversation> {
+        for (let index = 0; index < 3_000; index += 1) {
+          readThisTurn += LINES;
+          mostReadInOneTurn = Math.max(mostReadInOneTurn, readThisTurn);
+          yield conversation(Array.from({ length: LINES }, (_, line) => (line % 2 ? bot(`b${index}-${line}`) : mine(`m${index}-${line}`))), { threadId: `thread-${attempt}-${index}` });
+        }
       }
+      const watched = await watch(async () => run(offered()), () => { readThisTurn = 0; });
+      expect(watched.result.adopted).toBe(3_000);
+      // the rest of the server got a turn at least every 2,000 lines or so, whatever the machine's speed
+      expect(watched.turns).toBeGreaterThan(150);
+      expect(mostReadInOneTurn).toBeLessThanOrEqual(2_000 + LINES);
+      runs.push(watched);
     }
-    setImmediate(tick);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const before = turns;
-    last = performance.now();
-    worstStall = 0;
-    const result = await run(offered());
-    watching = false;
-    expect(result.adopted).toBe(3_000);
-    // the rest of the server got a turn at least every 2,000 lines or so, whatever the machine's speed
-    expect(turns - before).toBeGreaterThan(150);
-    expect(mostReadInOneTurn).toBeLessThanOrEqual(2_000 + LINES);
-    // and no stall came anywhere near the 1.25 s this took in one go
-    expect(worstStall).toBeLessThan(250);
+    // And no one stretch was a large part of the whole. (Done in one go, the one stretch was all of it.)
+    expectNoLongStretch("the longest stretch of adopting 3,000 conversations, against a third of the whole", runs, (one) => one.wall / 3);
   });
 });
