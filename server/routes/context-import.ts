@@ -21,15 +21,111 @@
 // allowlist (companion/src/routes.ts). No route here returns a
 // conversation's text: the export only ever leaves this server inside the
 // extraction prompt, to the engine the person picked.
+//
+// An upload that is refused (over the limit, no such import, an import that
+// has its file, a cancel while it arrives, a disk that is full, a sender who
+// is not the owner) is answered only once the rest of it has been read and
+// thrown away. An answer sent while the sender is still writing is lost
+// when the connection then closes under it: the bytes still on their way
+// reset it, on Windows always and elsewhere by the size of the upload, and
+// the person sees a network error instead of the reason. What is thrown
+// away is never stored and never held: it is read a piece at a time and
+// dropped. It is read up to a bound in bytes and in time (UPLOAD_DISCARD);
+// past that, the answer is sent and the connection closed as it stands,
+// which is all that can be done for a sender who will not stop.
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 
 import { ImportError, type ContextImport } from "../context-import/job.ts";
 import { listImportRecords, recordView } from "../context-import/records.ts";
 import type { RequestAuth } from "../request-auth.ts";
-import { IMPORT_ORIGINS, type ImportEngineChoice, type ImportOverview } from "../../shared/context-import.ts";
+import { IMPORT_ORIGINS, UPLOAD_MAX_BYTES, type ImportEngineChoice, type ImportOverview } from "../../shared/context-import.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 const PREFIX = "/api/context-import";
+
+/** How much of a refused upload is read and thrown away so that its answer can arrive. */
+export interface UploadDiscard {
+  /** At most this many bytes. An upload that says it has more left than this is not read on at all. */
+  maxBytes: number;
+  /** For at most this long in all. */
+  maxMs: number;
+  /** And never waiting longer than this for the sender's next bytes. */
+  idleMs: number;
+}
+
+/** Twice what an upload may hold: a file up to that size gets its reason
+ * however it is sent. A minute, and ten seconds for a sender that has gone
+ * quiet: on the computer itself or its network that is gigabytes. The same
+ * for everyone the route answers, the owner or not: whoever reaches it has
+ * signed in, and before this bound an unread upload was read to its end
+ * with no bound at all. */
+export const UPLOAD_DISCARD: UploadDiscard = { maxBytes: 2 * UPLOAD_MAX_BYTES, maxMs: 60_000, idleMs: 10_000 };
+
+/** The body of an upload, read through one iterator from its first byte to
+ * its last, whoever is reading: the import first, and after a refusal
+ * `discard`. When the import stops reading, the request is left exactly as
+ * it is (a loop over the request itself would destroy it, and the
+ * connection with it, the moment the import threw). */
+function uploadBody(req: IncomingMessage) {
+  const source = (req as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  let received = 0;
+  let ended = false;
+  let broken = false;
+  const next = async (): Promise<IteratorResult<Buffer, undefined>> => {
+    try {
+      const step = await source.next();
+      if (step.done) ended = true;
+      else received += step.value.length;
+      return step.done ? { done: true, value: undefined } : step;
+    } catch (error) {
+      broken = true;
+      throw error;
+    }
+  };
+  const stream: AsyncIterable<Buffer> = { [Symbol.asyncIterator]: () => ({ next, return: async () => ({ done: true, value: undefined }) }) };
+  return {
+    stream,
+    /** Read what is left of the upload and keep none of it, within `limits`.
+     * True when it was read to its end: the answer can then be sent on a
+     * connection with nothing left on its way. Never throws. */
+    async discard(limits: UploadDiscard): Promise<boolean> {
+      if (ended) return true;
+      if (broken || req.destroyed) return false;
+      const declared = Number(req.headers["content-length"]);
+      // it says how long it is, and that is more than will be read: not begun
+      if (Number.isFinite(declared) && declared - received > limits.maxBytes) return false;
+      const deadline = Date.now() + limits.maxMs;
+      let discarded = 0;
+      while (!ended) {
+        const wait = Math.min(limits.idleMs, deadline - Date.now());
+        if (wait <= 0 || discarded > limits.maxBytes) return false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const piece = next();
+        // too slow, or the sender went away: either way there is no more to wait for
+        const step = await Promise.race([piece, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), wait); })]).catch(() => null);
+        clearTimeout(timer);
+        if (step === null) {
+          piece.catch(() => undefined);
+          return false;
+        }
+        if (!step.done) discarded += step.value.length;
+      }
+      return true;
+    },
+  };
+}
+
+/** Before a refused upload is answered: read the rest of it and throw it
+ * away. Read to its end, the answer goes out on a quiet connection, which
+ * is then closed in the ordinary way. Otherwise the answer is sent and the
+ * connection is let go as it stands. */
+async function settleUpload(body: ReturnType<typeof uploadBody>, req: IncomingMessage, res: ServerResponse, limits: UploadDiscard): Promise<void> {
+  const whole = await body.discard(limits);
+  if (res.headersSent) return;
+  res.setHeader("connection", "close");
+  if (!whole) res.once("finish", () => req.destroy());
+}
 
 export interface ContextImportRouteDeps {
   /** Whether this request is the installation owner's (server/shared-notes-owner.ts). */
@@ -38,6 +134,9 @@ export interface ContextImportRouteDeps {
   /** Every bot, whether its engine can make the quick text call an import
    * uses, and whether that engine may keep its own record of the text. */
   engines(): Promise<ImportEngineChoice[]>;
+  /** How much of a refused upload is read and thrown away before it is
+   * answered. Absent: UPLOAD_DISCARD. */
+  uploadDiscard?: UploadDiscard;
 }
 
 const candidatePatch = z.object({
@@ -55,9 +154,16 @@ const candidatePatch = z.object({
 export function createContextImportRoutes(deps: ContextImportRouteDeps): RouteHandler {
   const number = (value: string | null): number | undefined => (value !== null && value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : undefined);
 
+  const discard = deps.uploadDiscard ?? UPLOAD_DISCARD;
+  const UPLOAD = /^\/api\/context-import\/[\w-]{1,64}\/file$/;
+
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
     if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) return PASS;
-    if (!auth.scopes.includes("admin") || !deps.owner(auth)) return json(res, 403, { error: "Only the owner of this installation can import what another assistant knows about them." });
+    if (!auth.scopes.includes("admin") || !deps.owner(auth)) {
+      // someone who may not upload is answered the same way: once what they sent has been read and thrown away
+      if (method === "PUT" && UPLOAD.test(path)) await settleUpload(uploadBody(req), req, res, discard);
+      return json(res, 403, { error: "Only the owner of this installation can import what another assistant knows about them." });
+    }
     try {
       if (path === PREFIX) {
         if (method === "GET") {
@@ -79,12 +185,14 @@ export function createContextImportRoutes(deps: ContextImportRouteDeps): RouteHa
       }
       if (action === "file" && method === "PUT") {
         const declared = number(req.headers["content-length"] ?? null);
+        const body = uploadBody(req);
         try {
-          return json(res, 200, { job: await deps.imports.receiveFile(id, req, declared) });
+          return json(res, 200, { job: await deps.imports.receiveFile(id, body.stream, declared) });
         } catch (error) {
-          // the rest of a refused upload is not read: answer, then let the connection go
-          res.setHeader("connection", "close");
-          res.once("finish", () => req.destroy());
+          // Refused, for whatever reason and at whatever point: the import has
+          // stopped storing. The rest is read and thrown away before the
+          // answer below goes out (the top of this file says why).
+          await settleUpload(body, req, res, discard);
           throw error;
         }
       }

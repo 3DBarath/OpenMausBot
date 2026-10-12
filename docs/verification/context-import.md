@@ -35,6 +35,13 @@ Evidence covers:
 - The import's own model calls ask the engine to keep no session and mount no tool (`server/context-import.e2e.test.ts` reads the fake engine's arguments), and the list of engines says this one keeps no record of the text (`keepsText: false`).
 - Started with a fake CLI that lacks the session option (`FAKE_CLAUDE_ISOLATION=0`), the list says the engine may keep the text (`keepsText: true`), and a pasted import is still read with it, without the option.
 
+`server/routes/context-import.test.ts` covers an upload that is refused, over a real connection written to a piece at a time:
+
+- The import refuses an upload part-way (over the limit): the answer is held back while the sender is still writing, the rest is read and thrown away, the `413` then arrives with `connection: close`, and the connection ends by an ordinary close with no error on the sender's side. Nothing of the upload is on disk at any point, and the import can still take a file.
+- Uploads of 65 KB to 24 MB get their reason, not a network error, for each refusal: over the limit (`413`), no such import (`404`), not the owner (`403`), an import that has its file or takes pasted text (`409`); and a cancel during an upload (`409`).
+- The bound: an upload that says it has more left than will be thrown away is answered at once and nothing more of it is read; one that does not say is read for about the bound; one that stalls is waited for as long as the bound says. Each is then answered and the connection closed.
+- 256 MB thrown away holds no more memory than one piece does (measured after a collection) and writes nothing.
+
 `server/shared-notes-owner.e2e.test.ts` covers whose turn it is:
 
 - A device paired with chat-only access edits its own message, and then the owner's message, and regenerates it: none of those turns is sent a shared note. The owner's own edit, at the computer and from a device paired with full access, still is.
@@ -202,6 +209,15 @@ these is a test gap; each is how it works.
 - **Restores from another installation.** The restore test puts an
   installation back from its own archive. A move between two computers and
   the desktop app's company backups use the same restore and were not run.
+- **The reset itself.** On this Mac an upload refused part-way lost its
+  answer for some sizes (`write EPIPE` for 5 MB) and kept it for others (65
+  KB); the tests above fail on the code from before the fix here. That the
+  65 KB case, which failed with `read ECONNRESET` on the Windows runner
+  only, now passes there can only be seen on that runner.
+- **Time on other machines.** Bounds on time in these tests are multiples of
+  a reference the same test measures (`server/testing/relative-time.ts`).
+  They were run on one Mac, idle and with every core busy. Set
+  `TEST_TIME_LOG` to a file to read the margins on another machine.
 - **The dialog.** `control-omb` does not drive Settings. The dialog's steps
   are rendered in unit tests; drive it by hand against a fixture to see it
   work (set `OMB_PORT` to the fixture's port before `pnpm dev`, so the UI

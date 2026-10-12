@@ -44,6 +44,11 @@ describe("the import dialog, step by step", () => {
     expect(words).toContain("deleted when you save or cancel");
     // nothing to upload yet
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Upload and scan/);
+    // a file over the limit is refused here, where it was chosen: its reason shows and it cannot be sent
+    const large = render(job({ status: "created" }), { fileName: "export.zip", tooLarge: true });
+    expect(large.words).toContain("That file is larger than 4 GB. Unzip it and choose the conversations.json from inside it by itself.");
+    expect(large.html).toMatch(/role="alert"[^>]*>That file is larger than 4 GB/);
+    expect(large.html).toMatch(/<button[^>]*disabled=""[^>]*>Upload and scan/);
     expect(render(job({ status: "created" }), { fileName: "export.zip" }).html).not.toMatch(/<button[^>]*disabled=""[^>]*>Upload and scan/);
   });
 

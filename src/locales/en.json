@@ -4050,6 +4050,7 @@
   "contextImport.file.title": "Choose the export",
   "contextImport.file.hint": "The zip from the email, or the conversations.json inside it. It is read on the computer running OpenMausBot and deleted when you save or cancel.",
   "contextImport.file.limit": "Up to 4 GB. If the zip is larger, unzip it and choose conversations.json by itself.",
+  "contextImport.file.tooLarge": "That file is larger than 4 GB. Unzip it and choose the conversations.json from inside it by itself.",
   "contextImport.file.time": "The upload has to arrive within {minutes} minutes. Over a slow connection, choose conversations.json by itself: it is much smaller than the zip.",
   "contextImport.expires": "An import you leave unfinished is deleted, with the export, after {days} days.",
   "contextImport.file.aria": "Export file",

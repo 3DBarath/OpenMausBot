@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ImportCandidate, ImportJobView } from "../../shared/context-import";
-import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes, reviewGroups } from "./context-import";
+import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes, reviewGroups, uploadTooLarge } from "./context-import";
 
 const job = (status: ImportJobView["status"]): ImportJobView => ({ id: "j", origin: "chatgpt", status });
 const fact = (text: string, over: Partial<ImportCandidate> = {}): ImportCandidate =>
@@ -57,6 +57,15 @@ describe("how numbers read", () => {
     expect(dayInputTime("2026-10-10", true)).toBe(new Date(2026, 9, 10, 23, 59, 59, 999).getTime());
     expect(dayInputTime("", false)).toBeNull();
     expect(dayInputTime("10/10/2026", true)).toBeNull();
+  });
+
+  // Said in the dialog when the file is chosen, before a byte is sent: the
+  // server refuses it too, but only once it has read all of it, or not at
+  // all when the file is more than twice the limit.
+  it("knows a file that is too large to upload before it is sent", () => {
+    expect(uploadTooLarge(4 * 1024 ** 3)).toBe(false);
+    expect(uploadTooLarge(4 * 1024 ** 3 + 1)).toBe(true);
+    expect(uploadTooLarge(0)).toBe(false);
   });
 
   it("shows megabytes", () => {

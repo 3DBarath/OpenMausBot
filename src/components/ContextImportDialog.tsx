@@ -5,7 +5,7 @@ import { X } from "lucide-react";
 import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { copyText } from "@/lib/copy-text";
-import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes } from "@/lib/context-import";
+import { dayInputTime, dayInputValue, estimateMinutes, importIsBusy, importStep, keptCounts, megabytes, uploadTooLarge } from "@/lib/context-import";
 import { AdoptConversations } from "./AdoptConversations";
 import { ContextImportReview } from "./ContextImportReview";
 import {
@@ -30,6 +30,8 @@ export interface ContextImportDraft {
   botId: string;
   busy: boolean;
   error: string;
+  /** The chosen file is over the upload limit: said at once, and it cannot be sent. */
+  tooLarge?: boolean;
   copied: boolean;
   /** Set once saved: the dialog's last page. */
   result: ImportSaveResult | null;
@@ -145,8 +147,9 @@ export function ContextImportPanel({ job, engines, draft, actions }: {
       <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("contextImport.file.time", { minutes: UPLOAD_MINUTES })}</p>
       <input type="file" accept=".zip,.json,application/zip,application/json" aria-label={t("contextImport.file.aria")} disabled={draft.busy}
         onChange={(event) => actions.chooseFile(event.target.files?.[0] ?? null)} className="mt-3 block w-full text-[13px] text-ink" />
+      {draft.tooLarge && <p role="alert" className="mt-3 text-[12.5px] text-danger">{t("contextImport.file.tooLarge")}</p>}
       {error}
-      <div className="mt-5 flex justify-between gap-2">{cancel}<button type="button" className={PRIMARY} disabled={draft.busy || !draft.fileName} onClick={actions.upload}>{t("contextImport.file.upload")}</button></div>
+      <div className="mt-5 flex justify-between gap-2">{cancel}<button type="button" className={PRIMARY} disabled={draft.busy || !draft.fileName || draft.tooLarge === true} onClick={actions.upload}>{t("contextImport.file.upload")}</button></div>
     </div>;
   }
 
@@ -375,9 +378,9 @@ export function ContextImportDialog({ onClose, onSaved }: { onClose: () => void;
   const actions: ContextImportActions = {
     pickOrigin: (origin) => edit({ origin }),
     begin: () => void send("/api/context-import", "POST", { source: draft.origin }),
-    chooseFile: (picked) => { file.current = picked; edit({ fileName: picked?.name ?? null, error: "" }); },
+    chooseFile: (picked) => { file.current = picked; edit({ fileName: picked?.name ?? null, tooLarge: picked !== null && uploadTooLarge(picked.size), error: "" }); },
     upload: () => {
-      if (!file.current || !job) return;
+      if (!file.current || !job || uploadTooLarge(file.current.size)) return;
       edit({ busy: true, error: "" });
       // shown as uploading at once; the poll then reads how far it is
       setJob({ ...job, status: "uploading", uploadedBytes: 0 });

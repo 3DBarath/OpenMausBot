@@ -2,7 +2,7 @@
 // which step to show, whether to keep asking how the job is doing, how the
 // proposed facts are grouped for review, and how dates and estimates read.
 // Pure, so it is tested without a browser.
-import type { ImportCandidate, ImportEstimate, ImportJobView } from "../../shared/context-import";
+import { UPLOAD_MAX_BYTES, type ImportCandidate, type ImportEstimate, type ImportJobView } from "../../shared/context-import";
 
 export type ImportStep = "source" | "provide" | "waiting" | "scan" | "progress" | "review" | "failed";
 
@@ -78,6 +78,14 @@ export function dayInputTime(value: string, end: boolean): number | null {
   if (!m) return null;
   const date = end ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999) : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   return Number.isFinite(date.getTime()) ? date.getTime() : null;
+}
+
+/** Whether a chosen file is larger than an upload may be. The dialog says
+ * so where the file is chosen, before a byte is sent: the server refuses it
+ * too (server/routes/context-import.ts), but can only say why once it has
+ * read the whole file, and does not read one of more than twice the limit. */
+export function uploadTooLarge(bytes: number): boolean {
+  return bytes > UPLOAD_MAX_BYTES;
 }
 
 export function megabytes(bytes: number): string {

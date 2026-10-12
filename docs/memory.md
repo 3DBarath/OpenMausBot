@@ -520,6 +520,14 @@ it saves goes to the owner's About me and shared notes.
    ChatGPT export may not hold its saved memories. An upload is at most 4 GB
    and has to arrive within 5 minutes, which is the server's limit for one
    request; over a slow connection, upload `conversations.json` by itself.
+   A file over 4 GB is refused in the dialog where you choose it, before any
+   of it is sent. An upload the server itself refuses (too large, an import
+   that already has its file, a cancel while it arrives, a full disk) is
+   read to its end and thrown away before the reason is sent, so that the
+   reason reaches you: an answer sent while a file is still on its way can
+   be lost with the connection, and shows as a network error. Nothing of a
+   refused upload is stored. It is read for at most 8 GB and a minute; past
+   that the connection is closed, and the reason may not arrive.
 2. **Scan.** No model is used. The export is read as a stream on the computer
    running OpenMausBot, one conversation at a time, and the dialog shows how
    many conversations it holds, the date range, and what reading them will
