@@ -10,12 +10,13 @@ The snapshot includes at most 50 recent user/assistant text messages and
 16,000 characters. Tool results and reasoning are excluded. The chip names
 the source and warns when earlier or longer messages were omitted. Source
 identity uses the existing canonical thread link; duplicate titles are not
-resolved by guessing. Context is quoted data and grants no additional access.
+resolved by guessing. Legacy peer-delivered requests keep their bot author
+instead of becoming user statements. Context is quoted data and grants no additional access.
 
 ## Isolated browser recipe
 
 ```sh
-pnpm exec vitest run src/lib/conversation-context.test.ts src/lib/composer-attachments.test.ts src/lib/drafts.test.ts
+pnpm exec vitest run src/lib/conversation-context.test.ts src/lib/composer-attachments.test.ts src/lib/drafts.test.ts src/components/ComposerAttachmentMenu.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/conversation-context-ui.e2e.test.ts
 ```
 
