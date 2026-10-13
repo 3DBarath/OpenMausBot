@@ -188,7 +188,7 @@ async function waitUntil(done: () => boolean, ms: number): Promise<void> {
   for (let waited = 0; waited < ms && !done(); waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
