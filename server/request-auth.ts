@@ -296,6 +296,8 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["GET"], path: /^\/api\/auth\/session$/ },
   { methods: ["POST"], path: /^\/api\/auth\/stream-ticket$/ },
   { methods: ["POST"], path: /^\/api\/auth\/logout$/ },
+  // own closed-app alert registration (routes/phone-push.ts keys it by this session)
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/api\/push\/device$/ },
   // Own outbound desktop connector, additionally bound to a private secret.
   // Only honoured while features.sharedComputers is on (see requiredScope):
   // with the feature off these paths are as unlisted as any other, so a

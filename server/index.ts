@@ -168,6 +168,7 @@ import {
   autoRecallEnabled,
   captureQuietMs,
   roomMemoryCaptureEnabled,
+  phonePushEnabled,
   tidyHour,
   sharedComputersEnabled,
   builtInBrowserEnabled,
@@ -603,6 +604,9 @@ import { createComputerRoutes } from "./routes/computers.ts";
 import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
+import { createPhonePushRoutes, phonePushIdentity } from "./routes/phone-push.ts";
+import { PhonePush, PhonePushAccessSource } from "./phone-push.ts";
+import { DEFAULT_COMPANION_CONTROL_PLANE_URL } from "../electron/companion-account-service.mjs";
 import { createUsageRoutes } from "./routes/usage.ts";
 import { createBotMessageRoutes } from "./routes/bot-messages.ts";
 import { createThreadRoutes } from "./routes/threads.ts";
@@ -1851,7 +1855,9 @@ function bookTurnUsage(row: Omit<UsageRow, "at" | "costSource">, tokensReported 
   const state = spendState(cfg, DATA_DIR);
   const alert = takeSpendAlert(DATA_DIR, state);
   if (alert && state) {
-    broadcast({ kind: "notify", notification: buildSpendNotification({ id: row.botId, name: row.botName }, notificationThreadId, spendAlertText(alert, state)) }, { adminOnly: true });
+    const notification = buildSpendNotification({ id: row.botId, name: row.botName }, notificationThreadId, spendAlertText(alert, state));
+    broadcast({ kind: "notify", notification }, { adminOnly: true });
+    void phonePush.dispatch(notification, { adminOnly: true });
   }
 }
 
@@ -2028,6 +2034,13 @@ const phoneSecrets = new PhoneSecretBridge(postDesktopPrivateMessage);
 // desktop app's answer (OMB_PRO_PLAN at spawn, then its message below), or
 // OMB_PRO_PLAN=1 on a server it did not start. A Cloud home always counts.
 const proPlan = new ProPlan({ cloudHome: CLOUD_HOME !== null });
+// The control-plane access closed-app phone alerts use: the desktop app's
+// message below, else `serve --tunnel`'s account file or a fleet's env.
+const phonePushAccess = new PhonePushAccessSource({
+  // server/tunnel.ts TUNNEL_CREDENTIALS_FILE (`openmausbot serve --tunnel`)
+  tunnelFile: join(DATA_DIR, "tunnel-account.json"),
+  defaultControlPlane: DEFAULT_COMPANION_CONTROL_PLANE_URL,
+});
 utilityParentPort?.on("message", (event) => {
   const message = event?.data;
   try {
@@ -2036,6 +2049,7 @@ utilityParentPort?.on("message", (event) => {
     if (browserCleanup.receive(message)) return;
     if (phoneSecrets.receive(message)) return;
     if (proPlan.receive(message)) return;
+    if (phonePushAccess.receive(message)) return;
     composio.applyManagedBrokerMessage(message);
   } catch (error) {
     console.error(`[desktop-sync] rejected private parent message: ${error instanceof Error ? error.message : String(error)}`);
@@ -4124,6 +4138,20 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
+// Closed-app phone alerts through the hosted relay (server/phone-push.ts),
+// with the access read above. Its callbacks read the SSE clients and
+// visibility lazily, at dispatch.
+const phonePush = new PhonePush({
+  file: join(DATA_DIR, "push-devices.json"),
+  access: () => phonePushAccess.current(),
+  enabled: () => phonePushEnabled(cfg),
+  live: (key) => Array.from(sseClients).some((client) => client.pushKey === key),
+  audience: phonePushAudience,
+  room: (notification) => {
+    const group = (notification.groupId ? store.group(notification.groupId) : undefined) ?? store.groupByThread(notification.threadId);
+    return group && !group.dm ? { id: group.id, name: group.name } : undefined;
+  },
+});
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
@@ -6643,6 +6671,9 @@ interface SseClient {
   viewer: Viewer;
   /** The bots and rooms this stream has been shown (bot-visibility.ts). */
   seen: StreamSeen;
+  /** The phone behind this stream, keyed as its push registration is
+   * (routes/phone-push.ts): while it is open, that phone gets no push. */
+  pushKey?: string;
 }
 const sseClients = new Set<SseClient>();
 
@@ -7091,7 +7122,24 @@ function notify(notification: Notification | null) {
   if (notification && QUIET_TURN_NEWS.has(notification.kind) && quietTurnThreads.has(notification.threadId)) return;
   // nested rather than spread — the frame's own `kind` names the frame,
   // exactly like {kind:"message", message} and {kind:"bot", bot}
-  if (notification) broadcast({ kind: "notify", notification });
+  if (!notification) return;
+  broadcast({ kind: "notify", notification });
+  // the same alert for a phone whose app is not open (server/phone-push.ts)
+  void phonePush.dispatch(notification);
+}
+
+/** Whether a registered phone may see this notification: the rule its event
+ * stream applies (broadcast and bot-visibility.ts), for a phone that has no
+ * stream open. A companion phone is the desktop owner's; a paired session
+ * is judged by its own scopes and email. */
+function phonePushAudience(key: string, notification: Notification, adminOnly: boolean): boolean {
+  if (key.startsWith("companion:")) return true;
+  const session = sessions.list().find((candidate) => `session:${candidate.id}` === key);
+  if (!session) return false;
+  if (session.scopes.includes("admin")) return true;
+  if (adminOnly) return false;
+  const visible = visibleTo({ kind: "member", ...(session.email ? { email: session.email } : {}) });
+  return visible.everything || (visible.thread(notification.threadId) && (!notification.botId || visible.bot(notification.botId)));
 }
 
 // Group threads: the fold needs to know WHO is talking — the turn engine
@@ -16958,6 +17006,8 @@ function configStatus() {
       roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
       // hand-edited config.json only; the thread menu offers Regenerate title from it
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
+      // closed-app phone alerts through the hosted relay; on unless switched off
+      phonePush: phonePushEnabled(cfg),
     },
     // first-run progress — not a secret; the app decides whether to show
     // the welcome tour from this, never from browser storage
@@ -17846,6 +17896,9 @@ const liveCalls = new LiveCallController({
 // check would only notice within 15 s). A paired phone's unpairing arrives
 // from the companion instead (POST /api/live/device-revoked).
 sessions.onSessionRevoked((sessionId) => liveCalls.sessionRevoked(sessionId));
+// ...and a revoked or expired phone stops getting closed-app alerts.
+sessions.onSessionRevoked((sessionId) => phonePush.forget(`session:${sessionId}`));
+ROUTES.push(createPhonePushRoutes({ push: phonePush }));
 ROUTES.push(createDataRoutes({
   bot: (id) => store.bot(id),
   engine: dataEngine,
@@ -17855,6 +17908,8 @@ ROUTES.push(createDataRoutes({
 }));
 ROUTES.push(createLiveRoutes({
   calls: liveCalls,
+  // the companion's notice that it unpaired a phone also ends its alerts
+  deviceRevoked: (device) => phonePush.forget(`companion:${device}`),
   resolveTarget: (botId, threadId) => {
     const bot = store.bot(botId);
     if (!bot) return null;
@@ -20970,6 +21025,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         },
       };
       if (auth.kind === "session") client.sessionId = auth.session.id;
+      const pushKey = phonePushIdentity(req, auth);
+      if (pushKey) client.pushKey = pushKey;
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",

@@ -106,6 +106,10 @@ describe("what the app may do", () => {
     ["POST", "/api/live/call/end"],
     ["GET", "/api/live/call"],
     ["PATCH", "/api/live/settings"],
+    // closed-app alerts: the phone's own APNs token (server/routes/phone-push.ts)
+    ["GET", "/api/push/device"],
+    ["PUT", "/api/push/device"],
+    ["DELETE", "/api/push/device"],
     ["GET", "/api/routines"],
     ["POST", "/api/routines"],
     ["PATCH", "/api/routines/routine_1"],

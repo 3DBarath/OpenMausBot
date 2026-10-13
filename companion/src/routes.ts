@@ -240,6 +240,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/api\/live\/call$/ },
   { method: "PATCH", path: /^\/api\/live\/settings$/ },
 
+  // Closed-app alerts: this phone's own APNs token, keyed by the device id
+  // the proxy attaches, never one in the body. The harness sends only
+  // content-free pushes through the hosted relay (server/phone-push.ts).
+  { method: "GET", path: /^\/api\/push\/device$/ },
+  { method: "PUT", path: /^\/api\/push\/device$/ },
+  { method: "DELETE", path: /^\/api\/push\/device$/ },
+
   // Routines create ordinary tasks using an existing agent configuration.
   // Webhook management remains explicitly denied below.
   { method: "GET", path: /^\/api\/routines$/ },

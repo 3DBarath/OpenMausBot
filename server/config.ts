@@ -343,6 +343,10 @@ const featureConfigSchema = z.object({
   /** Learn from group chats: memory upkeep also reads a member bot's room
    * turns. Off until explicitly enabled — see roomMemoryCaptureEnabled. */
   roomMemoryCapture: z.boolean().optional(),
+  /** Closed-app phone alerts: a notification also wakes a paired phone
+   * through the hosted relay (server/phone-push.ts). On unless explicitly
+   * switched off — see phonePushEnabled. */
+  phonePush: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -670,7 +674,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean };
+  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean; phonePush?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -895,6 +899,14 @@ export function autoRecallEnabled(cfg: AppConfig): boolean {
  * it either way (roomFeedsBot in server/index.ts). */
 export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
   return cfg.features?.roomMemoryCapture === true;
+}
+
+/** Closed-app phone alerts. On unless explicitly switched off; with no
+ * control-plane account on this harness nothing is sent either way. Each
+ * phone may also opt out on its own, and each bot's notification switch
+ * still decides whether there is an alert at all. */
+export function phonePushEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.phonePush !== false;
 }
 
 export const DEFAULT_CAPTURE_QUIET_MS = 2 * 60_000;

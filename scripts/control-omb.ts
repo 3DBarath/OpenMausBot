@@ -391,6 +391,14 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_OPENAI_LIVE_URL = liveUrl;
     if (parentEnv.OMB_OPENAI_LIVE_KEY) childEnv.OMB_OPENAI_LIVE_KEY = parentEnv.OMB_OPENAI_LIVE_KEY;
   }
+  // Closed-app phone alerts against server/testing/fake-control-plane.ts
+  // only: a loopback relay, and an installation credential that only ever
+  // reaches that fake (docs/verification/phone-push.md).
+  const controlPlane = parentEnv.OMB_CONTROL_PLANE_URL?.trim() ?? "";
+  if (/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(controlPlane)) {
+    childEnv.OMB_CONTROL_PLANE_URL = controlPlane;
+    if (parentEnv.OMB_INSTALLATION_CREDENTIAL) childEnv.OMB_INSTALLATION_CREDENTIAL = parentEnv.OMB_INSTALLATION_CREDENTIAL;
+  }
   // Live calls need Pro (electron/pro-plan.mjs): a recipe that starts calls
   // says so with OMB_PRO_PLAN=1, the way any server the desktop app did not
   // start does. Without it the fixture refuses a call with 402 needsPro.

@@ -87,6 +87,7 @@ import { createManagedDesktopClient, createManagedDesktopRelay, createManagedDes
 import { CHECKOUT_SOURCES, cloudMenuSublabel, cloudPlanSnapshot, createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
 import { createProPlanRelay } from "./pro-plan.mjs";
+import { createPhonePushRelaySync, phonePushRelayMessage } from "./phone-push-relay.mjs";
 import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
@@ -393,6 +394,9 @@ const serverSupervisor = createServerSupervisor({
     syncManagedComposioCredentials();
     // The Pro answer too: the Cloud sign-in may have changed since the spawn.
     syncProPlan();
+    // ...and the phone-push relay access, which a new child does not have.
+    phonePushRelaySync.reset();
+    syncPhonePushRelay();
     // A restarted runtime has no library catalog until main sends it again.
     orgLibrary?.runtimeReady();
     if (managedDesktop) void managedDesktop.refresh().catch(() => {});
@@ -743,6 +747,8 @@ export async function updateSecureCredentialDocument(derive, afterPersist) {
     return await secureCredentialState.update(derive, afterPersist);
   } finally {
     secureCredentials = secureCredentialState.read();
+    // a hosted sign-in, rotation or sign-out changes what phone push may use
+    syncPhonePushRelay();
   }
 }
 
@@ -1632,6 +1638,23 @@ function syncManagedComposioCredentials() {
   } catch (error) {
     slog(`connected-apps credential sync failed: ${error?.message ?? error}`);
   }
+}
+
+/** Closed-app phone alerts: the server reaches the push relay as this
+ * installation (electron/phone-push-relay.mjs). Sent only when it changed. */
+const phonePushRelaySync = createPhonePushRelaySync();
+function syncPhonePushRelay() {
+  const controlPlane = resolveCompanionControlPlaneURL({ isPackaged: app.isPackaged, environment: process.env });
+  phonePushRelaySync.sync(phonePushRelayMessage(secureCredentials, controlPlane), (message) => {
+    if (!serverProc) return false;
+    try {
+      serverProc.postMessage(message);
+      return true;
+    } catch (error) {
+      slog(`phone push relay sync failed: ${error?.message ?? error}`);
+      return false;
+    }
+  });
 }
 
 // The page is built at failure time (not import time): the message depends on

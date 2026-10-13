@@ -58,6 +58,7 @@ Use only mapped, tested commands:
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)
 - [Phone web app installation and safe areas](phone-web-app.md)
+- [Closed-app phone alerts through the push relay](phone-push.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
 - [In-chat team coordination](room-coordination.md)
