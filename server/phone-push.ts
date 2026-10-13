@@ -312,6 +312,8 @@ export class PhonePush {
     if (answer.code === PUSH_RELAY_ERRORS.unavailable) return this.pause(RELAY_UNAVAILABLE_PAUSE_MS, "failed");
     if (answer.status === 429) return this.pause(answer.retryAfterMs ?? RELAY_FAILURE_PAUSE_MS, "rate-limited");
     if (answer.status === 401) return this.pause(RELAY_UNAVAILABLE_PAUSE_MS, "failed");
+    // A control plane without the relay routes yet (deployed before them).
+    if (answer.status === 404 && answer.code !== PUSH_RELAY_ERRORS.unknownDevice) return this.pause(RELAY_UNAVAILABLE_PAUSE_MS, "failed");
     if (answer.status >= 500) return this.pause(RELAY_FAILURE_PAUSE_MS, "failed");
     return "failed";
   }

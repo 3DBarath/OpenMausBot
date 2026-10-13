@@ -200,6 +200,15 @@ describe("dispatching a notification", () => {
     expect(push.device("session:s1")).toBeNull();
   });
 
+  it("leaves a control plane without the relay routes alone for an hour", async () => {
+    const push = make();
+    await push.register("session:s1", { token: TOKEN_A, environment: "production" });
+    relay.answerNext("/v1/installations/self/push/send", 404, { error: "not_found" });
+    expect((await push.dispatch(approval()))[0]!.outcome).toBe("failed");
+    expect((await push.dispatch(approval({ threadId: "th_2" })))[0]!.outcome).toBe("paused");
+    expect(sends()).toHaveLength(1);
+  });
+
   it("leaves a relay without an APNs key alone for an hour", async () => {
     const push = make();
     await push.register("session:s1", { token: TOKEN_A, environment: "production" });
