@@ -1118,7 +1118,7 @@ export function Composer({
                 );
                 return;
               }
-              if ((e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) || e.key === "Tab") {
+              if ((e.key === "Enter" && !e.ctrlKey && !e.metaKey) || e.key === "Tab") {
                 e.preventDefault();
                 pickCommand(commandCandidates[highlight]);
                 return;
@@ -1136,7 +1136,7 @@ export function Composer({
                 setHighlight((h) => (h + delta + candidates.length) % candidates.length);
                 return;
               }
-              if ((e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) || e.key === "Tab") {
+              if ((e.key === "Enter" && !e.ctrlKey && !e.metaKey) || e.key === "Tab") {
                 e.preventDefault();
                 pickMention(candidates[highlight]);
                 return;

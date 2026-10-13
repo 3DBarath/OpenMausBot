@@ -202,6 +202,15 @@ describe("an input method in the composer's menus", () => {
     expect(sends()).toEqual([]);
   });
 
+  it("Shift+Enter picks the mention instead of sending the half-typed name", () => {
+    setSendKey("shift-enter");
+    render(createElement(Composer, { group: room, members: [{ ...bot, name: "山田" }] }));
+    type(textarea(), "@山田");
+    expect(press(textarea(), { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(textarea().value).toBe("@山田 ");
+    expect(sends()).toEqual([]);
+  });
+
   it("leaves it to the input method in the command menu too", () => {
     render(createElement(Composer, { group: room, members: [bot] }));
     type(textarea(), "/go");

@@ -727,7 +727,7 @@ posixOnly("mid-turn steering e2e", () => {
     expect(folded.sender).toEqual(PAIRED);
     expect(steered.body.messages[0].sender).toEqual(PAIRED);
     // and the person wrote them here, as if a drained turn had started with them
-    expect(askedAt(created.id, created.threadId)).toBe(folded.at);
+    expect(askedAt(created.id, created.threadId)).toBe(steered.body.messages.at(-1).at);
 
     await api("POST", `/api/bots/${created.id}/interrupt`);
     await waitFor(async () => (await getBot(created.id)).busy === false, "the queue-steered turn to settle");
