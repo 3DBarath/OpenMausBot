@@ -33,7 +33,7 @@ describe("credentials", () => {
 });
 
 describe("what the app may do", () => {
-  // Every request in ios/Sources/CompanionCore/Client.swift. If one of these
+  // Every request the phone apps make. If one of these
   // fails, a screen on the phone is broken.
   const calls: Array<[string, string]> = [
     ["GET", "/api/health"],
@@ -124,6 +124,8 @@ describe("what the app may do", () => {
     ["POST", "/api/bots/bot_123/connector-cards/msg_2/dismiss"],
     ["POST", "/api/bots/bot_123/secret-cards/msg_2/resume"],
     ["POST", "/api/bots/bot_123/secret-cards/msg_2/dismiss"],
+    ["POST", "/api/bots/bot_123/sign-in-cards/msg_3/done"],
+    ["POST", "/api/bots/bot_123/sign-in-cards/msg_3/cancel"],
   ];
 
   for (const [method, path] of calls) {
@@ -273,6 +275,8 @@ describe("what it may not", () => {
     expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(true);
     expect(allowed("DELETE", "/api/connectors/slack/accounts/../gmail")).toBe(false);
     expect(allowed("POST", "/api/bots/bot_123/secret-cards/msg_2/provided")).toBe(false);
+    expect(allowed("POST", "/api/bots/bot_123/sign-in-cards/msg_3/resume")).toBe(false);
+    expect(allowed("GET", "/api/bots/bot_123/sign-in-cards/msg_3/done")).toBe(false);
     expect(allowed("PATCH", "/api/groups/room-1")).toBe(false);
   });
 

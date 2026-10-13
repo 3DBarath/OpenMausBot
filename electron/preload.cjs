@@ -14,11 +14,26 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// A chat link opened from outside the app. Held until the page subscribes,
+// then handed over once: replaying it to a remounted listener would yank the
+// person back to that chat.
+let pendingChatLink = null;
+const chatLinkListeners = new Set();
+ipcRenderer.on("chat:open", (_event, link) => {
+  if (typeof link !== "string") return;
+  if (!chatLinkListeners.size) {
+    pendingChatLink = link;
+    return;
+  }
+  for (const listener of chatLinkListeners) listener(link);
+});
+
 // Main can finish loading the document before React subscribes. Retain only
-// the fixed actions (Organisation, the openmausbot://cloud link, and plain
-// Settings → OMB Cloud from the lending menu-bar item), never a destination
-// supplied by a renderer.
-const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings"]);
+// the fixed actions (Organisation, the openmausbot://cloud link, plain
+// Settings → OpenMausBot Cloud from the lending menu-bar item, and the Add a
+// Cloud dialog from the server menu, plain or reached through Show me how),
+// never a destination supplied by a renderer.
+const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings", "cloud-add", "cloud-add-howto"]);
 let pendingSettingsAction = null;
 const appSettingsListeners = new Set();
 ipcRenderer.on("app:open-settings", (_event, section) => {
@@ -35,17 +50,30 @@ ipcRenderer.on("app:open-settings", (_event, section) => {
 // helpers here. Main enforces the same rule on the sensitive channels.
 const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
 const isLocalPage = !localOrigin || location.origin === localOrigin;
-// cloudMove, cloudLending and cloudPlan: main answers them on a remote page
-// only when that page is the person's own verified Cloud in this window (Move
-// to Cloud's card, the Cloud's setup checklist, and its Settings' plan line).
+// cloudMove: main answers a remote page about that page's own server only,
+// while it is this window's active server (Copy this computer here's card and
+// its Settings → Backups); its Copy opens this computer's Settings on that
+// server's copy, except on the person's own verified Cloud. cloudLending and
+// cloudPlan: only that verified Cloud (its setup checklist, its plan line).
+/** A saved server's id, forwarded only from this computer's own page. */
+const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
 const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
+// updater: this app's updates, so the person sees "Restart to update" on My
+// Cloud too; a remote page restarts only on a click. Main says, once as the
+// page loads, whether it answers this page: pages built before it answered My
+// Cloud read the bridge alone as "You're up to date", so no other server's
+// page gets it. Main always answers, false on any doubt.
+function updaterOffered() {
+  try { return ipcRenderer.sendSync("update:offered") === true; } catch { return false; }
+}
+const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : [])]);
 
 // Sandboxed preload cannot import TS or sibling modules. Keep this list in
 // parity with shared/workspace-backup-client.ts (covered by the preload test).
 // Only main can request a fresh snapshot; there is no renderer-callable method.
 const COMPANY_BACKUP_CLIENT_KEYS = [
   "omb-drafts", "omb-draft-attachments", "omb-draft-send-ids", "omb-draft-channel-modes",
-  "omb-skin", "omb-show-threads", "omb-show-run-card", "openmausbot.sidebarDensity",
+  "omb-skin", "omb-show-threads", "omb-show-run-card", "omb-send-key", "omb-color-user-bubbles", "openmausbot.sidebarDensity",
   "openmausbot.sidebarCollapsedSections.v1", "openmausbot.sidebarSectionOrder.v1",
   "omb-analytics-opt-out", "openmausbot.remote-voice.v1",
 ];
@@ -75,7 +103,8 @@ const bridge = {
   // Electron. No direct switching, saved-list reads, host files or secrets.
   workspaces: {
     state: () => ipcRenderer.invoke("workspaces:state"),
-    menu: () => ipcRenderer.invoke("workspaces:menu"),
+    // `from: "howto"` only says the Show me how tip opened it; nothing else passes.
+    menu: (options) => ipcRenderer.invoke("workspaces:menu", ...(options?.from === "howto" ? ["howto"] : [])),
   },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {
@@ -119,6 +148,7 @@ const bridge = {
     requestCode: (email) => ipcRenderer.invoke("companion-account:request-code", email),
     verifyCode: (email, code) => ipcRenderer.invoke("companion-account:verify-code", email, code),
     retry: () => ipcRenderer.invoke("companion-account:retry"),
+    prepare: () => ipcRenderer.invoke("companion-account:prepare"),
     signOut: () => ipcRenderer.invoke("companion-account:sign-out"),
   },
   /** Full/Custom and transitions out of Custom are deliberately unavailable
@@ -192,6 +222,9 @@ const bridge = {
   /** Copies an engine install command and opens a blank terminal. Resolves
    * false if no terminal could be launched; the clipboard still has it. */
   openInstallTerminal: (command) => ipcRenderer.invoke("engine:open-terminal", command),
+  /** Writes plain text to the system clipboard; the copy button's fallback
+   * when the web Clipboard API is rejected. Resolves false on failure. */
+  copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   /** Open a web link in the default browser. Unlike renderer window.open,
    * this remains reliable after an asynchronous API request. */
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
@@ -216,6 +249,17 @@ const bridge = {
     packageInstallListeners.add(cb);
     if (pendingPackageInstallUrl) cb(pendingPackageInstallUrl);
     return () => packageInstallListeners.delete(cb);
+  },
+  /** A chat link (openmausbot://thread/… or openmausbot://bot/…) opened from
+   * outside the app. */
+  onChatLink: (cb) => {
+    chatLinkListeners.add(cb);
+    if (pendingChatLink) {
+      const link = pendingChatLink;
+      pendingChatLink = null;
+      cb(link);
+    }
+    return () => chatLinkListeners.delete(cb);
   },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),
@@ -257,17 +301,21 @@ const bridge = {
       const message = String(error?.message ?? error);
       throw new Error(message.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),
+  /** Point the file manager at a file a bot linked outside its workspace,
+   * without opening it. Resolves "shown", "missing" or "invalid". */
+  revealInFolder: (filePath) => ipcRenderer.invoke("desktop:reveal-file", filePath),
   /** Store a provider credential with OS-backed encryption. */
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
 
-  /** In-app auto-update. State object:
-   *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
+  /** In-app auto-update. Updates download by themselves; install is the
+   *  person's "Restart to update". State object:
+   *  { status: "idle"|"checking"|"downloading"|"preparing"|"downloaded"|"installing"|"handed-off"|"error",
    *    version?, percent?, message? }. onState fires immediately with the
    *    current state, then on every transition. Dormant in dev (no bridge). */
   updater: {
     check: () => ipcRenderer.invoke("update:check"),
-    download: () => ipcRenderer.invoke("update:download"),
-    install: () => ipcRenderer.invoke("update:install"),
+    install: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("update:install") : Promise.reject(new Error("Choose Restart to update.")),
     onState: (cb) => {
       ipcRenderer
         .invoke("update:get-state")
@@ -279,16 +327,21 @@ const bridge = {
     },
   },
 
-  /** Saved servers and the active one (Server menu). Switching, adding and
-   * forgetting are local-only: a remote page may read the list but not change
-   * where this window goes. */
+  /** Saved servers, this computer's named local environments, and the active
+   * one (Server menu). Switching, creating, adding and forgetting are
+   * local-only: a remote page may read the list but not change where this
+   * window goes. */
   environments: {
     state: () => ipcRenderer.invoke("environments:state"),
     switch: (id) => ipcRenderer.invoke("environments:switch", id),
     addFromLink: (link, name) => ipcRenderer.invoke("environments:add-from-link", link, name),
-    forget: (id) => ipcRenderer.invoke("environments:forget", id),
+    create: (name, dataDir) => ipcRenderer.invoke("environments:create", name, dataDir),
+    pickDir: () => ipcRenderer.invoke("environments:pick-dir"),
+    forget: (id, purge) => ipcRenderer.invoke("environments:forget", id, purge === true),
+    /** Settings → Servers, on a saved server's Computer access panel, or
+     * ("copy") its Copy this computer here panel. */
     onOpenSettings: (cb) => {
-      const handler = (_event, computerId) => cb(computerId);
+      const handler = (_event, computerId, panel) => cb(computerId, panel === "copy" ? "copy" : undefined);
       ipcRenderer.on("workspaces:open-settings", handler);
       return () => ipcRenderer.removeListener("workspaces:open-settings", handler);
     },
@@ -302,6 +355,10 @@ const bridge = {
     refresh: () => ipcRenderer.invoke("cloud-account:refresh"),
     signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
     openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
+    // What this person may buy now; no arguments.
+    offer: () => ipcRenderer.invoke("cloud-account:offer"),
+    // A checkout for one of the offer's plans, opened by main in the browser; main checks both.
+    checkout: (plan, source) => ipcRenderer.invoke("cloud-account:checkout", String(plan), String(source)),
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
     connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
     onState: cb => {
@@ -317,16 +374,19 @@ const bridge = {
       stop: () => ipcRenderer.invoke("lending:stop"),
     },
   } : undefined,
-  /** Move to Cloud: this computer's workspace to the person's Cloud home.
-   * No arguments reach main. A remote page may start a move only from the
-   * person's own click. */
+  /** Copy this computer here: this computer's workspace to a server the
+   * person added (their Cloud included). Only this computer's own page names
+   * where (a saved server's id, or "cloud"); a server's page names nothing,
+   * main answers it about itself, and its Copy (only from the person's own
+   * click) opens this computer's Settings on that copy, or, on the verified
+   * Cloud, starts it. */
   cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
-    state: () => ipcRenderer.invoke("cloud-move:state"),
-    start: () => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Move to start moving.")),
+    state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
+    start: id => isLocalPage ? ipcRenderer.invoke("cloud-move:start", ...savedServer(id))
+      : navigator.userActivation?.isActive === true ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Copy to start copying.")),
     cancel: () => ipcRenderer.invoke("cloud-move:cancel"),
-    restorePrevious: () => ipcRenderer.invoke("cloud-move:restore-previous"),
-    dismiss: () => ipcRenderer.invoke("cloud-move:dismiss"),
+    restorePrevious: id => ipcRenderer.invoke("cloud-move:restore-previous", ...savedServer(id)),
+    dismiss: id => ipcRenderer.invoke("cloud-move:dismiss", ...savedServer(id)),
     onState: cb => {
       const handler = (_event, state) => cb(state);
       ipcRenderer.on("cloud-move:state-changed", handler);
@@ -340,14 +400,17 @@ const bridge = {
     open: () => ipcRenderer.invoke("cloud-lending:open"),
   } : undefined,
   /** The plan, read only, in Settings on the person's own Cloud: its name and
-   * whether it is active, Manage (the Cloud dashboard in the browser) and
-   * back to this computer. No arguments; a remote page acts only on a click. */
+   * whether it is active, Manage (the Plan page in the browser) and
+   * back to this computer. No arguments; a remote page acts only on a click.
+   * Also the free trial's popup, on this computer's page and the Cloud's:
+   * noticeSeen says the notice due now was shown (main knows which). */
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),
     manage: () => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Cloud dashboard.")),
+      ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Plan page.")),
     useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
+    noticeSeen: () => ipcRenderer.invoke("cloud-plan:notice-seen"),
   } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),
@@ -390,5 +453,5 @@ const bridge = {
 
 contextBridge.exposeInMainWorld(
   "ogb",
-  isLocalPage ? bridge : Object.fromEntries(Object.entries(bridge).filter(([key]) => REMOTE_SAFE.has(key))),
+  isLocalPage ? bridge : Object.fromEntries(Object.entries(bridge).filter(([key]) => remoteKeys.has(key))),
 );

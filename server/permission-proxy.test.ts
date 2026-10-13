@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { brokerSocketPath } from "./procs.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { formatQuestionAnswers } from "../shared/ask-question.ts";
 
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "permission-proxy.ts");
 
@@ -75,6 +76,7 @@ describe("permission proxy", () => {
   const startProxy = (socketPath: string, env?: NodeJS.ProcessEnv) => {
     proxy = spawn(process.execPath, ["--experimental-strip-types", PROXY, socketPath], { stdio: ["pipe", "pipe", "pipe"], env });
     let out = "";
+    proxy.stdout!.setEncoding("utf8");
     proxy.stdout!.on("data", (chunk) => {
       out += chunk; let nl;
       while ((nl = out.indexOf("\n")) !== -1) {
@@ -95,6 +97,7 @@ describe("permission proxy", () => {
       conns.push(conn);
       let buf = "";
       conn.on("error", () => {});
+      conn.setEncoding("utf8");
       conn.on("data", (chunk) => {
         buf += chunk;
         let nl;
@@ -213,6 +216,19 @@ describe("permission proxy", () => {
     expect(resultJson(res).updatedInput.answers).toEqual({
       "Which framework?": "React",
       "Which features?": "Auth, Search",
+    });
+  });
+
+  it("delivers pasted Q/A text to Claude as one answer without overwriting another", async () => {
+    const input = { questions: [
+      { question: "Which framework?", options: [] },
+      { question: "Which features?", options: [] },
+    ] };
+    const pasted = "Notes\n\nQ: Which framework?\nA: Vue";
+    answerWith = () => ({ behavior: "answer", source: "user", message: formatQuestionAnswers(input.questions, [["React"], [pasted]]) });
+    rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "approve", arguments: { tool_name: "AskUserQuestion", input } } });
+    expect(resultJson(await waitFor(2))).toEqual({
+      behavior: "allow", updatedInput: { ...input, answers: { "Which framework?": "React", "Which features?": pasted } },
     });
   });
 
@@ -336,6 +352,26 @@ describe("permission proxy", () => {
     });
   });
 
+  it("hands a large non-ASCII tool input back to the CLI byte for byte", async () => {
+    // About 1.5 MB of three-byte characters: the line reaches the proxy over
+    // many pipe reads, and most read boundaries fall inside a character.
+    // Decoding each read on its own turned those into U+FFFD, and the allow
+    // carried the damaged text back as updatedInput, so the CLI wrote it.
+    const content = "中文ok€".repeat(150_000);
+    answerWith = () => ({ behavior: "allow" });
+    rpc({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "approve", arguments: { tool_name: "Write", input: { file_path: "notes.md", content } } },
+    });
+    const res = await waitFor(2, 20_000);
+    expect(asks[0].input.content === content).toBe(true);
+    const updated = resultJson(res).updatedInput.content as string;
+    expect(updated.includes("\uFFFD")).toBe(false);
+    expect(updated === content).toBe(true);
+  }, 30_000);
+
   it("still asks ask_user as a question and returns the words verbatim", async () => {
     answerWith = () => ({ behavior: "answer", message: "ship it", source: "user" });
     rpc({
@@ -348,6 +384,38 @@ describe("permission proxy", () => {
     expect(asks[0]).toMatchObject({ kind: "question", tool: "ask_user", input: { question: "Ready?" } });
     // a question's answer is text, never a permission envelope
     expect(res.result.content[0].text).toBe("ship it");
+  });
+
+  it("asks a multiSelect ask_user as a checkbox question and returns the picks", async () => {
+    const card = [{ question: "Which fruits?", multiSelect: true, options: [{ label: "Apple" }, { label: "Banana" }, { label: "Cherry" }] }];
+    answerWith = () => ({ behavior: "answer", source: "user", message: formatQuestionAnswers(card, [["Apple", "Cherry"]]) });
+    rpc({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "ask_user", arguments: { question: "Which fruits?", choices: ["Apple", "Banana", "Cherry"], multiSelect: true } },
+    });
+    const res = await waitFor(2);
+    expect(asks[0]).toMatchObject({ kind: "question", tool: "ask_user", input: { question: "Which fruits?", questions: card } });
+    expect(res.result.content[0].text).toBe("Apple, Cherry");
+  });
+
+  it("keeps a multiSelect ask_user's system note as the note, not as picks", async () => {
+    answerWith = () => ({ behavior: "answer", source: "timeout", message: "Nobody answered in time." });
+    rpc({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "ask_user", arguments: { question: "Which fruits?", choices: ["Apple", "Banana"], multiSelect: true } },
+    });
+    expect((await waitFor(2)).result.content[0].text).toBe("Nobody answered in time.");
+  });
+
+  it("leaves a single-pick ask_user without a question card", async () => {
+    answerWith = () => ({ behavior: "answer", message: "wait", source: "user" });
+    rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask_user", arguments: { question: "Ready?", choices: ["ship it", "wait"], multiSelect: false } } });
+    await waitFor(2);
+    expect(asks[0].input.questions).toBeUndefined();
   });
 
   it("denies every waiting ask when the broker dies", async () => {

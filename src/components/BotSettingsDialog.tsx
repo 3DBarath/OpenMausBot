@@ -57,17 +57,19 @@ export function BotSettingsDialog({ bot, overlay = false }: {
   const dialogRef = useRef<HTMLElement | null>(null);
   // Windows draws its caption buttons over the top-right corner, where this
   // panel's close button sits; drop the header below them.
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const [query, setQuery] = useState("");
   // Keep expansion in the store too: header deep links can arrive while
   // this panel is already mounted, including after collapsing the same row.
   const collapsed = !state.botSettingsExpandAccordion;
   const q = query.trim().toLowerCase();
-  // Simple mode opens on the short Details/Library panel; "All settings"
+  // Simple mode opens on the short tabbed panel; "All settings"
   // (or a deep link to a section it does not cover) switches to the full
   // fold-out view for this opening only — App remounts the panel per open.
   const advanced = useAdvancedMode();
-  const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section);
+  // A remembered opening expands its row but never forces the full view:
+  // non-advanced profiles keep opening the short tabbed panel.
+  const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section) && !state.botSettingsExpandRemembered;
   const [showAll, setShowAll] = useState(wantsFullView);
   useEffect(() => {
     if (wantsFullView) setShowAll(true);
@@ -365,6 +367,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
             bot={bot}
             derived={derived}
             headerClassName={padClass}
+            slackUrl={slackUrl}
             onClose={() => dispatch({ type: "toggleSettings", open: false })}
             onAllSettings={() => setShowAll(true)}
             onAddSkill={() => {
@@ -384,7 +387,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
             {t("botSettings.simple.back")}
           </button>
         )}
-        <div className={cn("flex shrink-0 items-center justify-between px-4 py-3", !advanced ? undefined : padClass)}>
+        <div {...dragProps} className={cn("flex shrink-0 items-center justify-between px-4 py-3", !advanced ? undefined : padClass)}>
           <span id="bot-settings-title" className="truncate text-[15px] font-semibold text-ink">
             {bot.name}
           </span>

@@ -56,6 +56,13 @@ test("exposes the full local-shell bridge on window.ogb", () => {
   assert.equal(typeof exposed.api.onOpenAppSettings, "function");
 });
 
+test("copyText forwards only the text over the explicit clipboard:write-text channel", async () => {
+  const before = invocations.length;
+  await exposed.api.copyText("hello");
+  assert.deepEqual(invocations.slice(before), [["clipboard:write-text", "hello"]]);
+  assert.equal("ipcRenderer" in exposed.api, false);
+});
+
 test("browser control forwards a separate per-device capability, not the cloud grant", async () => {
   const before = invocations.length;
   await exposed.api.companion.browserControl("phone-1", true);
@@ -64,6 +71,12 @@ test("browser control forwards a separate per-device capability, not the cloud g
     ["companion:browser-control", "phone-1", true],
     ["companion:browser-control", "phone-1", false],
   ]);
+});
+
+test("account prepare asks for the secure address over its own channel and sends nothing from the page", async () => {
+  const before = invocations.length;
+  await exposed.api.companionAccount.prepare({ endpoint: "https://evil.example.test" });
+  assert.deepEqual(invocations.slice(before), [["companion-account:prepare"]]);
 });
 
 test("onOpenAppSettings subscribes to the exact app:open-settings channel, forwards every emit, and unsubscribes cleanly", () => {

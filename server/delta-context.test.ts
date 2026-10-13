@@ -6,6 +6,7 @@ import {
   UNSEEN_MAX_BYTES,
   UNSEEN_MAX_MESSAGES,
   handedStateUsable,
+  isContextMessage,
   recordHanded,
   renderUnseen,
   sessionStart,
@@ -255,6 +256,24 @@ describe("Handoffs", () => {
     expect(f.records.get("claude")).toMatchObject({ session: "new", config: "c2", through: "m4" });
   });
 
+  it("keeps the last effort a session's thread was sent until a turn sends another", () => {
+    const f = setup(ids(3));
+    f.start({ effort: null, carried: ["m0"], started: { sent: ["m0"] } });
+    f.event({ type: "session.started", sessionId: "s" });
+    f.event(output);
+    f.event({ type: "turn.completed", ok: true });
+    expect(f.records.get("claude")).toEqual({ session: "s", config: "c", effort: null, through: "m0", ids: [] });
+    f.start({ resumeCursor: "s", effort: "high", carried: ["m1"] });
+    f.event(output);
+    f.event({ type: "turn.completed", ok: true });
+    expect(f.records.get("claude")).toEqual({ session: "s", config: "c", effort: "high", through: "m1", ids: [] });
+    // a turn that sends none leaves the thread on its last level
+    f.start({ resumeCursor: "s", effort: null, carried: ["m2"] });
+    f.event(output);
+    f.event({ type: "turn.completed", ok: true });
+    expect(f.records.get("claude")).toEqual({ session: "s", config: "c", effort: "high", through: "m2", ids: [] });
+  });
+
   it("does not credit a steer written before a replacement session to that session", () => {
     // m6 = the turn's message, m7 = the steer, stored after the rebuild was built
     const order = ids(8);
@@ -362,4 +381,24 @@ describe("randomized record sequences", () => {
       expect(state).toEqual({ session: "s", through: order.at(-1), ids: [] });
     });
   }
+});
+
+describe("isContextMessage", () => {
+  it("is what a provider reads: text, compaction records and room results, never a Live call's row", () => {
+    expect(isContextMessage({ kind: "text", text: "what is six times seven" })).toBe(true);
+    expect(isContextMessage({ kind: "text", text: "" })).toBe(false);
+    expect(isContextMessage({ kind: "compaction" })).toBe(true);
+    expect(isContextMessage({ kind: "text", roomRequest: { id: "r1", phase: "result" } })).toBe(true);
+    expect(isContextMessage({ kind: "activity", text: "Bash" })).toBe(false);
+    expect(isContextMessage({ kind: "call", text: "Call with Ada · 0:42" })).toBe(false);
+  });
+
+  it("keeps a digest row, and only one that carries its digest", () => {
+    expect(isContextMessage({
+      kind: "digest",
+      text: "[digest] · tools: Write ×1",
+      digest: { turnId: "t1", botId: "b1", threadId: "th1", at: 1, durationMs: 100, tools: [], memory: [], reply: "Done.", hookCoverage: "none" },
+    })).toBe(true);
+    expect(isContextMessage({ kind: "digest", text: "[digest] · tools: Write ×1" })).toBe(false);
+  });
 });

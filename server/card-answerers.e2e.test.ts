@@ -14,6 +14,8 @@
 //   6. the decision row and the card both name who answered
 //   7. with service loopback trust, a session-less local caller (the Slack
 //      worker) may decline a card but never approve one
+//   8. Undo on a change that applied without a person follows the same
+//      rule: the member who started the thread may, another member may not
 //
 // No new card, prompt or gate appears anywhere: the provider's own approval
 // is the card, and these only decide whose answer it accepts.
@@ -195,7 +197,9 @@ posixOnly("who may answer a card on a shared workspace", () => {
     const opener = await makeBot("Opener");
     const helper = await makeBot("Helper");
     const source = await cardFrom(opener, opener.threadId, ADA);
-    // The opener, mid-way through Ada's request, hands work to a teammate in a fresh thread.
+    // The opener, mid-way through Ada's request, hands work to a teammate in
+    // a fresh thread (the threads route: coordinate_bots with thread "new",
+    // an assignment on the job runtime, opened for the same person).
     const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
       method: "POST", headers: { "content-type": "application/json", "x-openmausbot-test-capability": CAPABILITY_KEY },
       body: JSON.stringify({ botId: opener.id, threadId: opener.threadId }),
@@ -206,17 +210,19 @@ posixOnly("who may answer a card on a shared workspace", () => {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ toBotId: helper.id, title: "Helper job", message: "run it" }),
     });
-    const openedBody = await opened.json() as { threadId: string };
-    expect(opened.status, JSON.stringify(openedBody)).toBe(201);
-    // Ada approves her own request; the opener's turn ends and the handoff runs.
+    const openedBody = await opened.json() as { receipts: Array<{ threadId: string; outcome: string }> };
+    expect(opened.status, JSON.stringify(openedBody)).toBe(200);
+    expect(openedBody.receipts[0]).toMatchObject({ outcome: "queued", threadId: expect.any(String) });
+    const helperThreadId = openedBody.receipts[0]!.threadId;
+    // Ada approves her own request; the handoff's turn runs in the thread opened for her.
     expect((await api("POST", `/api/threads/${opener.threadId}/respond`, { requestId: source, behavior: "allow" }, ADA)).status).toBe(200);
-    const delegated = await openCard(openedBody.threadId);
+    const delegated = await openCard(helperThreadId);
     expect(delegated, `the handoff never asked:\n${log.slice(-2_000)}`).not.toBeNull();
     const requestId = delegated.card.requestId as string;
-    const refused = await api("POST", `/api/threads/${openedBody.threadId}/respond`, { requestId, behavior: "allow" }, BOB);
+    const refused = await api("POST", `/api/threads/${helperThreadId}/respond`, { requestId, behavior: "allow" }, BOB);
     expect(refused.status).toBe(403);
     expect(refused.body.error).toMatch(refusal);
-    expect((await api("POST", `/api/threads/${openedBody.threadId}/respond`, { requestId, behavior: "allow" }, ADA)).status).toBe(200);
+    expect((await api("POST", `/api/threads/${helperThreadId}/respond`, { requestId, behavior: "allow" }, ADA)).status).toBe(200);
     expect((await decision(requestId, "user-approved"))?.actor).toMatchObject({ kind: "session", email: ADA });
   }, 90_000);
 
@@ -242,6 +248,31 @@ posixOnly("who may answer a card on a shared workspace", () => {
     expect((await settledCard(bot.threadId, second))?.card.answeredBy).toEqual({ kind: "loopback" });
   }, 90_000);
 
+  it("lets whoever may answer a card undo its receipt, and no other member", async () => {
+    const bot = await makeBot("Undone");
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Bob's thread" }, BOB);
+    expect(task.status).toBe(201);
+    const threadId = task.body.task.threadId as string;
+    const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
+      method: "POST", headers: { "content-type": "application/json", "x-openmausbot-test-capability": CAPABILITY_KEY },
+      body: JSON.stringify({ botId: bot.id, threadId }),
+    });
+    const { token } = await minted.json() as { token: string };
+    const proposed = await fetch(`${BASE}/api/internal/profile-requests`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ fromBotId: bot.id, fromThreadId: threadId, changes: { title: "Scout" }, reason: "asked" }),
+    });
+    const applied = await proposed.json() as { requestId: string; state: string };
+    expect(applied.state, JSON.stringify(applied)).toBe("applied");
+
+    const refused = await api("POST", `/api/threads/${threadId}/undo`, { requestId: applied.requestId }, ADA);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatch(refusal);
+    const undone = await api("POST", `/api/threads/${threadId}/undo`, { requestId: applied.requestId }, BOB);
+    expect(undone, JSON.stringify(undone.body)).toMatchObject({ status: 200, body: { ok: true, undone: true } });
+    expect((await api("GET", "/api/bots?messages=0", undefined, BOSS)).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).title).toBe("");
+  }, 90_000);
+
   it("lets a session-less local service decline but never approve under service trust", async () => {
     const bot = await makeBot("Serviced");
     await waitForExit(child, { signal: "SIGTERM" });
@@ -255,6 +286,7 @@ posixOnly("who may answer a card on a shared workspace", () => {
     // The bot-scoped route and the standing grant are not service routes at all.
     expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId, behavior: "allow" })).status).toBe(403);
     expect((await api("POST", `/api/bots/${bot.id}/always-allow`, { allowKey: "shell:echo" })).status).toBe(403);
+    expect((await api("POST", `/api/threads/${bot.threadId}/undo`, { requestId })).status).toBe(403);
     expect((await openCard(bot.threadId))?.card.requestId).toBe(requestId);
 
     const decline = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId, behavior: "deny" });

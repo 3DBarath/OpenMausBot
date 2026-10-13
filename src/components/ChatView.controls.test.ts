@@ -54,7 +54,8 @@ vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: (props: Compone
   return createElement("span", { "data-test-approval-control": true });
 } }));
 
-const { ChatView, ErrorRow, NewConversationInstead, claudeUpdateTarget } = await import("./ChatView");
+const { ChatView, ErrorRow, FailedTurnRow, NewConversationInstead, claudeUpdateTarget } = await import("./ChatView");
+const { activityPreview } = await import("@/lib/failed-turn");
 afterAll(() => vi.unstubAllGlobals());
 
 const bot: Bot = {
@@ -86,6 +87,58 @@ describe("Advanced mode in the header menu", () => {
     const item = inspector();
     expect(item.disabled).toBeFalsy();
     expect(item.heading).toBeUndefined();
+  });
+});
+
+describe("header name", () => {
+  it("renames only from the bot's settings in Simple mode: no pencil, and the whole pill opens them", () => {
+    fixture.advanced = false;
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).not.toContain('aria-label="Rename Pepper"');
+    // one button holds the avatar and the name together
+    const pill = markup.match(/<button[^>]*data-chathead-pill="true"[^>]*>([\s\S]*?)<\/button>/);
+    expect(pill?.[0]).toContain('aria-label="Open Pepper&#x27;s profile"');
+    expect(pill?.[1]).toContain(">Pepper</span>");
+    expect(pill?.[0]).toContain("rounded-full");
+    fixture.advanced = true;
+  });
+
+  it("keeps the rename pencil in Advanced mode, inside the same pill as the avatar and name", () => {
+    fixture.advanced = true;
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const start = markup.indexOf('<div data-chathead-pill="true"');
+    expect(start).toBeGreaterThan(-1);
+    const pill = markup.slice(start, markup.indexOf("data-chathead-controls"));
+    expect(pill).toContain('aria-label="Open Pepper&#x27;s profile"');
+    expect(pill).toContain("Rename Pepper");
+  });
+
+  it("draws no working dots in the header pill, keeping one width, while a status still tells a screen reader", () => {
+    for (const advanced of [true, false]) {
+      fixture.advanced = advanced;
+      const busyMarkup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: true, tasks: (bot.tasks ?? []).map((task) => ({ ...task, busy: true })) } }));
+      const idleMarkup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false } }));
+      const pillOf = (markup: string) => {
+        const start = markup.indexOf("data-chathead-pill");
+        return markup.slice(start, markup.indexOf("data-chathead-status", start));
+      };
+      expect(pillOf(busyMarkup)).not.toContain("animate-status-pulse");
+      // the same pill markup busy or not, so its width cannot change
+      expect(pillOf(busyMarkup)).toBe(pillOf(idleMarkup));
+      expect(busyMarkup).toMatch(/<span role="status" class="sr-only" data-chathead-status="true">Working…<\/span>/);
+      expect(idleMarkup).toMatch(/<span role="status" class="sr-only" data-chathead-status="true"><\/span>/);
+      // the turn stays visible without the dots: the header's Stop button
+      expect(busyMarkup).toContain('title="Stop this turn"');
+    }
+    fixture.advanced = true;
+  });
+
+  it("centres the bot in the header's middle column, with the controls in the last", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const row = markup.match(/data-chathead-row="true" class="([^"]*)"/)?.[1] ?? "";
+    expect(row).toContain("@min-[30rem]/chathead:grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(max-content,1fr)]");
+    expect(markup).toMatch(/data-chathead-identity="true" class="[^"]*@min-\[30rem\]\/chathead:col-start-2[^"]*justify-self-center/);
+    expect(markup).toMatch(/data-chathead-controls="true" class="[^"]*@min-\[30rem\]\/chathead:col-start-3/);
   });
 });
 
@@ -154,17 +207,78 @@ describe("thread control placement", () => {
     delete window.ogb;
   });
 
+  it("applies Full access from the composer at once, with or without the desktop bridge", () => {
+    for (const bridge of [false, true]) {
+      if (bridge) window.ogb = { approvals: { setMode: vi.fn() } } as unknown as NonNullable<Window["ogb"]>;
+      fixture.dispatch.mockClear();
+      const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+      expect(fixture.approval?.trustedModesAvailable).toBe(bridge);
+      fixture.approval!.onSelect("full");
+      expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "updateTask", botId: "bot", threadId: "selected", patch: { approvalMode: "full" } });
+      expect(markup).not.toContain('role="alertdialog"');
+      delete window.ogb;
+    }
+    // Custom keeps its rule: nothing is sent without the desktop bridge.
+    fixture.dispatch.mockClear();
+    renderToStaticMarkup(createElement(ChatView, { bot }));
+    fixture.approval!.onSelect("custom");
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
   it("explains provider safety errors without offering an ineffective Retry", () => {
     const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "Blocked by our safety systems", onRetry: () => {} }));
     expect(markup).toContain("Full access controls tool approvals, not provider safety checks");
     expect(markup).not.toContain("<button");
     expect(renderToStaticMarkup(createElement(ErrorRow, { message: "Network timeout", onRetry: () => {} }))).toContain("<button");
   });
+  it("draws Retry and the next action on the 28px control step", () => {
+    const retry = renderToStaticMarkup(createElement(ErrorRow, { message: "Network timeout", onRetry: () => {} }));
+    const action = renderToStaticMarkup(createElement(ErrorRow, { message: "Network timeout", action: { label: "Open", onClick: () => {} } }));
+    for (const markup of [retry, action]) {
+      expect(markup).toContain('class="ui-button ui-button-md ');
+      expect(markup).not.toContain("text-[12.5px]");
+    }
+  });
   it("directs ChatGPT plan limits to usage settings rather than repeatedly retrying", () => {
     const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "ChatGPT plan usage limit reached (subscription_sharing_usage_limit_exceeded)", onRetry: () => {} }));
     expect(markup).toContain("Manage usage");
     expect(markup).toContain("https://chatgpt.com/settings/usage");
     expect(markup).not.toContain(">Retry<");
+  });
+  it("opens a signed-out engine's failed turn with one sentence and the sign-in, the CLI's words under Details", () => {
+    const claude = {
+      instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude",
+      snapshot: { state: "available", authenticated: false },
+      install: { command: { darwin: "x", linux: "x", win32: "x" }, signInCommand: "claude /login", server: { package: "@anthropic-ai/claude-code" } },
+      authentication: { method: "paste-code" },
+      models: { default: "sonnet", options: [] },
+    } as InstanceInfo;
+    const markup = renderToStaticMarkup(createElement(FailedTurnRow, { tool: { name: "error: Not logged in · Please run /login", ok: false, setup: true }, engine: claude, onRetry: () => {} }));
+    expect(markup).toContain(">Claude isn&#x27;t signed in yet. Sign in below, then send your message again.</span>");
+    expect(markup).toContain("Sign in to Claude</button>");
+    expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>Not logged in · Please run \/login<\/p>/);
+    expect(markup).not.toContain(">Retry<");
+    // an update offer is not a sign-in: the row keeps the engine's words,
+    // on a company-managed Claude too (chat cannot update it, so no offer
+    // shows, but the row is still about the update, as the list says)
+    const update = { name: "error: Claude Code 2.1.268 does not support this model", ok: false, setup: true, claudeUpdate: true };
+    for (const engine of [claude, { ...claude, readOnly: true }]) {
+      const row = renderToStaticMarkup(createElement(FailedTurnRow, { tool: update, engine }));
+      expect(row).toContain(">Claude Code 2.1.268 does not support this model</span>");
+      expect(row).not.toContain("isn&#x27;t signed in");
+      expect(activityPreview(update, engine)).toBe("Claude Code 2.1.268 does not support this model");
+    }
+  });
+  it("opens a failed turn with a technical cause on one plain line, the engine's words under Details", () => {
+    const raw = 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+    const markup = renderToStaticMarkup(createElement(FailedTurnRow, { tool: { name: `error: ${raw}`, ok: false }, engine: undefined, onRetry: () => {} }));
+    expect(markup).toContain(">The service is busy right now. Try again in a moment.</span>");
+    expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>API Error: 529/);
+    expect(markup).toContain(" Retry</button>");
+    // a cause already written for a person stays the headline, with nothing to expand
+    const plain = renderToStaticMarkup(createElement(FailedTurnRow, { tool: { name: "error: no activity for 10 minutes — the turn was stopped", ok: false }, engine: undefined }));
+    expect(plain).toContain(">no activity for 10 minutes — the turn was stopped</span>");
+    expect(plain).not.toContain(">Details</summary>");
   });
   it("offers to update Claude Code for a too-old install, or hands over the command", () => {
     const claude = { instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude", snapshot: { state: "available", authenticated: true } } as InstanceInfo;
@@ -194,6 +308,21 @@ describe("thread control placement", () => {
     ];
     const render = () => renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false, messages } }));
     expect(render()).toContain("Retry</button>");
+    messages.push({ id: "next", role: "user", kind: "text", at: 4, text: "A different request" });
+    expect(render()).not.toContain("Retry</button>");
+  });
+  it("keeps Retry on a failed turn after hanging up, when the call's record is the last row", () => {
+    const messages: Bot["messages"] = [
+      { id: "ask", role: "user", kind: "text", at: 1, text: "Try the new model", via: "call", callId: "c1" },
+      { id: "error", role: "bot", kind: "activity", at: 2, tool: { name: "error: outdated engine", ok: false } },
+      {
+        id: "record", role: "bot", kind: "call", at: 3, text: "Call with Pepper · 0:42",
+        call: { callId: "c1", botId: "bot", client: "ios", startedAt: 0, endedAt: 3, seconds: 42, endReason: "hung-up" },
+      },
+    ];
+    const render = () => renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false, messages } }));
+    expect(render()).toContain("Retry</button>");
+    expect(render()).toContain('data-testid="call-record"');
     messages.push({ id: "next", role: "user", kind: "text", at: 4, text: "A different request" });
     expect(render()).not.toContain("Retry</button>");
   });
@@ -392,5 +521,37 @@ describe("a guest's composer on a Cloud home", () => {
     expect(allowed).toContain("<textarea");
     expect(allowed).toContain('data-testid="citation-toolbar"');
     fixture.canWrite = null;
+  });
+});
+
+const { awayFromMainThread, openBot } = await import("@/state/store");
+
+describe("the way back to the bot's own conversation", () => {
+  const visiting: Bot = {
+    ...bot, threadId: "side", mainThreadId: "main",
+    tasks: [
+      { threadId: "main", title: "Our chat", createdAt: 1, busy: false, activity: "idle" },
+      { threadId: "side", title: "Routine report", createdAt: 2, busy: false, activity: "idle" },
+    ],
+  };
+  const header = (shown: boolean, of: Bot) => {
+    fixture.showThreads = shown;
+    try { return renderToStaticMarkup(createElement(ChatView, { bot: of })); } finally { fixture.showThreads = true; }
+  };
+
+  it("offers it with threads hidden while a side thread is open, and opens the main thread", () => {
+    expect(header(false, visiting)).toContain("data-chathead-back");
+    expect(header(false, visiting)).toContain("Back to your chat");
+    expect(awayFromMainThread(visiting, false)).toBe(true);
+    fixture.dispatch.mockReset();
+    openBot(fixture.dispatch, visiting, false);
+    expect(fixture.dispatch.mock.calls.map(([action]) => action)).toContainEqual(expect.objectContaining({ threadId: "main" }));
+  });
+
+  it("never with threads shown, nor in the main thread itself", () => {
+    expect(header(true, visiting)).not.toContain("data-chathead-back");
+    expect(header(false, { ...visiting, threadId: "main" })).not.toContain("data-chathead-back");
+    // a bot whose main thread this window has no row for yet stays put
+    expect(header(false, { ...visiting, mainThreadId: "unknown" })).not.toContain("data-chathead-back");
   });
 });

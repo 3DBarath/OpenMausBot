@@ -11,6 +11,8 @@
 // This file owns the one server-side step: exchanging the renderer's WebRTC
 // offer for an answer. The OpenAI key never leaves the harness; the renderer
 // only ever holds the SDP answer and the media connection it describes.
+import { CLOUD_HOME_PLACE } from "./system-prompt.ts";
+import type { Message } from "./store.ts";
 
 export const LIVE_MODEL = "gpt-live-1";
 const OPENAI_BASE = "https://api.openai.com";
@@ -67,6 +69,15 @@ export interface LiveHistoryMessage {
   text: string;
 }
 
+/** The chat's text lines, oldest first, as the voice's startup history:
+ * what the person and the bot wrote, kind "text" only. Cards, steps,
+ * digests and a finished call's own row (kind "call") are never history. */
+export function liveHistoryFrom(messages: ReadonlyArray<Pick<Message, "role" | "kind" | "text">>): LiveHistoryMessage[] {
+  return messages
+    .filter((message) => message.kind === "text" && typeof message.text === "string" && (message.role === "user" || message.role === "bot"))
+    .map((message) => ({ role: message.role === "user" ? "user" as const : "assistant" as const, text: message.text ?? "" }));
+}
+
 export class LiveSessionError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -76,14 +87,18 @@ export class LiveSessionError extends Error {
 }
 
 /** Frontend instructions for the voice. Business rules stay with the bot;
- * this only says who is speaking and when to hand work over. Structure
- * follows the GPT-Live prompting guide's template. */
-export function liveInstructions(bot: LiveBot): string {
+ * this only says who is speaking, where it runs and when to hand work over.
+ * Structure follows the GPT-Live prompting guide's template. `cloudHome`:
+ * the harness is the person's My Cloud, named as the bot's own system prompt
+ * names it (CLOUD_HOME_PLACE). */
+export function liveInstructions(bot: LiveBot, { cloudHome = false }: { cloudHome?: boolean } = {}): string {
   const name = oneLine(bot.name) || "the agent";
   const title = oneLine(bot.title ?? "");
   const description = oneLine(bot.description ?? "").slice(0, 400);
+  const where = cloudHome ? `runs on ${CLOUD_HOME_PLACE}` : "runs in OpenMausBot on the user's own computer";
+  const changes = cloudHome ? "My Cloud" : "the computer";
   return [
-    `You are ${name}${title ? `, ${title}` : ""}, an AI agent that runs in OpenMausBot on the user's own computer.${description ? ` ${description}` : ""}`,
+    `You are ${name}${title ? `, ${title}` : ""}, an AI agent that ${where}.${description ? ` ${description}` : ""}`,
     `To the user you are one assistant, ${name}, and you speak in the first person. Your work — looking things up, using your tools, files and memory, researching, deciding, and answering anything that needs facts this conversation does not hold — happens when you delegate. Delegating is how you think and act; it is not someone else.`,
     "Never mention a backend, delegation, a voice layer, or another system or model doing the work, and never say you are only a voice. Say \"I\" about the work.",
     "Never ask the user whether you may look something up or check something. When it needs checking, delegate at once and say briefly that you are checking.",
@@ -93,7 +108,7 @@ export function liveInstructions(bot: LiveBot): string {
     "Interruption policy: Stop speaking when the user interrupts. Listen to what they say.",
     "Delegation policy:",
     "Backend tools:",
-    `- ${name}: your own files, tools, memory, settings and this conversation's history. It researches, writes, changes things on the computer, and answers questions, including questions about yourself such as which AI model you run on, your settings, your tools and your memory.`,
+    `- ${name}: your own files, tools, memory, settings and this conversation's history. It researches, writes, changes things on ${changes}, and answers questions, including questions about yourself such as which AI model you run on, your settings, your tools and your memory.`,
     "Delegate to the backend when:",
     "- The user asks a question, asks for work, or gives an instruction.",
     "- The user asks something about you that this conversation does not already answer, for example which AI model you run on.",
@@ -141,6 +156,9 @@ export interface CreateLiveSessionInput {
   sdp: string;
   bot: LiveBot;
   history: LiveHistoryMessage[];
+  /** This harness is a Cloud home (the person's My Cloud). Required, so
+   * the one caller cannot leave the voice saying it runs on their computer. */
+  cloudHome: boolean;
   voice?: string;
   fetchImpl?: typeof fetch;
   url?: string;
@@ -160,7 +178,7 @@ export async function createLiveSession(input: CreateLiveSessionInput): Promise<
   const body = {
     session: {
       model: LIVE_MODEL,
-      instructions: liveInstructions(input.bot),
+      instructions: liveInstructions(input.bot, { cloudHome: input.cloudHome }),
       // client delegation: every request comes back to the harness, which
       // runs it as a normal turn on the bot
       delegation: { type: "client" },

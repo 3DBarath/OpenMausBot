@@ -16,19 +16,23 @@ import { Menu, app } from "electron";
  * @param {() => void} input.onOpenSettings
  * @param {() => void} input.onOrganizationSignIn
  */
-export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn }) {
+/** `onAddCloud` and `sublabels` as in the sidebar's server menu
+ * (environments.cjs workspaceMenuTemplate): "Add a Cloud…" under the saved
+ * servers, and My Cloud's line in place of its host. */
+export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn, onAddCloud, sublabels = {} }) {
   const isMac = process.platform === "darwin";
   const active = environments.find((e) => e.id === activeId) ?? null;
   const server = {
     label: "Server",
     submenu: [
-      { label: "Local (this computer)", type: "radio", checked: !active, click: () => onSwitch("local") },
+      { label: "This computer", type: "radio", checked: !active, click: () => onSwitch("local") },
       ...environments.map((e) => ({
-        label: `${e.name} — ${new URL(e.origin).host}`,
+        label: `${e.name} — ${Object.hasOwn(sublabels, e.id) ? sublabels[e.id] : new URL(e.origin).host}`,
         type: "radio",
         checked: e.id === activeId,
         click: () => onSwitch(e.id),
       })),
+      ...(onAddCloud ? [{ id: "add-cloud", label: "Add a Cloud…", click: () => onAddCloud() }] : []),
       { type: "separator" },
       { id: "organization-sign-in", label: "Sign in with your organization…", click: onOrganizationSignIn },
       { label: "Connect to a server…", click: onConnect },

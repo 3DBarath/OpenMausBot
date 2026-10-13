@@ -248,6 +248,15 @@ Upgrade with `docker compose pull omb && docker compose up -d` (or
 `git pull && docker compose up -d --build`). State (chats, routines,
 engine logins, paired sessions) is on the `data` volume; back that up.
 
+The published image installs the current Chrome for Testing whenever a new
+Stable ships. A build from source keeps the Chrome (and any `ENGINES`) it
+installed first, because those layers sit beneath the app and stay cached
+across code changes. To pick up the current ones, rebuild with a new tag:
+
+```sh
+docker compose build --build-arg CHROME_CACHE_TAG=$(date +%F) omb && docker compose up -d
+```
+
 ## From source
 
 Requirements: Node 24+, pnpm, and at least one agent CLI installed and
@@ -320,7 +329,7 @@ Like `opencode` in a terminal, it reads provider keys from its environment
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
 `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `MINIMAX_API_KEY`) and offers those
 providers' models, billed to that key. It does so only where the server's
-environment is one person's own: never on an OMB Cloud home, a hosted team
+environment is one person's own: never on MausBot Cloud, a hosted team
 workspace, an organisation-managed desktop, or a server whose sign-in list
 lets other people in (users, more than one admin, or a whole domain).
 Providers added with `opencode auth login` work everywhere.
@@ -438,6 +447,30 @@ Folder transfers are limited to 256 KiB per file and do not follow links or
 delete files. Local screen control also needs OS permissions and a supported
 desktop driver. Microphone access is not included.
 
+**Bring this computer's bots and chats.** When the server you just connected
+is empty, its page shows **Bring your bots and chats from this computer**
+with **Copy** and **Not now**; **Copy** takes you to this computer's
+**Settings → Servers → Copy this computer here** for that server, where you
+start it (a server's own page never starts a copy itself). Any time later, that
+button on the server's row replaces what the server has (backed up on the
+server first; **Swap {server} back** puts it back; copying again replaces that
+backup, and the panel says so). On the server's own page, **Settings → Backups
+→ Import from this computer** leads to the same place. No file, no password: the app uploads the encrypted workspace
+backup directly, continues where a dropped connection left it, and the server
+restarts itself to install it. API keys, engine sign-ins and paired devices
+stay where they are on both sides; routines arrive paused. The desktop app must
+be paired with an owner code (not `--client`), and a server whose email sign-in
+lets someone besides you in (a member, a second admin or a whole `@domain`
+added with `openmausbot access add`) never receives one; your own address
+alone is fine. Behind a proxy, allow uploads of at least 1 MB
+(nginx: `client_max_body_size 64m`); smaller parts are tried before the copy
+says so. How each
+way of running the server restarts itself: `openmausbot serve` and
+`service install` start it again in the same process, the Docker and Podman
+images run `server-launcher.js`, which does the same inside the container; a
+server started any other way installs the copy at its next start. Details:
+[docs/copy-workspace.md](copy-workspace.md).
+
 Only conversations you start yourself on that server can use what you share;
 other people's bots, routines and webhooks there cannot. Keys and sign-in
 stores (`~/.ssh`, cloud CLIs, browser profiles, keychains) and `.git`
@@ -514,7 +547,7 @@ Set `OMB_LOOPBACK_TRUST=service` on a self-hosted server people share (with
 an email sign-in list, say), or `OMB_LOOPBACK_TRUST=owner` to opt a hosted
 workspace back into the old behaviour (the log then warns). Any other value
 means `service`. The desktop app ignores the setting: its local changes
-already need the app's own per-launch capability. An OMB Cloud home ignores
+already need the app's own per-launch capability. MausBot Cloud ignores
 it too and is always `service` (docs/cloud-pro.md).
 
 With `service` on a self-hosted server:
@@ -609,8 +642,8 @@ and only when the card can be traced to a person:
 
 - a card for a request a user sent, or in a thread a user opened, is
   theirs to answer (admins and the owner may answer any card);
-- a thread a bot opened while working on someone's request (a delegated or
-  coordinated job) is traced back to that person, so the cards of work done
+- a thread a bot opened while working on someone's request (a job it handed
+  a teammate with `coordinate_bots`) is traced back to that person, so the cards of work done
   for them are theirs too;
 - a card that names nobody — sent by the owner on this machine, by a
   routine or webhook, from Slack (until Slack passes the asker through), or
@@ -668,7 +701,7 @@ alone.
   recorded in the admin activity log.
 - **Teams.** A team (sidebar section) is listed to a user only when it
   holds a bot or room they can see.
-- **Bots working together.** A bot reaches a teammate (asks, delegations,
+- **Bots working together.** A bot reaches a teammate (`coordinate_bots`,
   its roster and `list_bots`, @mentions, a Chief's team) only when exactly
   the same people can see both: otherwise one bot's thread could carry the
   other's answers to people who cannot see it. Bots nobody restricted all
@@ -683,7 +716,7 @@ alone.
   a message in a thread, a bot's picture — is hidden from that user. A
   file nothing uses yet (someone's own upload) is served; its name is random.
 - **Not covered.** Words already quoted into a conversation a user can
-  see (an earlier delegation, a message copied by hand, or something a bot
+  see (an earlier hand-off, a message copied by hand, or something a bot
   wrote into its own memory files with its file tools while it shared a room
   with a restricted bot) stay there. A bot's
   shell can still read files on the server, as it always could. Slack is
@@ -909,8 +942,8 @@ the list does not know. Both are plain settings in `config.json` (`budgets`,
 Some engines have their own long-running front door — a Hermes Agent Telegram
 gateway, a Slack bot, an OpenClaw session. That process is the same bot with
 the same workspace and memory, but the server did not spawn it, so it holds
-none of the turn-scoped capabilities the peer-comms tools need and cannot ask
-or delegate to its teammates.
+none of the turn-scoped capabilities the peer-comms tools need and cannot hand
+work to its teammates.
 
 Give it a standing one with `external-runtimes.json` in the data directory,
 mapping the bot's id to a secret of at least 32 characters and one existing
@@ -948,15 +981,24 @@ OMB_HARNESS_URL=http://127.0.0.1:8799 OMB_BOT_ID=$BOT_ID OMB_THREAD_ID=$THREAD_I
 ```
 
 Scope is deliberately narrow: the token is an *agents* capability for that
-bot's pinned thread only, and the server accepts just four routes with it — list
-peers, ask, delegate, and read the status of its own delegations. Opening
-threads, creating bots or rooms, skills, memory and every other internal route
-answer 403. External mode advertises only `list_bots`, `ask_bot`, `delegate_bot`,
-`check_delegation` and `wait_delegation`. It can check a delegation from the
-same long-running process without inventing a turn end. The server still
-enforces peer access and approval settings. An idle source starts dispatch
-immediately; a busy teammate is queued until available. Regular in-app turns
-keep their existing dispatch timing.
+bot's pinned thread only, and the server accepts just three kinds of route
+with it — list peers (`GET /api/internal/agents`), hand work on
+(`POST /api/internal/coordinate-bots`) and read how it went
+(`GET /api/internal/assignment-status`). Opening threads, creating bots or
+rooms, skills, memory and every other internal route answer 403. The bridge
+offers the one tool surface every turn gets (docs/runtime-contract.md §9):
+`coordinate_bots` (work; a question with `consult: true`; a one-way notice
+with `reply: "none"`) and the read-only `assignment_status`. Every call from
+the standing capability is its own root on the job
+runtime with `reply: poll`: it completes without a turn once the teammates'
+work settles, and the runtime reads the results with `assignment_status`,
+long-polling `wait_ms` (at most 240 s) on the root's `rootId` or a receipt's
+`requestId` from the same long-running process, without inventing a turn end.
+A settled hand-off never wakes the bot's own engine on that thread. The
+server still enforces peer access and approval settings. A free teammate
+starts at once; a busy one is queued on the runtime until a slot frees
+(docs/runtime-contract.md §2). Regular in-app turns keep their existing
+dispatch timing.
 
 The credentials stay on this server and are excluded from workspace backups;
 restoring a backup preserves destination registrations. Never put this token
@@ -977,8 +1019,11 @@ docker compose -f deploy/docker-compose.yml pull omb && docker compose -f deploy
 git pull && pnpm install && sudo systemctl restart openmausbot          # from source
 ```
 
-Routines and queued work survive restarts; in-flight turns do not, so
-update between runs.
+Routines and queued work survive restarts. A teammate turn in flight runs
+again once at the next start, told to check what it already did, and the bot
+that asked for it is told. A person's own turn and a running routine are not
+run again: the conversation says it was interrupted. Update between runs
+where you can.
 
 Stop the server before a filesystem backup so SQLite is copied consistently.
 Back up the entire app data directory and, separately, the service user's

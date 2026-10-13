@@ -24,7 +24,7 @@ export const TASK_WORKSPACES_DIR = join(DATA_DIR, "task-workspaces");
 
 /** MCP support does not imply native filesystem tools or a local working directory. */
 export function supportsWorkspaceFiles(driverKind: string): boolean {
-  return !["grok", "openai-compat", "minimax", "mistral", "cerebras", "boxAgent"].includes(driverKind);
+  return !["grok", "openai-compat", "minimax", "mistral", "cerebras", "groq", "meta"].includes(driverKind);
 }
 
 /** Default task files are private to the thread, outside the bot's shared
@@ -125,7 +125,7 @@ function memoryEntryStat(path: string) {
 /** File locations, not file contents or wider tool permissions. Threads keep
  * independent working directories; the same bot can find its earlier output
  * without assuming that a file absent from the current directory was lost. */
-export function workspaceLocationsPrompt(botId: string, cwd: string | undefined, botCwd?: string): string {
+export function workspaceLocationsPrompt(botId: string, cwd: string | undefined, botCwd?: string, opts: { attachFile?: boolean } = {}): string {
   return "\n\nFile locations for this bot (absolute paths): " + JSON.stringify({
     currentWorkingFolder: cwd ?? "Provider default; inspect the working directory before using relative paths",
     sharedBotFolder: workspaceDir(botId),
@@ -133,7 +133,14 @@ export function workspaceLocationsPrompt(botId: string, cwd: string | undefined,
     ...(botCwd ? { configuredProjectFolder: botCwd } : {}),
   }) + ". Different conversations can have different working folders. For an existing file, use the exact path from the conversation; if missing here, check this bot's listed folders before saying it is gone or recreating it." +
     " Follow an explicitly requested destination. Otherwise put new task output in the current working folder and report its absolute path so another thread or room can use it." +
-    " Do not move old files, edit another active thread's work, or read another bot's private folders without authorization. These paths do not grant additional access.";
+    " Do not move old files, edit another active thread's work, or read another bot's private folders without authorization. These paths do not grant additional access." +
+    // Chat links and inline images open only inside the conversation's
+    // folders; attach_file copies one file the turn saved elsewhere
+    // (server/message-file.ts), and the reply's image of it shows that copy.
+    " Chat links and inline images open only files in currentWorkingFolder and sharedBotFolder." +
+    (opts.attachFile
+      ? " When you save a file or picture for the person somewhere else, also attach it with attach_file in the same turn so it opens from chat. For many files, attach the few that matter most, such as a preview."
+      : " Save a file or picture you want to show in chat there.");
 }
 
 /** Lines as a person counts them: a file that ends in a newline has no
@@ -527,6 +534,11 @@ export type MemoryLogResult =
   | { ok: true; file: string; line: string }
   | { ok: false; code: "invalid"; error: string };
 
+/** The workspace-relative daily log a line written at `now` goes to. */
+export function memoryLogPath(now: Date = new Date()): string {
+  return `memory/${MEMORY_LOG_DIR}/${memoryDate(now)}.md`;
+}
+
 /** Append one timestamped line to today's memory/log/YYYY-MM-DD.md. The
  * time is the machine's own, the way a person would note it; the day is
  * the file name. Same scrub and same modes as every other memory write. */
@@ -540,8 +552,8 @@ export function appendMemoryLog(botId: string, text: string, opts: MemoryUpdateO
   const line = `- ${pad(now.getHours())}:${pad(now.getMinutes())}${SEP}${source ? `from ${source}${SEP}` : ""}${normaliseEntryText(redactSecretsInText(text))}`;
   const dir = join(ensureWorkspace(botId), "memory", MEMORY_LOG_DIR);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = `${memoryDate(now)}.md`;
-  const path = join(dir, file);
+  const relativePath = memoryLogPath(now);
+  const path = join(dir, relativePath.slice(`memory/${MEMORY_LOG_DIR}/`.length));
   let current = "";
   try {
     current = readMemoryText(path);
@@ -549,7 +561,6 @@ export function appendMemoryLog(botId: string, text: string, opts: MemoryUpdateO
     // first line of the day
   }
   writeFileAtomic(path, `${current}${current && !current.endsWith("\n") ? "\n" : ""}${line}\n`, { mode: 0o600 });
-  const relativePath = `memory/${MEMORY_LOG_DIR}/${file}`;
   indexWrittenMemoryFile(botId, relativePath);
   return { ok: true, file: relativePath, line };
 }
@@ -626,9 +637,8 @@ export function writeMemoryTopic(botId: string, name: string, text: string): voi
   indexWrittenMemoryFile(botId, `memory/${name}`);
 }
 
-/** Read one topic file. The name gate runs here too, not only in the HTTP
- * route — a future caller must not be able to turn this into a read of an
- * arbitrary path. Null for anything invalid or unreadable. */
+/** Read one topic file. The name gate runs here, so no caller can turn this
+ * into a read of an arbitrary path. Null for anything invalid or unreadable. */
 export function readMemoryTopic(botId: string, name: string): string | null {
   if (!isMemoryTopicName(name)) return null;
   try {

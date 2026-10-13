@@ -42,6 +42,10 @@ export interface AskQuestion {
   header?: string;
   multiSelect?: boolean;
   options: AskQuestionOption[];
+  /** false when the provider can only take one of `options` back (an ACP
+   * permission-style question answers with an option id, never text). The
+   * card then offers no free-text "Other". Absent means free text is fine. */
+  custom?: false;
 }
 
 /** Durable payload on a question card. Versioned like the other card
@@ -51,9 +55,9 @@ export interface QuestionRequestCardData {
   questions: AskQuestion[];
   /** Where the ask came from: a real tool call ("tool", also the meaning
    * of absent on cards saved before this field existed) or a block OMB
-   * parsed out of model-authored output ("output" — the BoatAgent
-   * transport). Only drives the agent-composed badge; it never changes
-   * how a card is answered. */
+   * parsed out of model-authored output ("output", only on cards the removed
+   * Computer engine left in older conversations). Only drives the
+   * agent-composed badge; it never changes how a card is answered. */
   origin?: "tool" | "output";
 }
 
@@ -68,13 +72,12 @@ export function isPersistentQuestionCard(card?: {
   skillRequest?: unknown;
   profileRequest?: unknown;
   modelRequest?: unknown;
-  tighteningRequest?: unknown;
   teamSetupRequest?: unknown;
 } | null): boolean {
   return Boolean(card && (
     card.requestType === "question" || card.questionRequest ||
     (!card.requestType && !card.tool && !card.routineRequest && !card.skillRequest && !card.profileRequest &&
-      !card.modelRequest && !card.tighteningRequest && !card.teamSetupRequest)
+      !card.modelRequest && !card.teamSetupRequest)
   ));
 }
 
@@ -130,6 +133,8 @@ function parseQuestion(value: unknown): AskQuestion | null {
     ...(header ? { header } : {}),
     ...(value.multiSelect === true ? { multiSelect: true } : {}),
     options,
+    // only meaningful beside options: with none, free text is the only answer
+    ...(value.custom === false && options.length ? { custom: false as const } : {}),
   };
 }
 
@@ -145,56 +150,6 @@ export function parseAskQuestions(input: unknown): AskQuestion[] | null {
     if (questions.length === MAX_QUESTIONS) break;
   }
   return questions.length ? questions : null;
-}
-
-/** The fenced block a turn-boundary agent ends its run with when it wants
- * to ask the person something (the BoatAgent transport): the harness cannot
- * pause mid-run, so the questions ride the final output and OMB parses them
- * at settle. The block is model-authored — untrusted input like any tool
- * call — so its body runs through parseAskQuestions and the same caps. */
-const OMB_ASK_FENCE = /(^|\n)[ \t]{0,3}(`{3,}|~{3,})[ \t]*omb-ask[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]{0,3}\2[ \t]*(?=\r?\n|$)/;
-const OMB_ASK_FENCE_GLOBAL = new RegExp(OMB_ASK_FENCE.source, OMB_ASK_FENCE.flags + "g");
-
-/** The questions inside the first fenced omb-ask block in an output, or
- * null when there is nothing worth showing (no fence, invalid JSON, or no
- * entry that parses as a question). The first fence wins: a second block
- * in the same output is ignored, not merged. */
-export function parseOmbAskQuestions(output: string): AskQuestion[] | null {
-  const match = OMB_ASK_FENCE.exec(output);
-  if (!match) return null;
-  try {
-    return parseAskQuestions(JSON.parse(match[3]!));
-  } catch {
-    return null;
-  }
-}
-
-/** The output with its omb-ask block(s) removed, for display: the person
- * reads the prose around the ask, never the raw protocol JSON. Text
- * without a block is returned untouched. */
-export function stripOmbAskBlock(output: string): string {
-  if (!OMB_ASK_FENCE.test(output)) return output;
-  return output.replace(OMB_ASK_FENCE_GLOBAL, "").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-/** The prompt contract that teaches a model the turn-held ask transport: end
- * the reply with a fenced `omb-ask` block carrying the questions, and the
- * answers come back on the next prompt. A harness that cannot pause mid-run
- * (the BoatAgent transport) appends this to every prompt; the caps in the text
- * are the constants above, so the taught contract and the parser cannot
- * drift apart. */
-export function ombAskProtocolPrompt(): string {
-  return [
-    "",
-    "## Asking the person a question",
-    "When a decision belongs to the person, end your reply with a fenced block exactly like this:",
-    "",
-    "```omb-ask",
-    '{"questions":[{"question":"Ship the release now?","header":"Release","options":[{"label":"Ship now"},{"label":"Wait for the QA signoff"}]}]}',
-    "```",
-    "",
-    `The block must be the last thing in your reply. You may ask up to ${MAX_QUESTIONS} questions at once, each with up to ${MAX_OPTIONS} options; the person can always answer in their own words. Their answers arrive on your next prompt as \`Q:\`/\`A:\` lines — never invent them.`,
-  ].join("\n");
 }
 
 /** The one line the card subtitle and a spoken prompt show. */
@@ -295,15 +250,11 @@ export const ASK_USER_TOOL_DEFINITION = {
   },
 } as const;
 
-/** The synthetic tool string for an ask parsed out of model-authored final
- * output (the BoatAgent turn-held transport): there is no tool call to name,
- * but the event and the ASKS_A_PERSON backstop need one string. */
-export const OMB_ASK_TOOL = "omb-ask";
-
 /** The lead-in on a formatted answer. It exists for the model — the answer
  * is delivered on the deny channel, so it has to say what it is — and the
  * card strips it back off when it shows the person what they sent. */
 export const ANSWER_PREAMBLE = "The user answered your questions.";
+const JSON_ANSWERS_PREFIX = `${ANSWER_PREAMBLE}\n\nAnswers (JSON):\n`;
 
 /**
  * What the model is told. It arrives as the tool's result, so it has to
@@ -313,14 +264,18 @@ export function formatQuestionAnswers(
   questions: readonly AskQuestion[],
   answers: readonly (readonly string[])[],
 ): string {
-  const blocks: string[] = [];
+  const pairs: [string, string][] = [];
   questions.forEach((question, index) => {
     const picked = (answers[index] ?? []).map((value) => value.trim()).filter(Boolean);
     if (!picked.length) return;
-    blocks.push(`Q: ${question.question}\nA: ${picked.join(", ")}`);
+    pairs.push([question.question, picked.join(", ")]);
   });
-  if (!blocks.length) return "";
-  return `${ANSWER_PREAMBLE}\n\n${blocks.join("\n\n")}`;
+  if (!pairs.length) return "";
+  // Newlines can contain Q:/A: headers; JSON preserves them as answer text.
+  if (pairs.some(pair => pair.some(value => /[\r\n]/.test(value)))) {
+    return JSON_ANSWERS_PREFIX + JSON.stringify(pairs);
+  }
+  return `${ANSWER_PREAMBLE}\n\n${pairs.map(([question, answer]) => `Q: ${question}\nA: ${answer}`).join("\n\n")}`;
 }
 
 /** The same answer with the model-facing lead-in removed, for the settled
@@ -329,32 +284,14 @@ export function answerWithoutPreamble(answer: string): string {
   return answer.startsWith(`${ANSWER_PREAMBLE}\n\n`) ? answer.slice(ANSWER_PREAMBLE.length + 2) : answer;
 }
 
-/** The longest formatted answer OMB will echo back into a follow-up prompt
- * (the BoatAgent continuation). formatQuestionAnswers itself does not
- * truncate — the tool-result channel has no stated limit — but a prompt is
- * not the place to find one: six answers at the custom-answer cap is the
- * most a legitimate reply weighs, so that is the ceiling. */
-export const MAX_ANSWER_ECHO = 6 * MAX_CUSTOM_ANSWER;
-
-/** Cap a formatted answer for echoing into a follow-up prompt. An over-cap
- * echo is cut back to the last whole block so no partial answer reads as
- * one, and says it was truncated. */
-export function capAnswerEcho(answer: string, limit = MAX_ANSWER_ECHO): string {
-  if (answer.length <= limit) return answer;
-  const cut = answer.slice(0, limit);
-  const boundary = cut.lastIndexOf("\n\nQ: ");
-  const kept = boundary > 0 ? cut.slice(0, boundary) : cut;
-  return kept + "\n\n[answer truncated]";
-}
-
 /**
  * The answer text, read back as one value per question.
  *
  * `AskUserQuestion` is answered through its own `answers` field, keyed by the
  * question's text — but the card sends ONE answer for the whole set, because
  * a person answers the whole card at once. `formatQuestionAnswers` writes
- * each question's text beside its answer for exactly this reason, so the map
- * is recovered rather than guessed.
+ * each question's text beside its answer (JSON pairs when either has a
+ * newline), so the map is recovered rather than guessed.
  *
  * A message that carries no blocks at all is the flat path: an older client,
  * or a phone answering a single-question card with one of the option labels
@@ -438,6 +375,17 @@ export function questionAnswersById(
       continue;
     }
     idByText.set(question.question, id);
+  }
+  if (message.startsWith(JSON_ANSWERS_PREFIX)) {
+    let pairs: unknown;
+    try { pairs = JSON.parse(message.slice(JSON_ANSWERS_PREFIX.length)); }
+    catch { return {}; }
+    if (!Array.isArray(pairs) || !pairs.every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(value => typeof value === "string"))) return {};
+    for (const [asked, answer] of pairs as [string, string][]) {
+      const id = idByText.get(asked);
+      if (id && !ambiguous.has(asked) && answer.trim()) answers[id] = answer;
+    }
+    return answers;
   }
   // A block runs from one Q: header to the next (blank lines inside an
   // answer are the answer's, not block boundaries), so the reply is scanned

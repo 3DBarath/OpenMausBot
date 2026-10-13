@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   filterShortcutGroups,
   SHORTCUT_GROUPS,
+  shortcutGroupsFor,
   shouldOpenKeyboardShortcuts,
   shortcutKeysForPlatform,
 } from "./keyboard-shortcuts";
@@ -64,6 +65,24 @@ describe("keyboard-shortcuts", () => {
     expect(items.find((item) => item.id === "send-message")?.winKeys).toEqual(["Enter"]);
     expect(items.find((item) => item.id === "steer-message")?.winKeys).toEqual(["Ctrl", "Enter"]);
     expect(items.find((item) => item.id === "new-line")?.winKeys).toEqual(["Shift", "Enter"]);
+  });
+
+  it("draws the send and new-line rows from the send key choice", () => {
+    const row = (groups: readonly typeof SHORTCUT_GROUPS[number][], id: string) => groups.flatMap((group) => group.items).find((item) => item.id === id)!;
+    expect(shortcutGroupsFor("enter")).toBe(SHORTCUT_GROUPS);
+    expect(row(SHORTCUT_GROUPS, "send-message")).toMatchObject({ macKeys: ["Return"], winKeys: ["Enter"] });
+    expect(row(SHORTCUT_GROUPS, "new-line")).toMatchObject({ macKeys: ["⇧", "Return"], winKeys: ["Shift", "Enter"] });
+    const shift = shortcutGroupsFor("shift-enter");
+    expect(row(shift, "send-message")).toMatchObject({ macKeys: ["⇧", "Return"], winKeys: ["Shift", "Enter"] });
+    expect(row(shift, "new-line")).toMatchObject({ macKeys: ["Return"], winKeys: ["Enter"] });
+    const mod = shortcutGroupsFor("mod-enter");
+    expect(row(mod, "send-message")).toMatchObject({ macKeys: ["⌘", "Return"], winKeys: ["Ctrl", "Enter"] });
+    expect(row(mod, "new-line")).toMatchObject({ macKeys: ["Return"], winKeys: ["Enter"] });
+    for (const groups of [shift, mod]) {
+      expect(row(groups, "save-bulletin")).toBe(row(SHORTCUT_GROUPS, "save-bulletin"));
+      expect(row(groups, "send-message").description).toBe(row(SHORTCUT_GROUPS, "send-message").description);
+      expect(groups.map((group) => group.items.map((item) => item.id))).toEqual(SHORTCUT_GROUPS.map((group) => group.items.map((item) => item.id)));
+    }
   });
 
   it("lists previous/next in handler order and excludes pointer gestures", () => {

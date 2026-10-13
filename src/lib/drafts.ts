@@ -1,6 +1,7 @@
 // Unsent composer input, kept per task. Switching tasks unmounts the Composer
-// and its local state. Drafts live in localStorage, so coming back to a task — in this
-// session or after a restart — finds what you were typing still there.
+// and its local state. Drafts live in memory and are saved to localStorage, so
+// coming back to a task — in this session or after a restart — finds what you
+// were typing still there.
 import { useCallback, useEffect, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { isAttachment, type Attachment } from "./composer-attachments.js";
 
@@ -40,16 +41,18 @@ export interface ComposerSendSnapshot extends FailedComposerSendInput {
 }
 const failedSends = new Map<string, FailedComposerSend[]>();
 const failedSendListeners = new Map<string, Set<(sends: FailedComposerSend[]) => void>>();
-const restoredSendIds = new Map<string, string>();
+type RestoredSend = { sendId: string; requestText?: string };
+const restoredSends = new Map<string, RestoredSend>();
 let failedSendSequence = 0;
 
 type Values = Record<string, unknown>;
 type Store = Pick<Storage, "getItem" | "setItem"> | undefined;
 
-// localStorage is normally authoritative, but it can be unavailable or reject
-// writes (private browsing, a full quota, hardened environments). Keep the
-// same per-store snapshot in memory so an upload completing outside React can
-// merge with the live draft instead of replacing it with an empty fallback.
+// Memory answers every read once a draft is loaded; localStorage is the copy
+// that outlives a restart, and it can be unavailable or reject writes (private
+// browsing, a full quota, hardened environments). Keeping the per-store
+// snapshot in memory also lets an upload completing outside React merge with
+// the live draft instead of replacing it with an empty fallback.
 const fallbackTextDrafts = new Map<string, string>();
 const fallbackAttachmentDrafts = new Map<string, Attachment[]>();
 const textDraftsByStore = new WeakMap<object, Map<string, string>>();
@@ -94,14 +97,48 @@ export function getDraft(store: Store, id: string): string {
 
 export function setDraft(store: Store, id: string, text: string): void {
   memoryFor(store, textDraftsByStore, fallbackTextDrafts).set(id, text);
-  const drafts = read(store, KEY);
-  // an emptied composer drops its entry rather than storing "" forever
-  if (text) drafts[id] = text;
-  else delete drafts[id];
-  try {
-    store?.setItem(KEY, JSON.stringify(drafts));
-  } catch {
-    /* quota / private mode — the draft just doesn't outlive the mount */
+  if (store) saveDraftLater(store, id);
+}
+
+// Every keystroke changes the draft, but storage holds all drafts as one JSON
+// map, and rewriting it per keystroke costs most when another chat holds a
+// large paste. Storage catches up when typing pauses, when the window loses
+// focus or closes, and when the composer switches thread.
+const SAVE_DELAY_MS = 500;
+const unsavedDrafts = new Map<NonNullable<Store>, Set<string>>();
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+// Node (the server tests) has no window, and some tests fake one without
+// events; there the timer alone saves.
+const page = (globalThis as { window?: Partial<EventTarget> }).window;
+page?.addEventListener?.("blur", saveDrafts);
+page?.addEventListener?.("pagehide", saveDrafts);
+
+function saveDraftLater(store: NonNullable<Store>, id: string): void {
+  const ids = unsavedDrafts.get(store) ?? new Set<string>();
+  ids.add(id);
+  unsavedDrafts.set(store, ids);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveDrafts, SAVE_DELAY_MS);
+}
+
+function saveDrafts(): void {
+  clearTimeout(saveTimer);
+  for (const [store, ids] of unsavedDrafts) {
+    const memory = memoryFor(store, textDraftsByStore, fallbackTextDrafts);
+    // Re-read so drafts another window saved stay; write only what changed here.
+    const drafts = read(store, KEY);
+    for (const id of ids) {
+      const text = memory.get(id);
+      // an emptied composer drops its entry rather than storing "" forever
+      if (text) drafts[id] = text;
+      else delete drafts[id];
+    }
+    try {
+      store.setItem(KEY, JSON.stringify(drafts));
+      unsavedDrafts.delete(store);
+    } catch {
+      /* quota / private mode — still unsaved; the next save tries again */
+    }
   }
 }
 
@@ -252,23 +289,34 @@ export function draftRevision(draftId: string): number {
 }
 
 export function markDraftEdited(draftId: string): void {
-  restoredSendIds.delete(draftId);
+  restoredSends.delete(draftId);
   setStoredSendId(getStore(), draftId, undefined);
   draftRevisions.set(draftId, draftRevision(draftId) + 1);
 }
 
 export function restoredSendId(draftId: string): string | undefined {
-  const memory = restoredSendIds.get(draftId);
-  if (memory) return memory;
-  const stored = read(getStore(), SEND_IDS_KEY)[draftId];
-  if (typeof stored !== "string") return undefined;
-  restoredSendIds.set(draftId, stored);
-  return stored;
+  return restoredSend(draftId)?.sendId;
 }
 
-function setStoredSendId(store: Store, draftId: string, sendId: string | undefined): void {
+export function restoredRequestText(draftId: string): string | undefined {
+  return restoredSend(draftId)?.requestText;
+}
+
+function restoredSend(draftId: string): RestoredSend | undefined {
+  const memory = restoredSends.get(draftId);
+  if (memory) return memory;
+  const stored = read(getStore(), SEND_IDS_KEY)[draftId];
+  if (!stored || (typeof stored !== "string" && typeof stored !== "object")) return undefined;
+  const value = typeof stored === "string" ? { sendId: stored } : stored as Record<string, unknown>;
+  if (typeof value.sendId !== "string" || (value.requestText !== undefined && typeof value.requestText !== "string")) return undefined;
+  const send = { sendId: value.sendId, requestText: value.requestText };
+  restoredSends.set(draftId, send);
+  return send;
+}
+
+function setStoredSendId(store: Store, draftId: string, send: RestoredSend | undefined): void {
   const ids = read(store, SEND_IDS_KEY);
-  if (sendId) ids[draftId] = sendId;
+  if (send) ids[draftId] = send;
   else delete ids[draftId];
   try {
     store?.setItem(SEND_IDS_KEY, JSON.stringify(ids));
@@ -435,8 +483,9 @@ export function recoverFailedComposerSend(sent: ComposerSendSnapshot): "restored
   });
   // If the response vanished after server acceptance, the next Send must
   // reuse this identity instead of starting a duplicate turn.
-  restoredSendIds.set(sent.draftId, sent.sendId);
-  setStoredSendId(getStore(), sent.draftId, sent.sendId);
+  const retry = { sendId: sent.sendId, requestText: sent.requestText };
+  restoredSends.set(sent.draftId, retry);
+  setStoredSendId(getStore(), sent.draftId, retry);
   return "restored";
 }
 
@@ -513,7 +562,11 @@ export function useDraft(id: string, legacyId?: string): [string, (next: string)
     // Close the render-to-effect race: a rejected request may have restored
     // storage after this mount initialized but before its listener attached.
     setText(getDraft(store, id));
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      // Switching thread or leaving the chat saves what was typed right away.
+      saveDrafts();
+    };
   }, [id, store]);
   return [text, set];
 }

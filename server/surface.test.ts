@@ -4,16 +4,29 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CLOUD_PLACE_DRIVER_ERROR,
-  cloudPlaceDriverError,
+  browserIsThePlace,
+  cloudPlaceRefusal,
+  computerSkippedNote,
+  computerToolsRefusal,
   parseSurface,
-  placeFailureMessage,
   placeUnavailable,
   resolveSurface,
-  surfaceForTool,
   surfaceOfComputerKind,
   surfacePrompt,
 } from "./surface.ts";
+
+describe("browserIsThePlace", () => {
+  it("is true only where the conversation works on the built-in browser", () => {
+    expect(browserIsThePlace(resolveSurface({ destination: "browser", browserOn: true }))).toBe(true);
+    // An Auto conversation whose first turn landed on the browser.
+    expect(browserIsThePlace(resolveSurface({ destination: undefined, pinnedSurface: "browser", browserOn: true }))).toBe(true);
+    // Auto only falls back to the browser when no computer is reached.
+    expect(browserIsThePlace(resolveSurface({ destination: undefined, browserOn: true }))).toBe(false);
+    expect(browserIsThePlace(resolveSurface({ destination: "browser", browserOn: false }))).toBe(false);
+    expect(browserIsThePlace(resolveSurface({ destination: "local", browserOn: true }))).toBe(false);
+    expect(browserIsThePlace(resolveSurface({ destination: "off", browserOn: true }))).toBe(false);
+  });
+});
 
 describe("resolveSurface", () => {
   it("browser destination mounts only the built-in browser", () => {
@@ -21,7 +34,6 @@ describe("resolveSurface", () => {
       computer: "off",
       browser: true,
       pinned: null,
-      clearPin: false,
       note: "",
     });
   });
@@ -37,14 +49,14 @@ describe("resolveSurface", () => {
   it("a computer destination mounts only that computer: one place per turn", () => {
     for (const destination of ["cloud", "vm", "local"] as const) {
       // the bot's browser switch no longer adds a second place next to a computer
-      expect(resolveSurface({ destination, browserOn: true })).toEqual({ computer: destination, browser: false, pinned: null, clearPin: false, note: "" });
+      expect(resolveSurface({ destination, browserOn: true })).toEqual({ computer: destination, browser: false, pinned: null, note: "" });
       expect(resolveSurface({ destination, browserOn: false })).toMatchObject({ computer: destination, browser: false });
     }
   });
 
   it("Off mounts no computer and no browser, and says which setting did it", () => {
     const plan = resolveSurface({ destination: "off", browserOn: true });
-    expect(plan).toMatchObject({ computer: "off", browser: false, pinned: null, clearPin: false });
+    expect(plan).toMatchObject({ computer: "off", browser: false, pinned: null });
     expect(plan.note).toMatch(/"Works on" setting is Off/);
     expect(plan.note).toMatch(/no computer and no built-in browser/);
     // the same whether or not a browser could have been mounted
@@ -54,22 +66,34 @@ describe("resolveSurface", () => {
     expect(surfacePrompt({ computer: null, browser: false }, { note: plan.note })).toBe(plan.note);
   });
 
+  it("a Team incidents turn that lost its computer is told why and that it has none", () => {
+    const note = computerSkippedNote("The team's cloud computer is missing; explicitly create or retry it from the Team map.");
+    expect(note).toMatch(/^ This turn answers a Team incidents report and your computer could not be prepared for it \(The team's cloud computer is missing; explicitly create or retry it from the Team map\), so no computer is mounted/);
+    expect(note).toMatch(/never claim to have checked that computer yourself\.$/);
+    // nothing mounted: the note alone is the surface paragraph
+    expect(surfacePrompt({ computer: null, browser: false }, { note })).toBe(note);
+    // a browser the plan allowed still mounts beside it, and is described
+    const withBrowser = surfacePrompt({ computer: null, browser: true }, { note });
+    expect(withBrowser).toMatch(/^ Everything you do on screen happens in the built-in browser tab/);
+    expect(withBrowser.endsWith(note)).toBe(true);
+  });
+
   it("Off is the one setting a conversation pin cannot override", () => {
     expect(resolveSurface({ destination: "off", pinnedSurface: "browser", browserOn: true }))
-      .toMatchObject({ computer: "off", browser: false, pinned: null, clearPin: false });
+      .toMatchObject({ computer: "off", browser: false, pinned: null });
     expect(resolveSurface({ destination: "off", pinnedSurface: "cloud", browserOn: true }))
-      .toMatchObject({ computer: "off", browser: false, pinned: null, clearPin: false });
+      .toMatchObject({ computer: "off", browser: false, pinned: null });
   });
 
   it("a conversation pin wins over the bot's default, whatever that default is", () => {
     // pinned to the browser from the composer while the bot defaults to a computer
     expect(resolveSurface({ destination: "cloud", pinnedSurface: "browser", browserOn: true }))
-      .toEqual({ computer: "off", browser: true, pinned: "browser", clearPin: false, note: "" });
+      .toEqual({ computer: "off", browser: true, pinned: "browser", note: "" });
     // pinned to a computer while the bot is browser-only or on Auto
     for (const destination of ["browser", undefined] as const) {
       for (const pin of ["cloud", "vm", "local"] as const) {
         expect(resolveSurface({ destination, pinnedSurface: pin, browserOn: true }))
-          .toEqual({ computer: pin, browser: false, pinned: pin, clearPin: false, note: "" });
+          .toEqual({ computer: pin, browser: false, pinned: pin, note: "" });
       }
     }
   });
@@ -77,7 +101,7 @@ describe("resolveSurface", () => {
   it("keeps an unavailable browser pin instead of silently moving to another computer", () => {
     for (const destination of [undefined, "local", "vm", "cloud", "browser"] as const) {
       expect(resolveSurface({ destination, pinnedSurface: "browser", browserOn: false }))
-        .toMatchObject({ computer: "off", browser: false, pinned: "browser", clearPin: false,
+        .toMatchObject({ computer: "off", browser: false, pinned: "browser",
           note: expect.stringMatching(/No computer is mounted instead/) });
     }
   });
@@ -87,7 +111,6 @@ describe("resolveSurface", () => {
       computer: undefined,
       browser: true,
       pinned: null,
-      clearPin: false,
       note: "",
     });
     expect(resolveSurface({ destination: undefined, browserOn: false })).toMatchObject({ computer: undefined, browser: false });
@@ -193,24 +216,6 @@ describe("surfacePrompt", () => {
   });
 });
 
-describe("surfaceForTool", () => {
-  it("trusts the Claude driver's server namespace", () => {
-    expect(surfaceForTool("mcp__browser__browser_snapshot", { computer: "cloud", browser: true })).toBe("browser");
-    expect(surfaceForTool("mcp__computer__browser_snapshot", { computer: "cloud", browser: true })).toBe("cloud");
-    expect(surfaceForTool("mcp__computer__screenshot", { computer: "local", browser: false })).toBe("local");
-    // a namespaced call for something this turn never mounted is noise
-    expect(surfaceForTool("mcp__browser__browser_click", { computer: "cloud", browser: false })).toBeNull();
-  });
-
-  it("only trusts a bare name when one surface was mounted", () => {
-    expect(surfaceForTool("browser_snapshot", { computer: "cloud", browser: true })).toBeNull();
-    expect(surfaceForTool("screenshot", { computer: "vm", browser: false })).toBe("vm");
-    expect(surfaceForTool("browser_navigate", { computer: null, browser: true })).toBe("browser");
-    expect(surfaceForTool("Bash: ls", { computer: "vm", browser: false })).toBeNull();
-    expect(surfaceForTool("Read", { computer: null, browser: true })).toBeNull();
-  });
-});
-
 describe("surface parsing", () => {
   it("accepts only the four surfaces off the wire", () => {
     expect(parseSurface("browser")).toBe("browser");
@@ -235,38 +240,63 @@ it("does not instruct use of a selected browser when no surface is mounted", () 
   expect(surfacePrompt({ computer: null, browser: true })).toContain("For online research");
 });
 
-describe("cloudPlaceDriverError", () => {
-  it("lets every engine with computer tools use either cloud backend, and the Computer engine only Boat", () => {
-    expect(cloudPlaceDriverError({ usesCloudComputer: true }, "box")).toBeNull();
-    expect(cloudPlaceDriverError({ usesCloudComputer: true }, "vps")).toBeNull();
-    expect(cloudPlaceDriverError({ usesCloudComputer: true, remoteAgent: true }, "box")).toBeNull();
-    expect(cloudPlaceDriverError({ usesCloudComputer: true, remoteAgent: true }, "vps")).toMatch(/can't use a self-hosted VPS/);
+describe("cloudPlaceRefusal", () => {
+  const engine = (patch: { computerMcp?: boolean }) => ({ name: "Llama", ...patch });
+
+  it("lets every engine with computer tools use the cloud computer, whatever it runs on", () => {
+    expect(cloudPlaceRefusal(engine({ computerMcp: true }), "works-on", "Scout")).toBeNull();
+    expect(cloudPlaceRefusal(engine({ computerMcp: true }), "routine", "Scout")).toBeNull();
   });
 
-  it("refuses an engine without computer tools with one message and the control that changes it", () => {
-    expect(CLOUD_PLACE_DRIVER_ERROR).toBe("This model can't use a computer. Choose another model, or set Works on to Auto.");
-    expect(cloudPlaceDriverError({}, "box")).toBe(CLOUD_PLACE_DRIVER_ERROR);
-    expect(cloudPlaceDriverError({ usesCloudComputer: false }, "vps", "pin")).toBe("This model can't use a computer. Choose another model, or clear this conversation's place in the composer.");
-    expect(cloudPlaceDriverError({}, "box", "routine")).toMatch(/change where this routine runs\.$/);
+  it("refuses an engine without computer tools as one state, its fix the same whatever the source", () => {
+    const refused = cloudPlaceRefusal(engine({ computerMcp: false }), "works-on", "Scout")!;
+    expect(refused).toMatchObject({ name: "PlaceUnavailableError", place: "cloud", row: { state: "cc-cannot", params: { bot: "Scout", model: "Llama" }, source: "works-on" } });
+    expect(refused.message).toBe("Llama can't use a computer. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
+    for (const source of ["pin", "routine", "room"] as const) {
+      expect(cloudPlaceRefusal(engine({}), source, "Scout")?.message).toBe(refused.message);
+    }
+  });
+});
+
+describe("computerToolsRefusal", () => {
+  it("refuses a Tool selection without the computer with one action: the setting that changes it", () => {
+    const refused = computerToolsRefusal({ deny: ["mcp:computer:*"] }, "works-on", "Scout")!;
+    expect(refused).toMatchObject({ name: "PlaceUnavailableError", place: "cloud", row: { state: "cc-tools-off", params: { bot: "Scout" }, source: "works-on" } });
+    const line = "What Scout can use doesn't include a computer. Change what Scout can use in its settings.";
+    expect(refused.message).toBe(line);
+    // The same one action whatever chose the place: never a second one, and
+    // never "Set Works on to Auto".
+    for (const source of ["pin", "routine", "room"] as const) {
+      expect(computerToolsRefusal({ allow: ["native:*"] }, source, "Scout")?.message).toBe(line);
+    }
+    // An Auto-recorded pin is cleared by the dispatch, and the line says so.
+    expect(computerToolsRefusal({ allow: ["native:*"] }, "auto-pin", "Scout")?.message)
+      .toBe("What Scout can use doesn't include a computer. This conversation is back on Auto. Change what Scout can use in its settings.");
+  });
+
+  it("lets every selection that keeps a computer tool through", () => {
+    expect(computerToolsRefusal(undefined, "works-on", "Scout")).toBeNull();
+    expect(computerToolsRefusal({ allow: ["native:*", "mcp:computer:screenshot"] }, "works-on", "Scout")).toBeNull();
+    expect(computerToolsRefusal({ deny: ["mcp:computer:exec"] }, "works-on", "Scout")).toBeNull();
   });
 });
 
 describe("placeUnavailable", () => {
-  it("names the control that changes the failed place, by where the choice came from", () => {
-    expect(placeUnavailable("cloud", "pin", "the cloud computer could not be created or reached").message)
-      .toBe("the cloud computer could not be created or reached. Clear this conversation's place in the composer to continue.");
-    expect(placeUnavailable("cloud", "works-on", "boom.").message).toBe("boom. Set Works on to Auto in this bot's settings to continue.");
-    expect(placeUnavailable("vm", "routine", "boom").message).toBe("boom. Change where this routine runs.");
-    expect(placeUnavailable("cloud", "auto-pin", "boom").message).toContain("back on Auto");
-    expect(placeUnavailable("vm", "pin", "x")).toMatchObject({ name: "PlaceUnavailableError", place: "vm", source: "pin" });
+  it("words a passing cause's way on by where the place came from, and never says Set Works on to Auto", () => {
+    const cause = (source: "works-on" | "pin" | "auto-pin" | "routine" | "room") =>
+      placeUnavailable("cloud", { state: "cc-no-start", params: { bot: "Scout" }, source }).message;
+    expect(cause("works-on")).toBe("Scout's cloud computer didn't start. Try again.");
+    expect(cause("pin")).toBe("Scout's cloud computer didn't start. Clear this conversation's place in the composer to continue.");
+    expect(cause("auto-pin")).toBe("Scout's cloud computer didn't start. This conversation is back on Auto. Send your message again.");
+    expect(cause("routine")).toBe("Scout's cloud computer didn't start. Change where this routine runs.");
+    expect(cause("room")).toBe("Scout's cloud computer didn't start.");
+    expect(placeUnavailable("vm", { state: "place-failed", params: { bot: "Scout", cause: "The Local VM is not ready." }, source: "works-on" }))
+      .toMatchObject({ name: "PlaceUnavailableError", place: "vm", message: "The Local VM is not ready. Check it in the Computer panel." });
   });
 
-  it("shortens the cause, never the action, to fit the transcript row", () => {
-    const message = placeFailureMessage("x".repeat(400), "works-on");
-    expect(message.length).toBeLessThanOrEqual(160);
-    expect(message.endsWith("Set Works on to Auto in this bot's settings to continue.")).toBe(true);
-    expect(message).toContain("…");
-    // A room row has no such cut: the whole cause stays.
-    expect(placeUnavailable("vm", "works-on", "x".repeat(400), Infinity).message).toBe(`${"x".repeat(400)}. Set Works on to Auto in this bot's settings to continue.`);
+  it("keeps the whole cause: no row cuts it", () => {
+    const long = `${"x".repeat(400)}.`;
+    expect(placeUnavailable("vm", { state: "place-failed", params: { bot: "Scout", cause: long }, source: "works-on" }).message)
+      .toBe(`${long} Check it in the Computer panel.`);
   });
 });

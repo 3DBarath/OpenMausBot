@@ -10,17 +10,19 @@ import {
   useMemo,
   useReducer,
   useRef,
-  useState,
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
+import { DATA_ROUTES, type DataSheet, type DataTable } from "../../shared/data-surface";
 import type { TurnDigest } from "../../shared/digest";
 import type { ToolScope } from "../../shared/tool-scope";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { desktopCapabilitiesNow } from "@/lib/desktop";
+import { sameModelSelection } from "../../shared/thread-model";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
 import type { ProfileRequestCardData } from "../../shared/profile-request";
@@ -28,6 +30,7 @@ import type { ModelRequestCardData } from "../../shared/model-request";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
 import type { RoutineRunCardData } from "../../shared/routine-run";
 import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
+import type { PlaceRow } from "../../shared/place-view";
 import {
   reviewedSkillSha256,
   skillRequestBehavior,
@@ -36,15 +39,22 @@ import {
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { botShowsUnread } from "@/lib/bot-unread";
+import { firstUnreadMessageId, threadOpensUnread, threadReadCursor } from "@/lib/unread-divider";
+import type { ComputerStart } from "@/lib/computer-start";
+import { parseComputerHelp } from "@/lib/computer-control";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
+import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
+import { readLastBotSection, rememberBotSection } from "@/lib/last-bot-section";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
+import { useChatErrorClear } from "./chat-error";
 import type { OnboardingStatus } from "@/lib/onboarding";
-import { openLiveEvents } from "@/lib/live-events";
+import { openLiveEvents, publishLiveFrame, publishMissedFrames } from "@/lib/live-events";
 
 const MAX_ROUTINE_RUNS = 2_000;
 const ACTIVE_ROUTINE_RUN_STATUSES = new Set<RoutineRun["status"]>(["queued", "running", "waiting"]);
@@ -109,11 +119,18 @@ export interface OptionCardData {
   /** Exact provider command eligible for a durable, folder-scoped allow. */
   commandAllowlist?: { command: string; cwd: string; providerInstanceId: string };
   approvalScope?: "local-computer";
+  /** The bot's change applied without a person (a change to itself, or Full
+   * access): shown as one line with Undo instead of the approval box. */
+  autoApplied?: boolean;
+  /** A person undid that change. */
+  undone?: boolean;
   /** Persisted proposal used by the server when the user confirms it. */
   routineRequest?: RoutineRequestCardData;
   /** Staged learned-skill change; applied only after the user confirms this card. */
   skillRequest?: SkillRequestCardData;
-  outboundRequest?: { tool: string; app: string | null };
+  /** calls: one per outbound call the card covers, in subtitle order. Absent
+   * on cards from older computers. */
+  outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   /** Persisted profile proposal used by the server when the user confirms it. */
   profileRequest?: ProfileRequestCardData;
@@ -135,6 +152,8 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
+  /** Stop ended the turn this card paused: no action, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
 
 export interface SecretRequestCardData {
@@ -151,12 +170,19 @@ export interface SecretRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: no entry, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
+
+/** Who is driving a bot's computer: held = the person has the wheel (the
+ * bot's hands are refused server-side); helpReason = the bot's open plea for
+ * the person to take over, and help = the sign-in card it stands for. */
+export type ComputerControlState = { held: boolean; helpReason: string | null; help?: import("../../shared/wire").ComputerHelpRef | null };
 
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
@@ -167,27 +193,40 @@ export interface Message {
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  signIn?: import("../../shared/wire").SignInRequestCardData;
   /** Lifecycle mirror for a routine whose real work lives in a fresh task. */
   routineRun?: RoutineRunCardData;
   /** Durable lifecycle receipt for a goal-driven channel run. */
   goalRun?: GroupGoalRunCardData;
+  /** call rows: one finished Live call (its id, times and length, and a
+   * title when the bot's engine named it). Never anything said on it. */
+  call?: import("../../shared/wire").LiveCallRecord;
   /** How a channel user message should be handled. Absent means ordinary chat. */
   channelMode?: "chat" | "goal";
   /** activity messages: tool name + outcome. `spoken` is the server's
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying.
    * `summary` is the call's input on one redacted line (the shell command). */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
+  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; place?: PlaceRow; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
   /** a user message that did not come from typing here: through the
    * server's API, or spoken during a Live call. */
   via?: "api" | "call";
+  /** user lines spoken on a Live call: which call (only with via "call"). */
+  callId?: string;
+  /** The user line whose turn produced this message (activity, cards and
+   * answers), when the server could prove it. */
+  requestMessageId?: string;
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
   turnTerminal?: boolean;
-  /** screen messages: a frame of the bot's computer (base64) */
+  /** screen messages: the server holds a frame of the bot's computer,
+   * served by `/api/threads/:threadId/messages/:id/image`. */
+  hasImage?: boolean;
+  /** screen messages in the full (unpaged) shape: the same frame, inline as
+   * base64. Shown through the image route all the same. */
   png?: string;
   mime?: string;
   at: number;
@@ -201,15 +240,19 @@ export interface Message {
   /** rooms: which member said this (sender attribution). */
   from?: { botId: string; name: string; color: MausColor };
   /** a user-role line another bot delivered into this conversation
-   * (ask_bot, delegate_bot, start_thread): the words are that bot's, not
+   * (coordinate_bots, start_thread): the words are that bot's, not
    * the person's. Rendered as the peer speaking — see lib/peer-message. */
   peerAsk?: { botId: string; name: string; unattended?: boolean };
+  /** coordinate_bots delivery identity, as stored: the request a teammate
+   * sent into this thread, or the result it reported back. */
+  roomRequest?: { id: string; phase: "request" | "result" };
   /** emoji reactions; by = "user" or a member botId. */
   reactions?: Array<{ emoji: string; by: string }>;
   /** comm chips: "Messaged @X" linking to the bot⇄bot channel. */
   comm?: { groupId: string; threadId?: string; withBotId: string; withName: string; withColor: MausColor };
   /** thread chips: "Opened thread #Title on Bot" linking to that thread */
   threadRef?: { botId: string; threadId: string; title: string };
+  dataResult?: import("../../shared/wire").WireMessage["dataResult"];
   /** sent while the bot was mid-turn; auto-sends when the turn settles.
    * Rendered only while the bot is busy, so a flag stranded by a server
    * restart never shows a promise nothing will keep. */
@@ -226,6 +269,8 @@ export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResp
 /** A room: several bots + you in one shared thread. */
 export interface Group {
   usage?: GroupThreadUsage | null;
+  /** Each member's context in the active thread (WireGroup.memberContext). */
+  memberContext?: import("../../shared/wire").WireGroup["memberContext"];
   id: string;
   threadId: string;
   name: string;
@@ -233,8 +278,11 @@ export interface Group {
   defaultResponder: GroupDefaultResponder;
   bulletin: string;
   unread: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   createdAt: number;
-  /** auto-created bot⇄bot channel (ask_bot exchanges mirror here) */
+  /** auto-created bot⇄bot channel (bot-to-bot exchanges mirror here) */
   dm?: boolean;
   busyBotId?: string | null;
   /** when the busy member's turn started — the group-side twin of a task's
@@ -255,6 +303,12 @@ export interface Group {
   /** New user-created rooms remain in setup until Save or Skip. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
+  /** A direct-message conversation's turn ceiling. Null or absent uses the
+   * global group limit. Channel conversations store theirs on each task. */
+  turnTimeoutMinutes?: number | null;
+  /** Members the person stopped in this room ("stop @Bot"), by bot id. */
+  holds?: Record<string, import("../../shared/wire").RoomHold>;
+  heldMessages?: Record<string, import("../../shared/wire").RoomHeldMessage[]>;
   /** Separate conversations in this channel. DMs deliberately stay on one
    * thread and omit this collection. */
   tasks?: GroupTask[];
@@ -276,6 +330,13 @@ export interface GroupTask {
   pinned?: boolean;
   /** Newest message time, or createdAt. Server-derived. */
   updatedAt?: number;
+  /** This conversation's turn ceiling, in whole minutes. Absent uses the
+   * global group limit. */
+  turnTimeoutMinutes?: number;
+  /** Whether a turn is actively running in this thread. */
+  working?: boolean;
+  /** The member bot currently speaking or generating in this thread, if any. */
+  busyBotId?: string | null;
 }
 
 export interface ModelSelection {
@@ -297,14 +358,22 @@ export interface Task {
   createdAt: number;
   /** The person pinned this thread above the update-ordered list. */
   pinned?: boolean;
+  link?: string;
   /** Newest message time, or createdAt. Server-derived; local bumps use max. */
   updatedAt?: number;
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;
+  /** Prompt-cache keep-warm status (server-derived, never stored). */
+  cacheKeepWarm?: import("../../shared/wire").CacheKeepWarmStatus;
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
+  /** The model this thread runs on: its own when a person picked one here,
+   * else its bot's (followsBotModel). */
   modelSelection?: ModelSelection;
+  /** true: runs on its bot's model and moves with it; false: a model a person
+   * picked in this thread. Absent from servers older than the field. */
+  followsBotModel?: boolean;
   approvalMode?: ApprovalMode;
   autoApprove?: boolean;
   alwaysAllow?: string[];
@@ -314,6 +383,9 @@ export interface Task {
    * readout anchors here so it survives thread switches. Absent while idle. */
   turnStartedAt?: number;
   unread?: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   pinnedMessageId?: string;
   /** where this conversation works, when pinned: by the person from the
    * composer, or by its first Auto turn to the place it reached. Wins over
@@ -378,6 +450,8 @@ export interface Bot {
   waitingForTeammates?: boolean;
   id: string;
   threadId: string;
+  /** The bot's main thread, worked out by the server (WireBot.mainThreadId). */
+  mainThreadId?: string;
   /** every context this bot has, newest first */
   tasks?: Task[];
   projects?: BotProject[];
@@ -444,7 +518,7 @@ export interface Bot {
   chiefOfStaff?: boolean;
   /** Additional teams the owner explicitly lets this Chief work with. */
   managedSections?: string[];
-  /** When this bot wants to talk to another bot (ask_bot/delegate_bot),
+  /** When this bot wants to talk to another bot (coordinate_bots),
    * pause and ask the user first. Off by default. */
   approvePeerComms?: boolean;
   /** Explicit peer allow-list (bot ids); absent = every bot in its section,
@@ -466,6 +540,9 @@ export interface Bot {
   /** Memory upkeep (Bot settings → Memory): background capture and the
    * nightly tidy-up. On unless explicitly false. */
   memoryUpkeep?: boolean;
+  /** Prompt-cache keep-warm for this bot's Claude threads: true/false
+   * overrides the workspace setting, absent follows it (null clears over PATCH). */
+  cacheKeepWarm?: boolean | null;
   /** Which app-wide MCP servers (Plugins → MCP servers) this bot mounts, by
    * name. Absent = every enabled server; [] = none (null clears over PATCH). */
   mcpServers?: string[] | null;
@@ -483,6 +560,11 @@ export interface Bot {
   /** Renderer-only: a deleted selection moved to a thread whose full
    * transcript has not arrived yet. Never carry the deleted chat into it. */
   awaitingThreadSnapshot?: boolean;
+  /** Renderer-only: the thread a switch in this window is opening, until its
+   * snapshot lands (taskSwitched). The server announces the switch before it
+   * answers it, so meanwhile this is the thread on screen, never threadId:
+   * the one left behind is not read by being left (the "bot" frame). */
+  switchingTo?: string;
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
 }
@@ -494,6 +576,15 @@ export interface BotProject {
 }
 
 export type ProjectUpdatePatch = { name?: string; emoji?: string | null };
+
+/** The level each of a bot's threads runs at: its own, else the bot's (as
+ * currentTaskBot resolves it). */
+export function threadApprovalModes(bot: Pick<Bot, "approvalMode" | "autoApprove" | "tasks">): ApprovalMode[] {
+  return (bot.tasks ?? []).map((task) => approvalModeFor({
+    approvalMode: task.approvalMode ?? (task.autoApprove === undefined ? bot.approvalMode : undefined),
+    autoApprove: task.autoApprove ?? bot.autoApprove,
+  }));
+}
 
 /** A conversation uses its own execution settings; the sidebar keeps the
  * original bot's aggregate presence and profile defaults. */
@@ -517,7 +608,6 @@ export function currentTaskBot(bot: Bot, threadId = bot.threadId): Bot {
 }
 
 export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMode" | "autoApprove" | "pinnedMessageId">> & {
-  confirmFullAccess?: boolean;
   acknowledgeLocalAuto?: boolean;
   updateBotDefault?: boolean;
   resetApprovalToAsk?: boolean;
@@ -528,17 +618,19 @@ export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMod
   surface?: Task["surface"] | null;
   /** false clears the pin */
   pinned?: boolean;
+  link?: string | null;
 };
 
 function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
-  const { confirmFullAccess: _fullConsent, acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, ...fields } = patch;
+  const { acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
   return { ...fields, ...(resetApprovalToAsk ? { approvalMode: "ask", autoApprove: false, alwaysAllow: [] } : {}),
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
     ...(snoozedUntil === undefined ? {} : { snoozedUntil: snoozedUntil ?? undefined }),
     // A person's pin or unpin is never the machine's record.
     ...(surface === undefined ? {} : { surface: surface ?? undefined, surfaceAuto: undefined }),
-    ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }) };
+    ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }),
+    ...(link === undefined ? {} : { link: link ?? undefined }) };
 }
 
 /** A snapshot must not move a thread backwards in the list. Local bumps can
@@ -585,9 +677,18 @@ function rewindThreadUpdatedAt(state: AppState, threadId: string, messages: { at
   };
 }
 
+/** The New divider for a conversation being opened. One that opens unread
+ * gets a fresh one; opening the same conversation again keeps its divider,
+ * and any other conversation has none. */
+function openedUnreadDivider(state: AppState, threadId: string, unread: boolean, messages: readonly Message[], lastReadMessageId?: string): AppState["unreadDivider"] {
+  if (!unread) return state.unreadDivider?.threadId === threadId ? state.unreadDivider : null;
+  const messageId = firstUnreadMessageId(messages, lastReadMessageId);
+  return messageId ? { threadId, messageId } : null;
+}
+
 /** The visible conversation: walk parentId links from the active leaf back
  * to the root. Falls back to the flat list for pre-branching payloads. */
-export function visibleMessages(bot: Bot): Message[] {
+export function visibleMessages(bot: Pick<Bot, "messages" | "activeLeafId">): Message[] {
   const leafId = bot.activeLeafId;
   if (!leafId) return bot.messages;
   const byId = new Map(bot.messages.map((m) => [m.id, m]));
@@ -601,22 +702,13 @@ export function visibleMessages(bot: Bot): Message[] {
   return path.reverse();
 }
 
-/** All versions of a user message (itself + the forks that replaced it),
- * oldest first. Length 1 = never edited. */
-export function messageVersions(bot: Bot, message: Message): Message[] {
-  if (message.role !== "user" || message.kind !== "text") return [message];
-  return bot.messages
-    .filter(
-      (m) => m.role === "user" && m.kind === "text" && (m.parentId ?? null) === (message.parentId ?? null),
-    )
-    .sort((a, b) => a.at - b.at);
-}
-
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
   mistral?: { configured: boolean };
   cerebras?: { configured: boolean };
+  groq?: { configured: boolean };
+  meta?: { configured: boolean };
   /** `everyClaudeBot`: the key runs every Claude bot, not only "Claude (API key)". */
   anthropic?: { configured: boolean; everyClaudeBot?: boolean };
   openai?: { configured: boolean };
@@ -639,12 +731,19 @@ export interface ConfigStatus {
   box: { configured: boolean; included?: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
+  /** Per-call ceiling (minutes) for a bot's MCP tools. Absent from servers
+   * older than the setting; read it with mcpCallTimeoutMinutes(). */
+  mcp?: { callTimeoutMinutes: number };
   /** Workspace defaults for new bots; absent effort = no level is sent. */
   newBots?: { effort?: EffortLevel };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
+  /** Prompt-cache keep-warm for idle Claude threads. Absent from older servers. */
+  cacheKeepWarm?: { enabled: boolean; windowMinutes: number };
   localVm: { mode: "shared" | "per-bot" | "pool"; maxInstances: number; idleTimeoutMinutes?: number };
-  opencodeGo?: { configured: boolean };
+  /** `providerKeys`: names of the keys saved for OpenCode's other
+   * providers, never the keys. */
+  opencodeGo?: { configured: boolean; providerKeys?: string[] };
   /** Voice. `configured` = the engine has what it needs (an ElevenLabs or
    * Fish Audio key, or a Chatterbox server address); `ready` = that AND a voice, which is
    * what it takes to actually speak. The key itself is never echoed back;
@@ -690,7 +789,7 @@ export interface ConfigStatus {
   /** UI language override; "" (or absent) follows the system language. */
   language?: string;
   /** Opt-in flags. Absent means off. */
-  features?: { skillAuthoring: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean };
   /** First-run progress: whether the welcome tour was finished and which
    * one-time hints were dismissed. Server-owned so it follows the workspace. */
   onboarding?: OnboardingStatus;
@@ -724,11 +823,17 @@ export interface BrowserEngineSummary {
   version?: string;
   installing?: boolean;
   installError?: string;
+  /** Whether a browser profile can use "My Chrome", the person's own running
+   * Chrome: only where the bots run on their computer (the desktop app). */
+  myChrome?: boolean;
 }
 
 export interface BrowserProfile {
   id: string;
   name: string;
+  /** "chrome": the profile's bots use the person's own Chrome (My Chrome).
+   * Absent is the built-in browser. */
+  browser?: "chrome";
   /** Read-only durable Electron routing inherited from legacy profiles.
    * Config PATCH payloads must omit it. */
   partitionId?: string;
@@ -740,7 +845,7 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "cerebras" | "groq" | "meta" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "cacheKeepWarm" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -748,6 +853,8 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     xai: frame.xai,
     mistral: frame.mistral,
     cerebras: frame.cerebras,
+    groq: frame.groq,
+    meta: frame.meta,
     anthropic: frame.anthropic,
     openai: frame.openai,
     openrouter: frame.openrouter,
@@ -757,8 +864,10 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     box: frame.box,
     vps: frame.vps,
     rooms: frame.rooms,
+    mcp: frame.mcp,
     threads: frame.threads,
     automaticRecovery: frame.automaticRecovery,
+    cacheKeepWarm: frame.cacheKeepWarm,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
@@ -783,6 +892,8 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
  * EngineInstall in server/contracts.ts. Absent for engines that need no
  * local binary. `command` omits platforms that have no one-liner. */
 export interface EngineInstall {
+  /** The server's platform, not the browser device's operating system. */
+  platform?: "darwin" | "win32" | "linux";
   command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
   docsUrl?: string;
   signInCommand?: string;
@@ -804,6 +915,9 @@ export interface InstanceInfo {
   icon?: import("../../shared/provider-icon").ProviderIcon;
   /** Company instances are owned by the desktop parent, never editable here. */
   readOnly?: boolean;
+  /** An OpenMausBot Cloud home's trial Claude credit (read-only): whether it
+   * can still run, or is used up or gone. The person's own engine always wins over it. */
+  trialCredit?: "active" | "used_up" | "ended";
   managed?: { organizationId: string; organizationName: string };
   /** The enrolled organisation's desktop policy does not allow bots to run on
    * this instance: shown, but disabled, with the server's reason. */
@@ -846,6 +960,9 @@ export interface InstanceInfo {
     /** This engine can answer a bounded review prompt without changing the
      * bot's active conversation. */
     approvalReview?: boolean;
+    /** This engine can make the quick background model call memory upkeep
+     * and the skill review use. */
+    backgroundText?: boolean;
   };
   /** `custom` agents sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom" | "api";
@@ -879,6 +996,7 @@ export type AppSettingsSection =
   | "companion"
   | "remote"
   | "computer"
+  | "logins"
   | "usage"
   | "people"
   | "activity"
@@ -967,6 +1085,11 @@ export interface AppState {
    * focuses the button that shows the code. Any other toggleAppSettings sets 0. */
   appSettingsPhonePairing: number;
   shortcutsOpen: boolean;
+  /** The Add a Cloud dialog (components/CloudAddDialog.tsx), and how it was
+   * reached (lib/cloud-plan CLOUD_SOURCES, the Admin's counts); null when closed. */
+  cloudAdd: { source: import("@/lib/cloud-plan").CloudSource } | null;
+  /** The one-step Show me how tip on the server menu (components/CloudHowTo.tsx). */
+  cloudHowTo: boolean;
   /** the first-run welcome tour, also replayable from Settings → General */
   welcomeOpen: boolean;
   /** the guided tour on the live interface that follows the welcome flow */
@@ -974,24 +1097,46 @@ export interface AppState {
   botSettingsSection: BotSettingsSection;
   /** True only when the open action named a section — accordion expands that row. */
   botSettingsExpandAccordion: boolean;
-  /** latest live frame of a bot's computer, per botId */
-  screens: Record<string, { png: string; mime: string; threadId?: string }>;
-  /** bots whose cloud computer is being provisioned */
-  provisioning: Record<string, boolean>;
+  /** True when this device has a section choice to restore (lib/last-bot-section). */
+  botSettingsSectionStored: boolean;
+  /** True only on an opening that expanded the remembered section; a deep
+   * link is never it, so it can never force the Simple panel's full view. */
+  botSettingsExpandRemembered: boolean;
+  /** bots whose computer is starting for a turn (src/lib/computer-start.ts) */
+  computerStarts: Record<string, ComputerStart>;
   /** Bot removals waiting for the server to verify that no persistent
    * computer would be orphaned. The bot stays visible until that succeeds. */
   deletingBots: Record<string, true>;
-  /** who is driving each bot's computer: held = the person has the wheel
-   * (the bot's hands are refused server-side); helpReason = the bot's open
-   * plea for the person to take over */
-  computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+  computerControl: Record<string, ComputerControlState>;
+  /** Each bot's data sheet (cards and loaded tables, never rows), loaded
+   * when its Data tab first opens and replaced whole by every `data` frame.
+   * The grid pages rows itself, so a sheet stays small. */
+  dataSheets: Record<string, DataSheet>;
+  /** The bot's table catalog as GET /data last reported it: DuckDB's own
+   * list, not a copy on the sheet, so a load and a CREATE agree. */
+  dataTables: Record<string, DataTable[]>;
+  dataResultFocus: { botId: string; id: string; requestId: number; consumed: boolean } | null;
+  /** A sign-in card's Open: the Computer panel goes to the place the bot
+   * works, the Browser tab already in the person's control. */
+  signInFocus: { botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface; requestId: number; consumed: boolean } | null;
+  /** Only the currently mounted Data view, not the last Open in Data request. */
+  dataView: import("@/lib/composer-attachments").DataViewContext | null;
   /** a search hit to scroll to once its thread is on screen; nonce lets the
    * same message be focused twice in a row */
   focusMessage: { threadId: string; messageId: string; matchText?: string; nonce: number; consumed: boolean } | null;
+  /** The New divider: the first message of the open conversation that came
+   * in while the person was away. Taken from its unread flag when it opens,
+   * so it holds still while that conversation stays open. */
+  unreadDivider: { threadId: string; messageId: string } | null;
   connected: boolean;
+  /** Bots and rooms have loaded once: a link opened at launch can resolve. */
+  hydrated?: true;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
-  notice: { kind: "thread-gone"; botName: string | null } | null;
+  /** A quiet one-line status: a reference that no longer resolves, or a
+   * pressed Steer the running engine could not take (pictures it cannot
+   * read mid-turn — the words stay queued for the next turn). */
+  notice: { kind: "thread-gone" | "bot-gone" | "steer-images"; botName: string | null } | null;
   /** a thread the person asked to open (chip or #Title link): the sidebar
    * expands its bot and scrolls the row into view once it is current */
   revealThread: { threadId: string; nonce: number } | null;
@@ -1101,8 +1246,10 @@ export type Action =
       bots: Bot[];
       groups: Group[];
       sections?: string[];
-      computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+      computerControl: Record<string, ComputerControlState>;
       botQueuedMessages?: AppState["pendingQueued"];
+      /** the conversation open on this device last launch, for the first hydrate */
+      resumeId?: string;
     }
   | { type: "botQueues"; queues: AppState["pendingQueued"] }
   | { type: "sections"; sections: string[] }
@@ -1150,8 +1297,11 @@ export type Action =
   | { type: "switchGroupTask"; groupId: string; threadId: string }
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
   | { type: "pinGroupTask"; groupId: string; threadId: string; pinned: boolean; title: string }
+  | { type: "setConversationTurnLimit"; groupId: string; threadId: string; minutes: number | null; dm: boolean }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
+  /** Hold (stop) or release one member of a room without stopping the room. */
+  | { type: "setGroupHold"; groupId: string; botId: string; held: boolean }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "liveCall"; call: LiveCallState | null }
@@ -1170,6 +1320,8 @@ export type Action =
       sendId?: string;
       replyToId?: string;
       threadId?: string;
+      /** The Data result the person is viewing, for the model only; never part of the text. */
+      dataContext?: import("../../shared/data-context").DataContext;
       onError?: () => void;
       onQueueCleared?: (count: number) => void;
     }
@@ -1209,8 +1361,10 @@ export type Action =
       /** Local UI recovery hook for voice flows. Never sent to the server. */
       onError?: (message: string) => void;
     }
-  | { type: "newTask"; botId: string; projectId?: string }
-  | { type: "switchTask"; botId: string; threadId: string }
+  | { type: "newTask"; botId: string; projectId?: string; cwd?: string; onCreated?: () => void; onError?: (message: string) => void }
+  /** `whole`: the whole thread, not its newest page (a search hit can be older). */
+  | { type: "switchTask"; botId: string; threadId: string; whole?: true }
+  | { type: "switchTaskFailed"; botId: string; threadId: string }
   | { type: "taskSwitched"; bot: Bot }
   | { type: "renameTask"; botId: string; threadId: string; title: string }
   /** Name the thread again from its conversation; the new title arrives with the bot event. */
@@ -1220,6 +1374,8 @@ export type Action =
   | { type: "botCreationPending"; on: boolean }
   | { type: "updateTask"; botId: string; threadId: string; patch: TaskUpdatePatch }
   | { type: "refreshTaskPermissions"; botId: string; threadId: string; acknowledgeLocalAuto?: boolean }
+  /** "Switch them too": every thread of this bot on a model of its own follows the bot's. */
+  | { type: "followBotModel"; botId: string }
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
@@ -1235,9 +1391,12 @@ export type Action =
   /** `restoreLeafId` puts back the branch an optimistic edit replaced; a
    * plain send falls back to the removed row's parent. */
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
-  | { type: "screenFrame"; botId: string; threadId?: string; png: string; mime: string }
-  | { type: "provisioning"; botId: string; on: boolean }
-  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null }
+  | { type: "computerStart"; botId: string; start: ComputerStart | null }
+  | ({ type: "computerControl"; botId: string } & ComputerControlState)
+  /** A whole sheet from the server: a `data` frame or the first GET. */
+  | { type: "dataSheet"; sheet: DataSheet; tables?: DataTable[] }
+  | { type: "dataView"; view: AppState["dataView"] }
+  | { type: "loadDataSheet"; botId: string; onError?: (message: string) => void }
   | { type: "modelVariantRuntime"; event: RuntimeEvent }
   | { type: "setModel"; botId: string; selection: ModelSelection; threadId?: string; updateBotDefault?: boolean; resetApprovalToAsk?: boolean }
   | { type: "interrupt"; botId: string; threadId?: string; onError?: () => void }
@@ -1250,12 +1409,20 @@ export type Action =
   | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
+  | { type: "openDataResult"; botId: string; cardId: string }
+  | { type: "dataResultFocusConsumed"; requestId: number }
+  | { type: "openSignIn"; botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface }
+  | { type: "signInFocusConsumed"; requestId: number }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
+  | { type: "unreadDividerDone"; threadId: string }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
+  | { type: "openCloudAdd"; source: import("@/lib/cloud-plan").CloudSource }
+  | { type: "closeCloudAdd" }
+  | { type: "cloudHowTo"; open: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
   | {
@@ -1287,6 +1454,8 @@ export function pinBotThreadAction(action: Action, bots: Bot[]): Action {
 interface NotificationThreadOwner {
   id: string;
   threadId: string;
+  /** A bot's main thread (WireBot.mainThreadId); a room has none. */
+  mainThreadId?: string;
   tasks?: Array<{ threadId: string }>;
 }
 
@@ -1312,6 +1481,7 @@ export function openNotificationTarget(
   dispatch: (action: Action) => void,
   target: NotificationTarget,
   state: NotificationRoutingState,
+  threadsShown: boolean,
 ) {
   // A room's approval/question notification carries the asker bot with the
   // GROUP's thread id; asking the bot to switch to that thread would 404.
@@ -1333,12 +1503,65 @@ export function openNotificationTarget(
   const bot = state.bots.find((candidate) =>
     candidate.threadId === target.threadId || candidate.tasks?.some((task) => task.threadId === target.threadId)
   ) ?? state.bots.find((candidate) => candidate.id === target.botId);
-  dispatch({ type: "select", id: bot?.id ?? target.botId });
-  if (!bot) return;
+  if (!bot) {
+    dispatch({ type: "select", id: target.botId });
+    return;
+  }
   const known =
     bot.threadId === target.threadId ||
     (bot.tasks ?? []).some((task) => task.threadId === target.threadId);
-  if (known) dispatch({ type: "switchTask", botId: bot.id, threadId: target.threadId });
+  if (known) openBotThread(dispatch, bot, target.threadId, threadsShown);
+  else openBot(dispatch, bot, threadsShown);
+}
+
+/** The thread opening a bot itself shows. With threads shown, the one it
+ * was on. With threads hidden the bot is one conversation, its main thread
+ * (WireBot.mainThreadId), so a thread a notification or an activity row
+ * opened is left on the next open; one this window has no row for yet
+ * keeps the selection. */
+export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): string {
+  return !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
+    ? bot.mainThreadId : bot.threadId;
+}
+
+/** With threads hidden the bot is one conversation, its main thread; a side
+ * thread a notification, a chip or an activity row opened is a visit, so the
+ * chat header offers the way back (ChatView). Never with threads shown. */
+export function awayFromMainThread(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): boolean {
+  return !threadsShown && botOpensTo(bot, false) !== bot.threadId;
+}
+
+/** Open a bot itself: its row, its pinned circle, the palette, the + menu,
+ * ⌘1–9, the team map, a link to the bot, the bot a dead thread link falls
+ * back to, the bot the app reopens at launch, Edit profile on another bot,
+ * a restored bot, the next one after archiving, its voice settings from a
+ * room, or the chat a Cloud's setup job went to. It opens where botOpensTo
+ * says. The bot on screen is selected again where it is (its computer from
+ * the workspace view, its own Edit profile): the person sees that thread. */
+export function openBot(
+  dispatch: (action: Action) => void,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks">,
+  threadsShown: boolean,
+) {
+  const opened = botOpensTo(bot, threadsShown);
+  if (opened === bot.threadId) dispatch({ type: "select", id: bot.id });
+  else openBotThread(dispatch, bot, opened, threadsShown);
+}
+
+/** Open one of a bot's threads, as a notification, a chip, a link or a
+ * button names it: a switch, once the bot is selected. With threads hidden
+ * another thread than the one the bot is on opens by the switch alone,
+ * which selects the bot too, so the thread left behind keeps its unread
+ * mark: only an activity row reaches it, and a reply there must not pass
+ * as read unseen, nor while the switch is under way (Bot.switchingTo). */
+export function openBotThread(
+  dispatch: (action: Action) => void,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId">,
+  threadId: string,
+  threadsShown: boolean,
+) {
+  if (threadsShown || threadId === bot.threadId) dispatch({ type: "select", id: bot.id });
+  dispatch({ type: "switchTask", botId: bot.id, threadId });
 }
 
 /** A thread the person can open from a chip or a #Title link. */
@@ -1361,16 +1584,17 @@ export function openThread(
   dispatch: (action: Action) => void,
   target: ThreadTarget,
   state: ThreadOpeningState,
+  threadsShown: boolean,
 ): boolean {
   const owns = (owner: NotificationThreadOwner) =>
     owner.threadId === target.threadId || (owner.tasks ?? []).some((task) => task.threadId === target.threadId);
   if (state.groups.some(owns) || state.bots.some(owns)) {
-    openNotificationTarget(dispatch, target, state);
+    openNotificationTarget(dispatch, target, state, threadsShown);
     dispatch({ type: "revealThread", threadId: target.threadId });
     return true;
   }
   const bot = state.bots.find((candidate) => candidate.id === target.botId);
-  if (bot) dispatch({ type: "select", id: bot.id });
+  if (bot) openBot(dispatch, bot, threadsShown);
   dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
   return false;
 }
@@ -1479,8 +1703,12 @@ export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
       const known = (id: string) => action.bots.some((b) => b.id === id) || action.groups.some((g) => g.id === id);
-      const selectedId =
-        state.selectedId && known(state.selectedId) ? state.selectedId : (action.bots[0]?.id ?? "");
+      const resume = action.resumeId;
+      // A remembered conversation only counts while it still resolves to a
+      // visible bot or a room; a deleted or hidden one falls back as before.
+      const resumed =
+        resume && (action.bots.some((b) => b.id === resume && !b.hidden) || action.groups.some((g) => g.id === resume)) ? resume : "";
+      const selectedId = state.selectedId && known(state.selectedId) ? state.selectedId : resumed || (action.bots[0]?.id ?? "");
       const hydrated = {
         ...state,
         bots: action.bots.map((bot) => {
@@ -1494,6 +1722,7 @@ export function reducer(state: AppState, action: Action): AppState {
         sections: action.sections ?? [],
         computerControl: action.computerControl,
         selectedId,
+        hydrated: true as const,
         backgroundThreadEvents: {},
         loadingOlder: {},
         transcriptGeneration: {},
@@ -1629,6 +1858,9 @@ export function reducer(state: AppState, action: Action): AppState {
             ...g, ...action.group,
             section: typeof action.group.threadId === "string" || Object.hasOwn(action.group, "section") ? action.group.section : g.section,
             tasks: action.group.tasks ? mergeTaskStamps(g.tasks, action.group.tasks) : g.tasks,
+            turnTimeoutMinutes: Object.hasOwn(action.group, "turnTimeoutMinutes")
+              ? (action.group.turnTimeoutMinutes ?? undefined)
+              : g.turnTimeoutMinutes,
             messages: action.group.messages ?? g.messages,
             // A payload that carries a transcript answers the scrollback
             // question with it: a bounded page says so, and a frame sent
@@ -1659,22 +1891,26 @@ export function reducer(state: AppState, action: Action): AppState {
         config: { ...state.config, profile: { name: "", email: "", ...state.config.profile, ...action.profile } },
       } : state;
     case "select": {
-      if (state.groups.some((g) => g.id === action.id)) {
+      const room = state.groups.find((g) => g.id === action.id);
+      if (room) {
         return {
           ...state,
+          unreadDivider: openedUnreadDivider(state, room.threadId, room.unread, room.messages, room.lastReadMessageId),
           activeView: "chat",
           selectedId: action.id,
-          botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
         };
       }
+      const opened = state.bots.find((b) => b.id === action.id);
       return updateBot(
         withMascotMotion(
           {
             ...state,
+            unreadDivider: opened
+              ? openedUnreadDivider(state, opened.threadId, threadOpensUnread(opened), visibleMessages(opened), threadReadCursor(opened))
+              : state.unreadDivider,
             activeView: "chat",
             selectedId: action.id,
-            botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           },
           action.id,
           "switch",
@@ -1750,7 +1986,10 @@ export function reducer(state: AppState, action: Action): AppState {
             : action.bot.busy === false && before?.busy
               ? "celebrate"
               : null;
-      const animated = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      const motioned = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      // A start that failed never sends a first frame: its line ends with the turn.
+      const animated = action.bot.busy === false && before?.busy && motioned.computerStarts[action.bot.id]
+        ? reducer(motioned, { type: "computerStart", botId: action.bot.id, start: null }) : motioned;
       const next = action.bot.chiefOfStaff
         ? {
             ...animated,
@@ -1800,6 +2039,11 @@ export function reducer(state: AppState, action: Action): AppState {
         // Clear immediately on deletion: old approvals must never be sent
         // to the replacement thread while waiting for its transcript.
         messages: switchedThread ? [] : b.messages,
+        // This branch keeps the transcript it holds, so it keeps that
+        // transcript's scrollback answer too. A frame's hasMore describes
+        // the page it carries (often another thread's); taskSwitched takes
+        // it together with that page.
+        hasMore: switchedThread ? undefined : b.hasMore,
       }));
       return reconcileModelVariantSessions(patched);
     }
@@ -1864,19 +2108,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // turn artifact (settle-time screenshot) — the leaf must stay put,
         // or the follow-up send it raced would fall off the active branch.
         const adoptsLeaf = (action.message.parentId ?? null) === (b.activeLeafId ?? null);
-        let messages = [...b.messages, action.message];
-        // base64 screen frames are big; a long computer-use session would
-        // grow memory without bound. Keep the newest few frames' pixels and
-        // strip the rest (the message row survives as a placeholder).
-        if (action.message.kind === "screen") {
-          const withPng = messages.filter((m) => m.kind === "screen" && m.png);
-          const excess = withPng.length - MAX_KEPT_SCREEN_FRAMES;
-          if (excess > 0) {
-            const dropIds = new Set(withPng.slice(0, excess).map((m) => m.id));
-            messages = messages.map((m) => (dropIds.has(m.id) ? { ...m, png: undefined } : m));
-          }
-        }
-        return { ...b, messages, activeLeafId: adoptsLeaf ? action.message.id : b.activeLeafId };
+        return { ...b, messages: [...b.messages, action.message], activeLeafId: adoptsLeaf ? action.message.id : b.activeLeafId };
       });
       const motion =
         action.message.role === "user" && action.message.kind === "text" && Boolean(action.message.queueId)
@@ -1952,23 +2184,19 @@ export function reducer(state: AppState, action: Action): AppState {
         messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
       }));
     }
-    case "screenFrame":
+    case "computerStart": {
+      const { [action.botId]: _ended, ...others } = state.computerStarts;
       return {
-        ...withMascotMotion(state, action.botId, "success"),
-        screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime, threadId: action.threadId } },
-        provisioning: { ...state.provisioning, [action.botId]: false },
+        ...(action.start ? withMascotMotion(state, action.botId, "launch") : state),
+        computerStarts: action.start ? { ...others, [action.botId]: action.start } : others,
       };
-    case "provisioning":
-      return {
-        ...(action.on ? withMascotMotion(state, action.botId, "launch") : state),
-        provisioning: { ...state.provisioning, [action.botId]: action.on },
-      };
+    }
     case "computerControl":
       return {
         ...state,
         computerControl: {
           ...state.computerControl,
-          [action.botId]: { held: action.held, helpReason: action.helpReason },
+          [action.botId]: { held: action.held, helpReason: action.helpReason, help: action.help ?? null },
         },
       };
     case "modelVariantRuntime": {
@@ -1996,8 +2224,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return state;
     }
     case "setModel":
-      if (action.threadId) return reducer(state, { type: "updateTask", botId: action.botId, threadId: action.threadId,
-        patch: { modelSelection: action.selection, resetApprovalToAsk: action.resetApprovalToAsk } });
+      if (action.threadId) {
+        const picked = reducer(state, { type: "updateTask", botId: action.botId, threadId: action.threadId,
+          patch: { modelSelection: action.selection, resetApprovalToAsk: action.resetApprovalToAsk } });
+        // Picking the bot's model, or making the pick the bot's, is following it.
+        return updateBot(picked, action.botId, (bot) => ({ ...bot, tasks: bot.tasks?.map((task) => task.threadId !== action.threadId ? task
+          : { ...task, followsBotModel: Boolean(action.updateBotDefault) || sameModelSelection(action.selection, bot.modelSelection) }) }));
+      }
       return reconcileModelVariantSessions(updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection })));
     case "updateTask": {
       const patch = taskPatchFields(action.patch);
@@ -2023,15 +2256,23 @@ export function reducer(state: AppState, action: Action): AppState {
       // A targeted settings link opens that bot without navigating to chat
       // or marking its conversations read, even when another panel is open.
       const open = action.open ?? (action.botId !== undefined || !state.settingsOpen);
+      const freshOpen = open && !state.settingsOpen;
+      const named = action.section !== undefined;
       return {
         ...state,
         selectedId,
         settingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
-        botSettingsSection: action.section ?? (selectedId !== state.selectedId ? "overview" : state.botSettingsSection),
-        // Mascot / bare open omits `section` → accordion stays fully collapsed.
-        // Deep links expand that row even when the panel is already open.
-        botSettingsExpandAccordion: open ? action.section !== undefined : false,
+        // The pointer persists across bots and rooms (select) and across
+        // switches to another bot's profile; a deep link names its target.
+        botSettingsSection: action.section ?? state.botSettingsSection,
+        // A bare fresh open re-expands the section this device last viewed;
+        // a deep link expands the row it names.
+        botSettingsExpandAccordion: open ? named || (freshOpen && state.botSettingsSectionStored) : false,
+        // Only an opening that expanded the remembered row sets this; a deep
+        // link forces the full view for sections Simple skips.
+        botSettingsExpandRemembered: open ? !named && freshOpen && state.botSettingsSectionStored : false,
+        botSettingsSectionStored: named || state.botSettingsSectionStored,
         // Preserve the computer and inspector surfaces; their own controls
         // can open bot settings. App settings are mutually exclusive.
         appSettingsOpen: open ? false : state.appSettingsOpen,
@@ -2081,6 +2322,29 @@ export function reducer(state: AppState, action: Action): AppState {
     case "focusMessageConsumed":
       if (!state.focusMessage || state.focusMessage.nonce !== action.nonce) return state;
       return { ...state, focusMessage: { ...state.focusMessage, consumed: true } };
+    case "unreadDividerDone":
+      return state.unreadDivider?.threadId === action.threadId ? { ...state, unreadDivider: null } : state;
+    case "openDataResult": {
+      if (!state.bots.some((bot) => bot.id === action.botId)) return state;
+      // The same path as clicking the bot, so unread and the read cursor
+      // settle the way `select` does; then the Computer panel opens on it.
+      const selected = reducer(reducer(state, { type: "select", id: action.botId }), { type: "toggleComputer", open: true });
+      return { ...selected, dataResultFocus: { botId: action.botId, id: action.cardId, requestId: (state.dataResultFocus?.requestId ?? 0) + 1, consumed: false } };
+    }
+    case "dataResultFocusConsumed":
+      return state.dataResultFocus?.requestId === action.requestId
+        ? { ...state, dataResultFocus: { ...state.dataResultFocus, consumed: true } } : state;
+    case "openSignIn": {
+      if (!state.bots.some((bot) => bot.id === action.botId)) return state;
+      // As Open in Data: the bot's own view (a room's card leaves the room),
+      // then its Computer panel at the place the sign-in must happen.
+      const selected = reducer(reducer(state, { type: "select", id: action.botId }), { type: "toggleComputer", open: true });
+      const { type: _, ...request } = action;
+      return { ...selected, signInFocus: { ...request, requestId: (state.signInFocus?.requestId ?? 0) + 1, consumed: false } };
+    }
+    case "signInFocusConsumed":
+      return state.signInFocus?.requestId === action.requestId
+        ? { ...state, signInFocus: { ...state.signInFocus, consumed: true } } : state;
     case "toggleComputer": {
       const open = action.open ?? !state.computerOpen;
       return {
@@ -2137,6 +2401,13 @@ export function reducer(state: AppState, action: Action): AppState {
         shortcutsOpen: open,
       };
     }
+    // The dialog takes over from the tip; one already open keeps how it was first reached.
+    case "openCloudAdd":
+      return { ...state, cloudAdd: state.cloudAdd ?? { source: action.source }, cloudHowTo: false };
+    case "closeCloudAdd":
+      return state.cloudAdd ? { ...state, cloudAdd: null } : state;
+    case "cloudHowTo":
+      return state.cloudHowTo === action.open ? state : { ...state, cloudHowTo: action.open };
     case "toggleTour": {
       const open = action.open ?? !state.tourOpen;
       return { ...state, tourOpen: open, appSettingsOpen: open ? false : state.appSettingsOpen };
@@ -2173,8 +2444,8 @@ export function reducer(state: AppState, action: Action): AppState {
         : animated;
       const {
         acknowledgeLocalAuto: _localAck,
-        confirmFullAccess: _fullConfirmation,
         applyToAllThreads: _allThreads,
+        keepThreadModels: _keepThreadModels,
         computer,
         connectorTools,
         connectorScopes,
@@ -2329,13 +2600,18 @@ export function reducer(state: AppState, action: Action): AppState {
     case "regenerateTaskTitle":
       return state;
     case "newTask":
-      return { ...state, selectedId: action.botId, activeView: "chat" };
+      // A chosen folder may fail validation. Keep the conversation beneath
+      // its dialog in place until the server confirms the new thread.
+      return action.cwd !== undefined ? state : { ...state, selectedId: action.botId, activeView: "chat" };
     case "switchTask": {
       // Older background frames are already represented by the next server
       // snapshot. Only frames racing that request need replaying over it.
       const { [action.threadId]: _old, ...backgroundThreadEvents } = state.backgroundThreadEvents;
-      return { ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat" };
+      return updateBot({ ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat" }, action.botId,
+        (bot) => ({ ...bot, switchingTo: action.threadId }));
     }
+    case "switchTaskFailed":
+      return updateBot(state, action.botId, (bot) => bot.switchingTo === action.threadId ? { ...bot, switchingTo: undefined } : bot);
     case "renameTask":
       return updateBot(state, action.botId, (bot) => ({
         ...bot,
@@ -2371,6 +2647,22 @@ export function reducer(state: AppState, action: Action): AppState {
             : group,
         ),
       };
+    case "setConversationTurnLimit":
+      return {
+        ...state,
+        groups: state.groups.map((group) => {
+          if (group.id !== action.groupId) return group;
+          if (action.dm) return { ...group, turnTimeoutMinutes: action.minutes ?? undefined };
+          return {
+            ...group,
+            tasks: (group.tasks ?? []).map((task) =>
+              task.threadId === action.threadId
+                ? { ...task, turnTimeoutMinutes: action.minutes ?? undefined }
+                : task,
+            ),
+          };
+        }),
+      };
     case "taskSwitched": {
       let switched = updateBot(bumpTranscriptGeneration(state, action.bot.threadId), action.bot.id, (bot) => ({
         ...bot,
@@ -2382,10 +2674,23 @@ export function reducer(state: AppState, action: Action): AppState {
         // would carry the previous thread's answer onto a new one.
         hasMore: action.bot.hasMore,
         awaitingThreadSnapshot: false,
+        switchingTo: undefined,
       }));
       for (const frame of state.backgroundThreadEvents[action.bot.threadId] ?? []) switched = reducer(switched, frame);
       const { [action.bot.threadId]: _settled, ...backgroundThreadEvents } = switched.backgroundThreadEvents;
       switched = { ...switched, backgroundThreadEvents };
+      // Only the conversation on screen draws a divider; a bot in the
+      // background moving to another thread leaves it alone.
+      const opened = switched.bots.find((bot) => bot.id === action.bot.id);
+      if (opened && opened.id === switched.selectedId) {
+        switched = { ...switched, unreadDivider: openedUnreadDivider(switched, opened.threadId, threadOpensUnread(opened), visibleMessages(opened), threadReadCursor(opened)) };
+        // …and on screen it is read, as `select` reads the thread it opens. The
+        // snapshot predates the switch's own announcement, which told the
+        // server so (the "bot" frame), and must not put the dot back.
+        if (switched.activeView === "chat") switched = updateBot(switched, opened.id, (bot) => ({ ...bot,
+          unread: Boolean(bot.tasks?.some((task) => task.threadId !== bot.threadId && task.unread)),
+          tasks: bot.tasks?.map((task) => task.threadId === bot.threadId ? { ...task, unread: false } : task) }));
+      }
       return reconcileModelVariantSessions(reconcileSnapshotQueues(switched, [action.bot]));
     }
     case "newBot":
@@ -2398,6 +2703,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "createGroup":
     case "deleteGroup":
     case "interruptGroup":
+    case "setGroupHold":
     case "steerGroupQueued":
     case "createRoutine":
     case "updateRoutine":
@@ -2407,13 +2713,23 @@ export function reducer(state: AppState, action: Action): AppState {
     case "markRoutineRunSeen":
     case "markAllRoutineRunsSeen":
     case "refreshTaskPermissions":
+    case "followBotModel":
+    case "loadDataSheet":
       return state;
+    case "dataSheet":
+      return {
+        ...state,
+        dataSheets: { ...state.dataSheets, [action.sheet.botId]: action.sheet },
+        ...(action.tables ? { dataTables: { ...state.dataTables, [action.sheet.botId]: action.tables } } : {}),
+      };
+    case "dataView":
+      return { ...state, dataView: action.view };
     case "sendGroup": {
       if (!action.sendId) return state;
       const group = state.groups.find((candidate) => candidate.id === action.groupId);
-      const threadId = action.threadId ?? group?.threadId;
-      if (!group || threadId !== group.threadId) return state;
-      if (group.messages.some((message) => message.sendId === action.sendId)) return state;
+      if (!group) return state;
+      const threadId: string = action.threadId ?? group.threadId;
+      if (threadId === group.threadId && group.messages.some((message) => message.sendId === action.sendId)) return state;
       const message = optimisticUserMessage(
         action.text,
         action.sendId,
@@ -2421,18 +2737,34 @@ export function reducer(state: AppState, action: Action): AppState {
         null,
         action.mode ?? "chat",
       );
-      return bumpThreadUpdatedAt({
-        ...state,
-        groups: state.groups.map((candidate) => candidate.id === group.id
+      const stamped = bumpThreadUpdatedAt(state, threadId, message.at);
+      if (threadId !== group.threadId) return stamped;
+      return {
+        ...stamped,
+        groups: stamped.groups.map((candidate) => candidate.id === group.id
           ? { ...candidate, messages: [...candidate.messages, message] }
           : candidate),
-      }, threadId, message.at);
+      };
     }
   }
 }
 
-/** Newest screen frames whose pixels stay in memory per thread. */
-const MAX_KEPT_SCREEN_FRAMES = 8;
+/** GET sheet answers with the sheet itself or wrapped as `{ sheet }`; an
+ * empty answer (a bot that has never used data) is an empty sheet. */
+/** GET /data answers `{ sheet, tables }`; a `data` frame carries only the sheet. */
+export function dataTablesFromResponse(body: unknown): DataTable[] {
+  const tables = body && typeof body === "object" && "tables" in body ? (body as { tables: unknown }).tables : undefined;
+  return Array.isArray(tables) ? (tables as DataTable[]).filter((table) => table && typeof table.name === "string") : [];
+}
+
+export function dataSheetFromResponse(body: unknown, botId: string): DataSheet {
+  const candidate = body && typeof body === "object" && "sheet" in body ? (body as { sheet: unknown }).sheet : body;
+  if (candidate && typeof candidate === "object" && Array.isArray((candidate as DataSheet).cards)) {
+    const sheet = candidate as DataSheet;
+    return { ...sheet, botId: sheet.botId || botId, sources: Array.isArray(sheet.sources) ? sheet.sources : [] };
+  }
+  return { version: 1, botId, cards: [], sources: [], updatedAt: new Date(0).toISOString() };
+}
 
 export const initialState: AppState = {
   modelVariantSessions: {},
@@ -2470,15 +2802,24 @@ export const initialState: AppState = {
   appSettingsCloudLink: 0,
   appSettingsPhonePairing: 0,
   shortcutsOpen: false,
+  cloudAdd: null,
+  cloudHowTo: false,
   welcomeOpen: false,
   tourOpen: false,
   botSettingsSection: "overview",
   botSettingsExpandAccordion: false,
-  screens: {},
-  provisioning: {},
+  botSettingsSectionStored: false,
+  botSettingsExpandRemembered: false,
+  computerStarts: {},
   deletingBots: {},
   computerControl: {},
+  dataSheets: {},
+  dataTables: {},
+  dataResultFocus: null,
+  signInFocus: null,
+  dataView: null,
   focusMessage: null,
+  unreadDivider: null,
   connected: false,
   error: null,
   notice: null,
@@ -2572,7 +2913,11 @@ export async function api<T = any>(path: string, init?: RequestInit & { timeoutM
         : AbortSignal.timeout(timeoutMs),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(body.error ?? `${res.status} ${res.statusText}`, res.status, body);
+  if (!res.ok) {
+    const error = body?.error;
+    const message = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : `${res.status} ${res.statusText}`;
+    throw new ApiError(message, res.status, body);
+  }
   return body;
 }
 
@@ -2584,17 +2929,26 @@ type TrustedApprovalBridge = {
   ): Promise<BotAnnouncement>;
 };
 
-/** Composer changes use the same private bridge as bot settings, but never
- * change profile defaults. Confirmation is UI state, never an HTTP credential. */
+/** The packaged desktop's private approval channel, when this window has a
+ * working one. Custom needs it. Full uses it there and the app's API
+ * everywhere else: a browser, a paired client, or a development build, whose
+ * bridge has no embedded server behind it. */
+export function desktopApprovalBridge(): TrustedApprovalBridge | undefined {
+  if (typeof window === "undefined" || !window.ogb?.approvals) return undefined;
+  return desktopCapabilitiesNow().host.packaged ? window.ogb.approvals : undefined;
+}
+
+/** Composer changes use the same private bridge as bot settings when there
+ * is one, but never change profile defaults. Full needs no bridge and no
+ * confirmation (owner decision, Oct 12); Custom still needs the bridge. */
 export async function persistTaskApproval(
   botId: string, threadId: string, patch: TaskUpdatePatch,
   bridge: TrustedApprovalBridge | undefined,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
 ): Promise<BotAnnouncement> {
-  const { approvalMode, autoApprove, confirmFullAccess, acknowledgeLocalAuto, ...ordinary } = patch;
+  const { approvalMode, autoApprove, acknowledgeLocalAuto, ...ordinary } = patch;
   const mode = approvalMode ?? (autoApprove === undefined ? undefined : autoApprove ? "auto" : "ask");
-  if (mode === "full" && confirmFullAccess !== true) throw new Error("Confirm Full access for this thread first");
-  if ((mode === "full" || mode === "custom") && !bridge) throw new Error("This approval change requires the packaged desktop app");
+  if (mode === "custom" && !bridge) throw new Error("This approval change requires the packaged desktop app");
   if (mode && bridge) {
     if (Object.keys(ordinary).length) await request(`/api/bots/${botId}/tasks/${threadId}`, { method: "PATCH", body: JSON.stringify(ordinary) });
     return bridge.setMode(botId, mode, { threadId, threadOnly: true, acknowledgeLocalAuto: acknowledgeLocalAuto === true });
@@ -2603,8 +2957,10 @@ export async function persistTaskApproval(
   return result.bot;
 }
 
-/** Persist one coalesced bot edit without ever putting Full/Custom authority
- * on the bot-accessible HTTP surface. Entering a trusted mode writes ordinary
+/** Persist one coalesced bot edit without ever putting Custom authority on
+ * the bot-accessible HTTP surface. Full goes over the app's API like every
+ * other level unless this window has the desktop's private bridge (owner
+ * decision, Oct 12). Entering a mode through the bridge writes ordinary
  * fields first, then grants authority. Leaving Custom reverses that order so a
  * coalesced provider switch is validated after the bot is back in Ask/Auto.
  * Exported for a small ordering/security contract test. */
@@ -2613,39 +2969,37 @@ export async function persistBotUpdate(
   patch: BotUpdatePatch,
   signal: AbortSignal,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
-  trustedApprovals: TrustedApprovalBridge | undefined =
-    typeof window === "undefined" ? undefined : window.ogb?.approvals,
+  trustedApprovals: TrustedApprovalBridge | undefined = desktopApprovalBridge(),
   currentBot?: BotAnnouncement,
 ): Promise<BotAnnouncement> {
   const {
     approvalMode,
-    confirmFullAccess,
     applyToAllThreads,
     ...ordinaryPatch
   } = patch;
-  const trustedMode = approvalMode === "full" || approvalMode === "custom"
-    ? approvalMode
-    : null;
-  const leavesCustom = approvalMode !== undefined &&
-    approvalModeFor(currentBot ?? {}) === "custom" &&
-    approvalMode !== "custom";
+  // Leaving Custom takes the private channel, for the bot or, when the level
+  // goes to every thread, for any thread still on Custom.
+  const leavesCustom = approvalMode !== undefined && approvalMode !== "custom" &&
+    (approvalModeFor(currentBot ?? {}) === "custom" ||
+      (applyToAllThreads === true && threadApprovalModes(currentBot ?? {}).includes("custom")));
+  const viaBridge = approvalMode === "custom" || leavesCustom ||
+    (approvalMode === "full" && trustedApprovals !== undefined);
 
-  if (!trustedMode && !leavesCustom) {
+  if (!viaBridge) {
     const result = await request(`/api/bots/${botId}`, {
       method: "PATCH",
-      // The Full confirmation is renderer-local and has already been removed
-      // above, including when a rapid later Ask/Auto choice was coalesced.
       body: JSON.stringify(
-        approvalMode === undefined ? ordinaryPatch : { ...ordinaryPatch, approvalMode },
+        approvalMode === undefined ? ordinaryPatch : {
+          ...ordinaryPatch,
+          approvalMode,
+          ...(applyToAllThreads ? { applyToAllThreads: true } : {}),
+        },
       ),
       signal,
     });
     return result.bot;
   }
 
-  if (approvalMode === "full" && confirmFullAccess !== true) {
-    throw new Error("Confirm the Full access warning before enabling it");
-  }
   if (!trustedApprovals || approvalMode === undefined) {
     throw new Error("This approval-level change requires the packaged desktop app");
   }
@@ -2757,74 +3111,14 @@ export async function loadSnapshotBoundary<Key extends string>(
   return chat.status === "fulfilled";
 }
 
-/** Per-frame stream state lives in its OWN context: token frames update only
- * the components that read this hook (the chat's streaming tail), while every
- * useStore consumer — sidebar, mascots, pickers, the settled transcript —
- * keeps its render tree untouched during a stream. */
-interface StreamState {
-  /** in-flight assistant text per threadId */
-  streaming: Record<string, string>;
-  /** in-flight extended thinking per threadId (ephemeral) */
-  reasoning: Record<string, string>;
-}
-const EMPTY_STREAM: StreamState = { streaming: {}, reasoning: {} };
-const StreamContext = createContext<StreamState>(EMPTY_STREAM);
-
-type PendingDelta = { text: string; reasoning: string };
-
-/** Paint once per frame, but keep draining when a hidden tab pauses rAF.
- * Flush pending chunks at 64 Ki UTF-16 characters or a 100ms fallback timer.
- * Accumulated output remains intact and unbounded; this is not a memory cap. */
-export function createStreamDeltaBuffer(onFlush: (entries: Array<[string, PendingDelta]>) => void) {
-  const buffer = new Map<string, PendingDelta>();
-  let frame: number | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let characters = 0;
-  const cancel = () => {
-    if (frame !== null) cancelAnimationFrame(frame);
-    frame = null;
-    clearTimeout(timer);
-    timer = undefined;
-  };
-  const flush = () => {
-    cancel();
-    if (!buffer.size) return;
-    const entries = [...buffer];
-    buffer.clear();
-    characters = 0;
-    onFlush(entries);
-  };
-  return {
-    push(threadId: string, kind: string, delta: string) {
-      if (kind !== "assistant_text" && kind !== "reasoning_text") return;
-      const entry = buffer.get(threadId) ?? { text: "", reasoning: "" };
-      if (kind === "assistant_text") entry.text += delta;
-      else entry.reasoning += delta;
-      buffer.set(threadId, entry);
-      characters += delta.length;
-      if (characters >= 64 * 1024) flush();
-      else if (frame === null) {
-        frame = requestAnimationFrame(flush);
-        timer = setTimeout(flush, 100);
-      }
-    },
-    clear(threadId: string) {
-      const entry = buffer.get(threadId);
-      if (entry) characters -= entry.text.length + entry.reasoning.length;
-      buffer.delete(threadId);
-      if (!buffer.size) cancel();
-    },
-    flush,
-    dispose() {
-      cancel();
-      buffer.clear();
-      characters = 0;
-    },
-  };
-}
-
-export function useStreaming() {
-  return useContext(StreamContext);
+/** The desktop shows a reply once it is finished (the turn's busy state is
+ * what a reader sees while it works), so it keeps no in-flight reply text: a
+ * streamed delta changes nothing here. Runtime frames feed only the
+ * model-variant fold. */
+export function runtimeFrameAction(event: RuntimeEvent): Action | null {
+  return event.type === "turn.started" || event.type === "session.model-variants" || event.type === "turn.completed"
+    ? { type: "modelVariantRuntime", event }
+    : null;
 }
 
 const StoreContext = createContext<{
@@ -2833,10 +3127,18 @@ const StoreContext = createContext<{
   /** Commit any debounced profile edits before an operation reads the bot. */
   flushBotPatches: (botId: string) => Promise<BotAnnouncement | null>;
   /** Re-fetch engine availability — after an install, without a restart. */
-  refreshInstances: () => Promise<void>;
+  refreshInstances: (options?: { reportErrors?: boolean }) => Promise<void>;
   /** Explicit provider/network model discovery. */
   refreshModels: (instanceId: string) => Promise<void>;
 } | null>(null);
+
+/** Lazy useReducer init: adopt the section this device last viewed once per
+ * launch, so a bare open starts there. The exported initialState stays
+ * "overview"/false and the reducer never touches localStorage. */
+function restoreBotSettingsSection(state: AppState): AppState {
+  const section = readLastBotSection();
+  return section ? { ...state, botSettingsSection: section, botSettingsSectionStored: true } : state;
+}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const taskWrites = useRef(new Map<string, { botId: string; updatesDefault: boolean; promise: Promise<BotAnnouncement>; execution: Promise<unknown>; patch: TaskUpdatePatch }>()).current;
@@ -2844,47 +3146,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ...bot,
     tasks: bot.tasks?.map((task) => ({ ...task, ...taskPatchFields(taskWrites.get(task.threadId)?.patch ?? {}) })),
   });
-  const [state, rawDispatch] = useReducer(reducer, initialState);
+  const [state, rawDispatch] = useReducer(reducer, initialState, restoreBotSettingsSection);
   const stateRef = useRef(state);
   stateRef.current = state;
-  // per-frame stream-delta batching (see the "runtime" SSE case); stream
-  // state is intentionally OUTSIDE the reducer so token frames re-render
-  // only StreamContext consumers
-  const [stream, setStream] = useState<StreamState>(EMPTY_STREAM);
-  const deltaBuffer = useMemo(() => createStreamDeltaBuffer((entries) => {
-    setStream((prev) => {
-      const streaming = { ...prev.streaming };
-      const reasoning = { ...prev.reasoning };
-      for (const [threadId, d] of entries) {
-        if (d.text) streaming[threadId] = (streaming[threadId] ?? "") + d.text;
-        if (d.reasoning) reasoning[threadId] = (reasoning[threadId] ?? "") + d.reasoning;
-      }
-      return { streaming, reasoning };
-    });
-  }), []);
-  const flushDeltas = deltaBuffer.flush;
-  const clearStream = (threadId: string) => {
-    // Drop the thread's un-flushed deltas too: the settled message that
-    // triggered this clear already contains them. Without this, the pending
-    // rAF re-creates a "ghost" stream bubble holding the tail fragment —
-    // it renders below any card/chip that settled next (so a permission
-    // card looks glued to the top), keeps the caret blinking while the bot
-    // is actually waiting, and the next block's deltas append onto the
-    // duplicated tail instead of starting a fresh bubble.
-    deltaBuffer.clear(threadId);
-    setStream((prev) => {
-      if (!(threadId in prev.streaming) && !(threadId in prev.reasoning)) return prev;
-      const { [threadId]: _s, ...streaming } = prev.streaming;
-      const { [threadId]: _r, ...reasoning } = prev.reasoning;
-      return { streaming, reasoning };
-    });
-  };
-
+  const showThreads = useShowThreads();
+  const showThreadsRef = useRef(showThreads);
+  showThreadsRef.current = showThreads;
+  const clearChatError = useCallback(() => {
+    rawDispatch({ type: "error", message: null });
+  }, []);
+  useChatErrorClear(state.error, clearChatError);
+  // Every selection path lands on state.selectedId, so one effect is the
+  // whole remember; an empty selection must never overwrite it.
+  useEffect(() => {
+    if (state.selectedId) rememberConversation(state.selectedId);
+  }, [state.selectedId]);
+  // Rail clicks, deep links and remembered openings all carry the accordion
+  // flag, so only a section actually viewed is written; a bare open that
+  // stays collapsed never is.
+  useEffect(() => {
+    if (state.settingsOpen && state.botSettingsExpandAccordion) rememberBotSection(state.botSettingsSection);
+  }, [state.settingsOpen, state.botSettingsExpandAccordion, state.botSettingsSection]);
   const botPatchQueue = useMemo(
     () =>
       createBotPatchQueue({
         send: (botId, patch, signal, currentBot) =>
-          persistBotUpdate(botId, patch, signal, api, window.ogb?.approvals, currentBot),
+          persistBotUpdate(botId, patch, signal, api, desktopApprovalBridge(), currentBot),
         reconcile: async (botId, signal) => {
           const result: { bots: BotAnnouncement[] } = await api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`, { signal });
           return result.bots.find((candidate) => candidate.id === botId) ?? null;
@@ -2894,7 +3181,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         },
         onError: (error) => {
           rawDispatch({ type: "error", message: error.message });
-          setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
         },
       }),
     [],
@@ -2909,11 +3195,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const dispatch = useMemo(() => {
     const navigation = new Map<string, number>();
+    let selectionRevision = 0;
     const olderPagesInFlight = new Set<string>();
     let creatingBot = false;
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
     };
     /** Where a card action's message lives, and the card on it. A card asked
      * inside a room belongs to the room's list, never to one member's. */
@@ -2972,7 +3258,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               threadId, modelSelection: patch.modelSelection, updateBotDefault: Boolean(patch.updateBotDefault),
             });
           }
-          return persistTaskApproval(botId, threadId, patch, window.ogb?.approvals);
+          return persistTaskApproval(botId, threadId, patch, desktopApprovalBridge());
         });
       // Later edits still get saved after an earlier failure, but a send
       // awaiting this batch must observe every rejected setting in it. A
@@ -3026,6 +3312,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     const wrapped: React.Dispatch<Action> = (action) => {
+      // Deferred folder creation may select its bot only while it is still
+      // the latest navigation intent, even if the person went away and back.
+      if (["select", "newTask", "switchTask", "newGroupTask", "switchGroupTask", "showChat", "showRoutines", "showTeamMap"].includes(action.type)) selectionRevision++;
       // Pin before any await or optimistic state change, including legacy
       // callers such as keyboard shortcuts and voice controls.
       action = pinBotThreadAction(action, stateRef.current.bots);
@@ -3158,6 +3447,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "cancelRoutineRun":
           api(`/api/routine-runs/${action.runId}/cancel`, { method: "POST" }).catch(showError);
           break;
+        // The Data tab's sheet. The panel runs and cancels SQL itself (it
+        // owns the request to abort); those answer through the server's
+        // `data` frame (the whole sheet), so every window sees the same
+        // cards. A panel-local onError keeps a server without the surface
+        // from raising the app-wide error line.
+        case "loadDataSheet":
+          api(DATA_ROUTES.sheet(action.botId))
+            .then((body) => rawDispatch({ type: "dataSheet", sheet: dataSheetFromResponse(body, action.botId), tables: dataTablesFromResponse(body) }))
+            .catch((error) => (action.onError ?? showError)(error instanceof Error ? error.message : String(error)));
+          break;
         case "markRoutineRunSeen":
           api(`/api/routine-runs/${action.runId}/seen`, { method: "POST" }).catch(showError);
           break;
@@ -3182,6 +3481,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 for (const queueId of body.queueIds ?? []) {
                   rawDispatch({ type: "consumePendingQueued", threadId: body.threadId, queueId });
                 }
+              } else if (body?.queued === true && body.blockedBy === "images") {
+                // Pressed Steer, but the engine cannot take pictures mid-turn:
+                // say why the message is still queued instead of nothing.
+                wrapped({ type: "notice", notice: { kind: "steer-images", botName: null } });
               }
               action.onSettled?.();
             })
@@ -3211,6 +3514,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 for (const queueId of body.queueIds ?? []) {
                   rawDispatch({ type: "consumePendingQueued", threadId: body.threadId, queueId });
                 }
+              } else if (body?.queued === true && body.blockedBy === "images") {
+                // Pressed Steer, but the engine cannot take pictures mid-turn:
+                // say why the message is still queued instead of nothing.
+                wrapped({ type: "notice", notice: { kind: "steer-images", botName: null } });
               }
               action.onSettled?.();
             })
@@ -3229,7 +3536,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           void waitForExecutionSettings(botBeforeSend ? [botBeforeSend] : [], threadId)
             .then(() => api(`/api/bots/${action.botId}/messages`, {
                 method: "POST",
-                body: JSON.stringify({ text: action.text, replyToId: action.replyToId, threadId, sendId, queueOnly: action.queueOnly, clearQueuedOnSteer: action.clearQueuedOnSteer }),
+                body: JSON.stringify({ text: action.text, replyToId: action.replyToId, threadId, sendId, queueOnly: action.queueOnly, clearQueuedOnSteer: action.clearQueuedOnSteer, ...(action.dataContext ? { dataContext: action.dataContext } : {}) }),
               }))
             .then((body) => {
               if (body?.message && typeof body.threadId === "string") {
@@ -3477,13 +3784,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             () => {},
           );
           break;
+        case "openDataResult":
         case "select": {
-          const bot = stateRef.current.bots.find((b) => b.id === action.id);
-          const group = stateRef.current.groups.find((g) => g.id === action.id);
+          const id = action.type === "select" ? action.id : action.botId;
+          const bot = stateRef.current.bots.find((b) => b.id === id);
+          const group = stateRef.current.groups.find((g) => g.id === id);
           if (bot?.unread) {
-            api(`/api/bots/${action.id}/read`, { method: "POST", body: JSON.stringify({ threadId: bot.threadId }) }).catch(() => {});
+            api(`/api/bots/${id}/read`, { method: "POST", body: JSON.stringify({ threadId: bot.threadId }) }).catch(() => {});
           } else if (group?.unread) {
-            api(`/api/groups/${action.id}/read`, { method: "POST" }).catch(() => {});
+            api(`/api/groups/${id}/read`, { method: "POST" }).catch(() => {});
           }
           break;
         }
@@ -3593,12 +3902,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const mode = approvalModeFor(bot);
           const current = approvalModeFor(currentTaskBot(bot, action.threadId));
           const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
-          // Full, Custom, and leaving Custom stay on the private desktop
-          // channel. Ask, Edits, and Auto can use the thread settings route.
-          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
-          const refreshed = needsDesktop
-            ? window.ogb?.approvals
-              ? window.ogb.approvals.setMode(action.botId, mode, {
+          // Custom, and leaving Custom, stay on the private desktop channel.
+          // Full takes it when this window has one; every other level, and
+          // Full without it, uses the thread settings route.
+          const bridge = desktopApprovalBridge();
+          const viaBridge = mode === "custom" || current === "custom" || (mode === "full" && bridge !== undefined);
+          const refreshed = viaBridge
+            ? bridge
+              ? bridge.setMode(action.botId, mode, {
                 threadId: action.threadId, threadOnly: true, refreshPermissions: true, acknowledgeLocalAuto,
               })
               : Promise.reject(new Error("This approval change requires the packaged desktop app"))
@@ -3611,6 +3922,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }).catch(showError);
           break;
         }
+        case "followBotModel":
+          void api<{ bot: BotAnnouncement }>(`/api/bots/${action.botId}/threads/follow-model`, { method: "POST", body: "{}" })
+            .then(({ bot }) => rawDispatch({ type: "botPatched", bot: withTaskWrites(bot) }))
+            .catch(showError);
+          break;
         case "createProject":
           api(`/api/bots/${action.botId}/projects`, { method: "POST", body: JSON.stringify({ name: action.name, emoji: action.emoji }) })
             .then(({ bot, project }) => {
@@ -3648,18 +3964,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "switchTask": {
           const revision = (navigation.get(action.botId) ?? 0) + 1;
           navigation.set(action.botId, revision);
+          const selectedAtStart = selectionRevision;
           const ready = action.type === "newTask"
             ? botPatchQueue.flush(action.botId)
             : Promise.resolve();
           // A new task's thread is empty, so only the switch needs a page.
           void ready.then(() => api<{ bot: Bot }>(action.type === "newTask"
             ? `/api/bots/${action.botId}/tasks`
-            : `/api/bots/${action.botId}/tasks/${action.threadId}?messages=${MESSAGE_PAGE_SIZE}`, { method: "POST", body: JSON.stringify(action.type === "newTask" ? { projectId: action.projectId } : {}) }))
+            : `/api/bots/${action.botId}/tasks/${action.threadId}${action.whole ? "" : `?messages=${MESSAGE_PAGE_SIZE}`}`, { method: "POST", body: JSON.stringify(action.type === "newTask" ? { projectId: action.projectId, cwd: action.cwd } : {}) }))
             .then((r) => {
+              if (action.type === "newTask") action.onCreated?.();
               if (!r?.bot || navigation.get(action.botId) !== revision) return;
+              const selectsAfterCreation = action.type === "newTask" && action.cwd !== undefined;
+              if (selectsAfterCreation && selectionRevision !== selectedAtStart) return;
               dispatch({ type: "taskSwitched", bot: r.bot });
+              if (selectsAfterCreation) rawDispatch({ type: "select", id: action.botId });
             })
-            .catch(showError);
+            .catch((error) => {
+              // The latest switch, failed, leaves the thread it was on on screen.
+              if (action.type === "switchTask" && navigation.get(action.botId) === revision) {
+                rawDispatch({ type: "switchTaskFailed", botId: action.botId, threadId: action.threadId });
+              }
+              if (action.type === "newTask" && action.onError) action.onError(error instanceof Error ? error.message : String(error));
+              else showError(error);
+            });
           break;
         }
         case "renameTask":
@@ -3704,8 +4032,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ pinned: action.pinned, title: action.title }),
           }).catch(showError);
           break;
+        case "setConversationTurnLimit":
+          api(action.dm ? `/api/groups/${action.groupId}` : `/api/groups/${action.groupId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ turnTimeoutMinutes: action.minutes }),
+          }).catch(showError);
+          break;
         case "deleteGroupTask":
           api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "DELETE" })
+            .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
+            .catch(showError);
+          break;
+        case "setGroupHold":
+          api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/holds`, {
+            method: "POST",
+            body: JSON.stringify({ botId: action.botId, held: action.held }),
+          })
             .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
             .catch(showError);
           break;
@@ -3730,6 +4072,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     return wrapped;
   }, [botPatchQueue]);
+
+  // The app opens the bot it remembers as that bot's row would (openBot):
+  // with threads hidden at its main thread, not at a thread an activity row
+  // or a notification left it on, where the person's next words would make
+  // that thread theirs and leave their own conversation behind. Once, at the
+  // first snapshot. With threads shown the bot stays where it was.
+  const launched = useRef(false);
+  useEffect(() => {
+    if (!state.hydrated || launched.current) return;
+    launched.current = true;
+    const bot = state.bots.find((candidate) => candidate.id === state.selectedId);
+    if (bot && state.activeView === "chat" && botOpensTo(bot, showThreads) !== bot.threadId) openBot(dispatch, bot, showThreads);
+  }, [state.hydrated, state.bots, state.selectedId, state.activeView, showThreads, dispatch]);
 
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
@@ -3858,6 +4213,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             sections: sections ?? [],
             computerControl: computerControl ?? {},
             botQueuedMessages,
+            resumeId: readLastConversation() ?? undefined,
           });
         });
       const peripherals = peripheralParts.map((part) => ({
@@ -3939,9 +4295,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               queueId: frame.message.queueId,
             });
           }
-          // a settled assistant bubble replaces the in-flight stream
           if (frame.message?.role === "bot" && frame.message?.kind === "text") {
-            clearStream(frame.threadId);
             // Auto-speak lives HERE rather than in the chat view so a bot
             // you switched away from still reads its answer out — which is
             // the whole point of listening while you do something else. A
@@ -3965,21 +4319,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "thread":
           rawDispatch({ type: "threadActive", threadId: frame.threadId, activeLeafId: frame.activeLeafId });
-          // a rewind also invalidates any half-streamed text from the old branch
-          clearStream(frame.threadId);
           break;
         case "bot": {
           const bot = frame.bot as BotAnnouncement;
-          // reading the selected chat clears its badge immediately
+          // reading the selected chat clears its badge immediately: the
+          // thread on screen, the one a switch is opening while it is under
+          // way (this frame may be its own announcement), never one it leaves
           const selected = stateRef.current.bots.find((candidate) => candidate.id === bot.id);
-          const selectedTask = bot.tasks?.find((task) => task.threadId === selected?.threadId);
+          const shown = selected?.switchingTo ?? selected?.threadId;
+          const selectedTask = bot.tasks?.find((task) => task.threadId === shown);
           if (bot.id === stateRef.current.selectedId && stateRef.current.activeView === "chat" &&
               (selectedTask?.unread || (!bot.tasks && bot.unread))) {
             if (selectedTask) selectedTask.unread = false;
             // Hidden routine runs must not put the dot back on the next frame.
             // No task list: the bot flag is the unread signal.
             bot.unread = botShowsUnread(bot);
-            fetch(`/api/bots/${bot.id}/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: selected?.threadId }) }).catch(() => {});
+            fetch(`/api/bots/${bot.id}/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: shown }) }).catch(() => {});
           }
           rawDispatch({
             type: "botPatched",
@@ -4004,10 +4359,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // in local state either way, but only the wrapper PATCHes
           // unread:false back. Opening a bot from its own notification and
           // watching the badge return on the next hydration is exactly the
-          // bug that makes notifications feel broken.
+          // bug that makes notifications feel broken. Opened as the sidebar
+          // shows threads when it is clicked.
           showNotification(
             frame.notification,
-            (target) => openNotificationTarget(dispatch, target, stateRef.current),
+            (target) => openNotificationTarget(dispatch, target, stateRef.current, showThreadsRef.current),
             stateRef.current.bots.find((bot) => bot.id === frame.notification.botId)?.avatarUrl,
             visibleNotificationThread(stateRef.current),
           );
@@ -4034,24 +4390,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "webhookDeleted", webhookId: frame.webhookId });
           break;
         case "runtime": {
-          const event = frame.event;
-          if (event.type === "turn.started" || event.type === "session.model-variants" || event.type === "turn.completed") {
-            rawDispatch({ type: "modelVariantRuntime", event });
-          }
-          if (event.type === "content.delta") {
-            deltaBuffer.push(event.threadId, event.streamKind, event.delta);
-          } else if (event.type === "turn.completed") {
-            // flush any buffered tail before clearing so no tokens are lost
-            flushDeltas();
-            clearStream(event.threadId);
-          }
+          const action = runtimeFrameAction(frame.event);
+          if (action) rawDispatch(action);
           break;
         }
         case "screen":
-          rawDispatch({ type: "screenFrame", botId: frame.botId, threadId: frame.threadId, png: frame.png, mime: frame.mime ?? "image/png" });
+          // The picture went to the Computer panel (publishLiveFrame). For
+          // the store, a first frame only means the computer is set up.
+          if (stateRef.current.computerStarts[frame.botId]) {
+            rawDispatch({ type: "computerStart", botId: frame.botId, start: null });
+          }
           break;
         case "computer":
-          rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
+          rawDispatch({ type: "computerStart", botId: frame.botId,
+            start: { state: frame.state, ...(frame.place ? { place: frame.place } : {}) } });
           break;
         case "computer-control":
           rawDispatch({
@@ -4059,7 +4411,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             botId: frame.botId,
             held: frame.held === true,
             helpReason: typeof frame.helpReason === "string" ? frame.helpReason : null,
+            help: parseComputerHelp(frame.help),
           });
+          break;
+        case "data":
+          rawDispatch({ type: "dataSheet", sheet: frame.sheet });
           break;
         case "bot.deleted":
           botPatchQueue.cancel(frame.botId);
@@ -4095,19 +4451,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       onError: () => rawDispatch({ type: "connected", value: false }),
       onSnapshotRequired: () => {
         clearTimeout(hydrationFallback);
+        publishMissedFrames();
         // Frames buffered before this non-resumable stream belong to an
         // abandoned generation. Keep the new generation behind hydrate().
         pendingFrames.splice(0);
         return hydrate();
       },
       onFrame: (frame) => {
+        // Open panels read what the store does not keep (live screens, raw
+        // runtime events) from this same stream.
+        publishLiveFrame(frame as ServerFrame);
         if (hydrated) handleFrame(frame as ServerFrame);
         else pendingFrames.push(frame as ServerFrame);
       },
     });
     return () => {
       alive = false;
-      deltaBuffer.dispose();
       clearTimeout(hydrationFallback);
       for (const refresh of peripheralRefresh.values()) {
         if (refresh.timer) clearTimeout(refresh.timer);
@@ -4119,12 +4478,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this
   // as "Check again" so the user isn't told to restart when a refresh will do.
-  const refreshInstances = useCallback(async () => {
-    try {
-      const { instances } = await api("/api/instances");
+  const instanceProbe = useRef<Promise<void> | null>(null);
+  const refreshInstances = useCallback(async (options?: { reportErrors?: boolean }) => {
+    // Focus and an explicit Check again can arrive together. Share the probe,
+    // but let the explicit caller display failure without breaking background callers.
+    const probe = instanceProbe.current ??= api("/api/instances", { timeoutMs: 120_000 }).then(({ instances }) => {
+      // Keep the last usable list if a proxy returns an empty/non-JSON 200.
+      if (!Array.isArray(instances)) throw new Error(t("engineSetup.invalidStatus"));
       rawDispatch({ type: "instances", instances });
-    } catch {
-      /* offline or server down — the existing list stays */
+    });
+    try {
+      await probe;
+    } catch (error) {
+      if (options?.reportErrors) throw error;
+      // Offline: retain the existing list for background callers.
+    } finally {
+      if (instanceProbe.current === probe) instanceProbe.current = null;
     }
   }, []);
 
@@ -4148,7 +4517,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void refreshInstances();
     };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const onVisible = () => { if (document.visibilityState === "visible") onFocus(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshInstances]);
 
   const flushBotPatches = useCallback(
@@ -4159,11 +4533,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => ({ state, dispatch, flushBotPatches, refreshInstances, refreshModels }),
     [state, dispatch, flushBotPatches, refreshInstances, refreshModels],
   );
-  return (
-    <StoreContext.Provider value={value}>
-      <StreamContext.Provider value={stream}>{children}</StreamContext.Provider>
-    </StoreContext.Provider>
-  );
+  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
 
 export function useStore() {
@@ -4177,9 +4547,13 @@ export function BotEditorStore({ value, children }: { value: ReturnType<typeof u
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
 
+// Building a formatter costs far more than formatting with one, and every
+// row shows a time: build it once. No locale given, as before: times follow
+// the system's clock style, not the app language.
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+
 export function formatTime(at: number) {
-  return new Date(at).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const date = new Date(at);
+  // what toLocaleTimeString says, where a formatter would throw
+  return Number.isNaN(date.getTime()) ? "Invalid Date" : TIME_FORMAT.format(date);
 }

@@ -1,6 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { createElement } from "react";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement, type EffectCallback } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+
+// Server rendering never runs effects; keep them so a test can mount and
+// unmount a draft hook the way a thread switch does.
+const effects = vi.hoisted(() => [] as EffectCallback[]);
+vi.mock("react", async (original) => ({
+  ...await original<typeof import("react")>(),
+  useEffect: (effect: EffectCallback) => { effects.push(effect); },
+}));
 
 import {
   appendComposerDraft,
@@ -17,10 +25,12 @@ import {
   recoverFailedComposerSend,
   replaceDraftAttachment,
   restoredSendId,
+  restoredRequestText,
   setDraft,
   setDraftAttachments,
   setDraftChannelMode,
   useComposerChannelMode,
+  useDraft,
 } from "./drafts";
 import { citationAttachment, createCitationTextSelector } from "./citations";
 import { composeMessage } from "./composer-attachments";
@@ -37,9 +47,27 @@ function memoryStorage(): Storage {
   };
 }
 
+// Drafts are also saved when this page loses focus or closes.
+const page = vi.hoisted(() => {
+  const page = new EventTarget();
+  vi.stubGlobal("window", page);
+  return page;
+});
+const leavePage = () => page.dispatchEvent(new Event("pagehide"));
+afterAll(() => { vi.unstubAllGlobals(); });
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "localStorage");
 });
+
+function copyStorage(store: Storage): Storage {
+  const copy = memoryStorage();
+  for (let index = 0; index < store.length; index += 1) {
+    const key = store.key(index)!;
+    copy.setItem(key, store.getItem(key)!);
+  }
+  return copy;
+}
 
 function renderedChannelMode(id: string): string {
   function Mode() {
@@ -51,6 +79,38 @@ function renderedChannelMode(id: string): string {
 }
 
 describe("channel draft delivery mode", () => {
+  it("keeps the exact request paired with a failed send until the person edits", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:data-retry:task";
+    const requestText = 'Fix this\n<attached-file path="/tmp/orders.csv" name="orders.csv" />';
+    const sent = { draftId, revision: draftRevision(draftId), sendId: "data-retry-send", threadId: "task", text: "Fix this", requestText, attachments: [] };
+    expect(recoverFailedComposerSend(sent)).toBe("restored");
+    expect(restoredSendId(draftId)).toBe(sent.sendId);
+    expect(restoredRequestText(draftId)).toBe(requestText);
+    const changedView = 'Fix this\n<attached-file path="/tmp/people.csv" name="people.csv" />';
+    expect(restoredRequestText(draftId) ?? changedView).toBe(requestText);
+    // The same persisted record survives a remount/restart, not just the local input state.
+    const persisted = JSON.parse(store.getItem("omb-draft-send-ids")!)[draftId];
+    expect(persisted).toEqual({ sendId: sent.sendId, requestText });
+    store.setItem("omb-draft-send-ids", JSON.stringify({ "bot:restarted:task": persisted, "bot:legacy:task": "legacy-id" }));
+    expect(restoredRequestText("bot:restarted:task")).toBe(requestText);
+    expect(restoredSendId("bot:legacy:task")).toBe("legacy-id");
+    expect(restoredRequestText("bot:legacy:task")).toBeUndefined();
+    markDraftEdited(draftId);
+    expect(restoredSendId(draftId)).toBeUndefined();
+    expect(restoredRequestText(draftId) ?? changedView).toBe(changedView);
+  });
+
+  it("keeps a failed outbox send's original request when a newer draft exists", () => {
+    const draftId = "bot:data-outbox:task";
+    const revision = draftRevision(draftId);
+    const requestText = 'Fix this\n<attached-file path="/tmp/orders.csv" name="orders.csv" />';
+    markDraftEdited(draftId);
+    expect(recoverFailedComposerSend({ draftId, revision, sendId: "data-outbox-send", threadId: "task", text: "Fix this", requestText, attachments: [] })).toBe("outbox");
+    expect(failedComposerSends(draftId)[0]?.requestText).toBe(requestText);
+  });
+
   it("restores goal intent on remount and from persisted storage after restart", () => {
     const store = memoryStorage();
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
@@ -62,11 +122,9 @@ describe("channel draft delivery mode", () => {
     expect(renderedChannelMode("group:goal:task-b")).toBe("<span>chat</span>");
     expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
 
-    const restarted = memoryStorage();
-    for (let index = 0; index < store.length; index += 1) {
-      const key = store.key(index)!;
-      restarted.setItem(key, store.getItem(key)!);
-    }
+    // A restart closes the page first.
+    leavePage();
+    const restarted = copyStorage(store);
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: restarted });
     expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
     expect(getDraft(restarted, draftId)).toBe("Finish the release");
@@ -329,6 +387,7 @@ describe("appendComposerDraft", () => {
     const revision = draftRevision(draftId);
     appendComposerDraft(draftId, prompt);
     expect(getDraft(store, draftId)).toBe(prompt);
+    leavePage();
     expect(JSON.parse(store.getItem("omb-drafts") ?? "{}")[draftId]).toBe(prompt);
     // an edited draft outranks a late failed send, exactly like typing does
     expect(draftRevision(draftId)).toBe(revision + 1);
@@ -387,5 +446,122 @@ describe("prependComposerDraft", () => {
     prependComposerDraft(draftId, "check the log");
     expect(getDraft(store, draftId)).toBe("check the log");
     expect(getDraftAttachments(store, draftId)).toEqual([attachment]);
+  });
+});
+
+describe("saving typed drafts", () => {
+  function countedStorage() {
+    const store = memoryStorage();
+    const writes: string[] = [];
+    const counted: Storage = {
+      ...store,
+      key: store.key,
+      get length() { return store.length; },
+      setItem: (key, value) => {
+        if (key === "omb-drafts") writes.push(value);
+        store.setItem(key, value);
+      },
+    };
+    return { store: counted, writes };
+  }
+
+  function mountDraft(id: string) {
+    effects.length = 0;
+    let setText: (next: string) => void = () => {};
+    function Draft() {
+      [, setText] = useDraft(id);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Draft));
+    const cleanups = effects.map((effect) => effect());
+    return {
+      type: (text: string) => setText(text),
+      unmount: () => { for (const cleanup of cleanups) if (typeof cleanup === "function") cleanup(); },
+    };
+  }
+
+  beforeEach(() => {
+    leavePage();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    leavePage();
+    vi.useRealTimers();
+  });
+
+  it("writes storage once when typing pauses, not on every keystroke", () => {
+    const { store, writes } = countedStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:typing:thread";
+    const composer = mountDraft(draftId);
+    let text = "";
+    for (let key = 0; key < 20; key += 1) {
+      text += "x";
+      composer.type(text);
+      vi.advanceTimersByTime(100);
+    }
+    expect(writes).toHaveLength(0);
+    // memory answers reads while storage waits
+    expect(getDraft(store, draftId)).toBe(text);
+
+    vi.advanceTimersByTime(400);
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0])[draftId]).toBe(text);
+    // a reload reads the last saved draft back from storage
+    expect(getDraft(copyStorage(store), draftId)).toBe(text);
+    composer.unmount();
+  });
+
+  it("saves at once when the window loses focus or the page closes, and only what changed", () => {
+    for (const event of ["blur", "pagehide"]) {
+      const { store, writes } = countedStorage();
+      const draftId = `bot:${event}:thread`;
+      setDraft(store, draftId, "half a thought");
+      page.dispatchEvent(new Event(event));
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(writes[0])[draftId]).toBe("half a thought");
+      vi.advanceTimersByTime(1_000);
+      page.dispatchEvent(new Event(event));
+      // nothing typed since, so nothing written again
+      expect(writes).toHaveLength(1);
+    }
+  });
+
+  it("saves at once when the composer switches to another thread", () => {
+    const { store, writes } = countedStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const composer = mountDraft("bot:switch:thread-a");
+    composer.type("for thread a");
+    expect(writes).toHaveLength(0);
+    composer.unmount();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0])["bot:switch:thread-a"]).toBe("for thread a");
+  });
+
+  it("keeps a draft unsaved after a failed write and saves it on the next try", () => {
+    const { store, writes } = countedStorage();
+    const accepting = store.setItem;
+    let full = true;
+    store.setItem = (key, value) => {
+      if (full) throw new DOMException("quota exceeded", "QuotaExceededError");
+      accepting(key, value);
+    };
+    setDraft(store, "bot:quota-retry:thread", "still on screen");
+    leavePage();
+    expect(writes).toHaveLength(0);
+    full = false;
+    page.dispatchEvent(new Event("blur"));
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0])["bot:quota-retry:thread"]).toBe("still on screen");
+  });
+
+  it("keeps drafts another window saved and drops an emptied one", () => {
+    const { store, writes } = countedStorage();
+    store.setItem("omb-drafts", JSON.stringify({ "bot:other-window:thread": "theirs", "bot:sent:thread": "old" }));
+    writes.length = 0;
+    setDraft(store, "bot:sent:thread", "");
+    leavePage();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0])).toEqual({ "bot:other-window:thread": "theirs" });
   });
 });

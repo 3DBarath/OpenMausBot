@@ -33,11 +33,24 @@ export interface AutoVmClaimSlot {
   label?: string;
   /** This claim mounts a local workspace, not a remote Boat/VPS desktop. */
   localVm?: boolean;
+  /** What the gate answers when a call's wait ran out with this claim still
+   * running, instead of the contention text a queued claim earns. Every
+   * call waits on a running claim (the gate's call wait), not only the call
+   * that fired it. */
+  pendingReason?: string;
+  /** The Boat a cloud computer's claim created or woke (mountBotBoat):
+   * its tools reach that Boat once the claim has landed. */
+  boxId?: string;
+  /** The claim itself creates or wakes the computer (mountBotBoat), so that
+   * computer is this turn's even before it is up: select_computer counts it
+   * as selected. The other lazy claims only lease a desktop that is up. */
+  startsComputer?: true;
   /** Called once, after the slot is marked failed, when the fired claim
    * rejected (issue #1369): the turn surfaces a terminal error and ends
    * instead of staying busy behind a gate that can only refuse. The
-   * fail-closed refusal below does not depend on it firing. */
-  onRejected?: (failure: string) => void;
+   * fail-closed refusal below does not depend on it firing. `error` is what
+   * the claim threw, so a failure already read as a place keeps its row. */
+  onRejected?: (failure: string, error?: unknown) => void;
 }
 
 export type AutoVmClaimTable = Map<string, AutoVmClaimSlot>;
@@ -59,7 +72,7 @@ export function startAutoVmClaim(table: AutoVmClaimTable, threadId: string, gene
     (error: unknown) => {
       slot.failed = true;
       slot.failure = error instanceof Error ? error.message : String(error);
-      slot.onRejected?.(slot.failure);
+      slot.onRejected?.(slot.failure, error);
     },
   );
 }

@@ -166,6 +166,8 @@ export function createTunnelAccount(options: {
   fetchImpl?: typeof fetch;
   machineName?: string;
   recovery?: TunnelRecovery;
+  /** Where failed setup steps (code, status, support reference) are written. */
+  log?: (line: string) => void;
   /** Test seam for the recovery timers and the time they compare against. */
   clock?: {
     setTimer: (callback: () => void, milliseconds: number) => unknown;
@@ -184,6 +186,7 @@ export function createTunnelAccount(options: {
     updateCredentials: (derive, afterPersist) => credentials.update(derive, afterPersist),
     identity: { name: options.machineName ?? hostname(), platform: platformName(), appVersion: options.version },
     newClientInstanceId: () => randomUUID(),
+    ...(options.log ? { log: options.log } : {}),
     ...(recovery
       ? {
           autoRecover: true,
@@ -213,19 +216,23 @@ export function fleetCredential(env: NodeJS.ProcessEnv = process.env): string | 
   return value ? value : null;
 }
 
-export async function fleetAccess(options: { credential: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch }): Promise<ManagedTunnelAccess> {
+/** `version` is this server's release, reported so the control plane only
+ * gives it an address under a managed domain that release accepts. */
+export async function fleetAccess(options: { credential: string; version?: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch }): Promise<ManagedTunnelAccess> {
   const env = options.env ?? process.env;
   const controlPlane = resolveCompanionControlPlaneURL({ isPackaged: true, environment: env });
   if (!controlPlane) throw new Error("OMB_CONTROL_PLANE_URL is set but is not an https address");
   const client = createControlPlaneClient({ baseURL: controlPlane, fetchImpl: options.fetchImpl });
   try {
-    const { endpoint, connectorToken } = await client.ensureEndpoint(options.credential);
+    const { endpoint, connectorToken } = await client.ensureEndpoint(options.credential, { appVersion: options.version });
     return { endpoint: endpoint.url, token: connectorToken };
   } catch (error) {
     if (error instanceof ControlPlaneError && error.status === 401) {
       throw new Error(`the installation credential in ${FLEET_CREDENTIAL_ENV} was rejected by ${controlPlane}; the fleet has to issue a new one`);
     }
-    throw new Error(`could not get this machine's public address from ${controlPlane}: ${error instanceof Error ? error.message : String(error)}`);
+    // The request id is what support looks the failure up by.
+    const reference = error instanceof ControlPlaneError && error.requestId ? ` (reference ${error.requestId})` : "";
+    throw new Error(`could not get this machine's public address from ${controlPlane}: ${error instanceof Error ? error.message : String(error)}${reference}`);
   }
 }
 

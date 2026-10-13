@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Bot, Group, GroupTask, Task } from "@/state/store";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { t } from "@/lib/i18n";
-import { attentionJumpAction, attentionOwnerName, attentionRowStatus, attentionUnpinAction, crossBotAttentionThreads, crossBotPinnedThreads, sidebarGroupActivityTasks } from "./SidebarBotActivity";
+import { attentionHasRunningWork, attentionJumpAction, attentionOwnerName, attentionRowStatus, attentionTriggerLabel, attentionUnpinAction, crossBotAttentionThreads, crossBotPinnedThreads, sidebarGroupActivityTasks } from "./SidebarBotActivity";
 
 const task = (threadId: string, title: string, extra: Partial<Task>): Task =>
   ({ threadId, title, createdAt: 0, ...extra }) as Task;
@@ -30,6 +30,25 @@ describe("botShowsUnread", () => {
       task("p1", "Failed run", { routineRunId: "run-1", unread: true }),
     ]);
     expect(botShowsUnread(visible)).toBe(true);
+  });
+});
+
+describe("header activity", () => {
+  const entry = (task: Partial<Task> & { queued?: boolean }) => ({ kind: "bot" as const, botId: "a", botName: "Alpha", task: { threadId: "t", title: "T", createdAt: 0, queued: false, ...task } });
+
+  it("names the pulse with the count only when there is something to count", () => {
+    expect(attentionTriggerLabel(0)).toBe("Active Threads");
+    expect(attentionTriggerLabel(2)).toBe(t("attention.titleCount", { count: 2 }));
+  });
+
+  it("marks running or queued work and leaves unread alone", () => {
+    expect(attentionHasRunningWork([entry({ unread: true })])).toBe(false);
+    expect(attentionHasRunningWork([entry({ activity: "waiting-on-you" })])).toBe(false);
+    expect(attentionHasRunningWork([entry({ activity: "waiting-on-you", busy: true })])).toBe(false);
+    expect(attentionHasRunningWork([entry({ activity: "waiting-on-you", busy: true, queued: true })])).toBe(true);
+    expect(attentionHasRunningWork([entry({ activity: "working" })])).toBe(true);
+    expect(attentionHasRunningWork([entry({ busy: true })])).toBe(true);
+    expect(attentionHasRunningWork([entry({ queued: true })])).toBe(true);
   });
 });
 
@@ -98,6 +117,22 @@ describe("group attention", () => {
     expect(tasks.map((task) => task.threadId)).toEqual(["g0"]);
     expect(tasks[0].busy).toBe(true);
     expect(tasks[0].unread).toBe(true);
+  });
+
+  it("shows each thread's own work when a room's threads run side by side", () => {
+    // the open thread is idle; a side thread's member waits on the person
+    // while the room-level flag counts the whole room as working
+    const room = group("g", "Crew", "g0", {
+      working: true,
+      busyBotId: null,
+      tasks: [
+        { threadId: "g0", title: "Crew", createdAt: 0, working: false, busyBotId: null },
+        { threadId: "g1", title: "Side thread", createdAt: 0, working: true, busyBotId: "b" },
+      ],
+    });
+    const waitingBot = bot("b", "Beta", "b0", [], { activity: "waiting-on-you" });
+    const tasks = sidebarGroupActivityTasks(room, [waitingBot], {});
+    expect(tasks.map((task) => [task.threadId, task.busy, task.activity])).toEqual([["g1", true, "waiting-on-you"]]);
   });
 
   it("keeps a queued side conversation even while the room itself is idle", () => {

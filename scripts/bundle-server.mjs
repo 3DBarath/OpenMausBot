@@ -18,7 +18,7 @@
 // drivers/ nested; import.meta.url still resolves to the same location, so
 // that lookup is unaffected.
 import { build } from "esbuild";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -47,9 +47,12 @@ const ENTRY_POINTS = [
   "openmausbot.ts",
   "pair-cli.ts",
   "workspace-backup.worker.ts",
-  // the OMB Cloud Pro home image's entry point (deploy/fly/Dockerfile): it
+  // the OMB Cloud Pro home image's entry point (Dockerfile, cloud-home): it
   // spawns index.js beside it and the Caddy edge
   "cloud-home-start.ts",
+  // the container image's entry point (Dockerfile, deploy/podman): it spawns
+  // index.js beside it and starts it again on RESTART_EXIT_CODE
+  "server-launcher.ts",
   // The packaged smoke probe imports this manifest directly. Importing the
   // shared avatar contract widens TypeScript's inferred emit root to the repo,
   // so tsc may place its copy under dist-server/server/. Bundle an explicit
@@ -153,6 +156,12 @@ if (existsSync(join(root, "enterprise", "server", "index.ts"))) {
   copyFileSync(join(root, "enterprise", "LICENSE"), join(root, "dist-server", "enterprise", "LICENSE"));
 }
 
+// The packaged desktop forks this bootstrap rather than index.js
+// (electron/server-child-launch.mjs): it turns on Node's compile cache for the
+// server process, then imports index.js beside it. Copied, not bundled:
+// esbuild would inline index.js into it.
+copyFileSync(join(root, "scripts", "desktop-server-entry.mjs"), join(root, "dist-server", "desktop-entry.mjs"));
+
 // The model catalog snapshot (server/model-catalog/catalog.ts) is read from
 // disk, not inlined: 1.5 MB of JSON has no place in index.js. The bundle looks
 // for it under model-catalog/ beside itself. Its MIT notice is inside the file.
@@ -168,3 +177,7 @@ const piMcpExtDest = join(root, "dist-server", "drivers", "pi-mcp-extension.ts")
 mkdirSync(dirname(piMcpExtDest), { recursive: true });
 await build({ entryPoints: [piMcpExtSrc], outfile: piMcpExtDest, bundle: true,
   platform: "node", target: "node24", format: "esm", external: ["typebox"], });
+
+// Desktop resources live outside app.asar, so its package.json cannot mark
+// these .js bundles as ESM. Do not inherit a user's CommonJS package scope.
+writeFileSync(join(root, "dist-server", "package.json"), '{"type":"module"}\n');

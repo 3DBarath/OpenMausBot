@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StoreProvider } from "@/state/store";
 import * as store from "@/state/store";
-import { AnthropicEveryClaudeBot, ApiKeyRow, looksLikeKey, OpenAiCompatUrl } from "./ApiKeys";
+import { AnthropicEveryClaudeBot, ApiKeyRow, looksLikeKey, OpenAiCompatUrl, OpenCodeProviderKeys } from "./ApiKeys";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -49,6 +49,16 @@ describe("provider key rows", () => {
     expect(render(createElement(ApiKeyRow, { section: "openrouter", testProvider: "openrouter" }))).toContain("sk-or-v1-…");
 
     expect(render(createElement(ApiKeyRow, { section: "xai", testProvider: "xai" }))).toContain("xAI API key");
+    const groq = render(createElement(ApiKeyRow, { section: "groq", testProvider: "groq" }));
+    expect(groq).toContain("Groq API key");
+    expect(groq).toContain('type="password"');
+    expect(groq).toContain('value=""');
+    expect(groq).not.toContain("Connected");
+    expect(groq).not.toContain(">Test<");
+    const meta = render(createElement(ApiKeyRow, { section: "meta", testProvider: "meta" }));
+    expect(meta).toContain("Meta Model API key");
+    expect(meta).toContain("LLM|…");
+    expect(meta).toContain('type="password"');
   });
 
   it("saves on paste instead of a Save button, and keeps key effects in view", () => {
@@ -101,6 +111,35 @@ describe("provider key rows", () => {
     expect(looksLikeKey("sk-proj-abc123_DEF")).toBe(true);
     expect(looksLikeKey("The mascots are ready")).toBe(false);
     expect(looksLikeKey("sk-abc\n")).toBe(false);
+  });
+
+  it("lists the keys saved for OpenCode's other providers by name, with a way to add and remove one", () => {
+    const withKeys = (providerKeys: string[] | undefined) => vi.spyOn(store, "useStore").mockReturnValue({
+      state: { ...store.initialState, config: { ...store.initialState.config, opencodeGo: { configured: false, providerKeys } } as store.ConfigStatus },
+      dispatch: vi.fn(),
+      flushBotPatches: vi.fn(),
+      refreshInstances: vi.fn(),
+      refreshModels: vi.fn(),
+    });
+    withKeys(["GROQ_API_KEY", "VENICE_API_KEY"]);
+    const saved = render(createElement(OpenCodeProviderKeys));
+    expect(saved).toContain("Keys for other OpenCode providers");
+    expect(saved).toMatch(/<details[^>]*open=""/);
+    for (const name of ["GROQ_API_KEY", "VENICE_API_KEY"]) {
+      expect(saved).toContain(`data-opencode-provider-key="${name}"`);
+      expect(saved).toContain(`aria-label="Remove ${name}"`);
+    }
+    // A new one: a name and a write-only key.
+    expect(saved).toContain('placeholder="VENICE_API_KEY"');
+    expect(saved).toContain('aria-label="Key name"');
+    expect(saved).toMatch(/<input type="password"[^>]*aria-label="Key"/);
+
+    // From a server that predates the list, or with nothing saved yet: closed and empty.
+    withKeys(undefined);
+    const none = render(createElement(OpenCodeProviderKeys));
+    expect(none).not.toMatch(/<details[^>]*open=""/);
+    expect(none).not.toContain("data-opencode-provider-key=");
+    expect(none).toContain("such as VENICE_API_KEY for Venice");
   });
 
   it("offers the base URL as a setting next to the key", () => {

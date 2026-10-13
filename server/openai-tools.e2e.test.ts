@@ -37,6 +37,9 @@ type ChatRequest = {
 // request (server/drivers/prompt-split.ts, openai-chat.ts).
 const CONTEXT_NOTE = "Context from OpenMausBot updated since this conversation started; it replaces any earlier copy:";
 const MEMORY = "Your memory (MEMORY.md):\n# Memory\n- Fixture prefers concise replies.";
+// Who on the team is busy changes whenever a teammate starts or finishes
+// work, so it is volatile too: it must never reach the cached system message.
+const AVAILABILITY = "Team availability";
 /** What the model was actually given: the system message and the newest
  * user message, which carries the volatile context note. */
 function delivered(request: ChatRequest) {
@@ -55,10 +58,15 @@ function expectMemoryInTurn(request: ChatRequest, text: string) {
   expect(turn.slice(-text.length)).toBe(text);
 }
 
-it("runs structured MCP calls through real harness approval and continuation, preserving text and cancellation", async () => {
+it.each(["openaiCompat", "groq", "meta"] as const)("%s runs structured MCP calls through real harness approval and continuation, preserving text and cancellation", async instanceId => {
   const requests: ChatRequest[] = [];
   let scenario = "allow";
   const upstream = createServer(async (req, res) => {
+    if (req.headers.authorization !== "Bearer synthetic-fixture-key") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Invalid API key" } }));
+      return;
+    }
     if (req.url === "/v1/models") {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ data: [{ id: "fixture-model" }] }));
@@ -113,7 +121,14 @@ it("runs structured MCP calls through real harness approval and continuation, pr
     return result;
   };
   try {
-    await api("PATCH", "/api/config", { openaiCompat: { key: "synthetic-fixture-key", url: `http://127.0.0.1:${address.port}/v1`, model: "fixture-model" } });
+    const saved = await api("PATCH", "/api/config", { [instanceId]: {
+      key: "synthetic-fixture-key", url: `http://127.0.0.1:${address.port}/v1`,
+      ...(instanceId === "openaiCompat" ? { model: "fixture-model" } : {}),
+    } });
+    expect(saved[instanceId].configured).toBe(true);
+    expect(JSON.stringify(saved)).not.toContain("synthetic-fixture-key");
+    expect(await api("POST", "/api/keys/test", { provider: instanceId })).toMatchObject({ ok: true, check: "models", models: ["fixture-model"] });
+    await api("POST", `/api/instances/${instanceId}/refresh-models`, {});
     const mcpScript = join(fixture.info.dataDir, "fixture-mcp.mjs");
     writeFileSync(mcpScript, MCP_FIXTURE);
     for (const mode of ["allow", "deny", "cancel", "text", "ordinary", "selected", "scope-empty", "tools-off"]) {
@@ -122,15 +137,15 @@ it("runs structured MCP calls through real harness approval and continuation, pr
       const startupMarker = join(fixture.info.dataDir, `${mode}-mcp-started.txt`);
       await api("POST", "/api/mcp/servers", { name: mode, command: process.execPath, args: [mcpScript], env: { FIXTURE_ARTIFACT: artifact, FIXTURE_STARTED: startupMarker }, enabled: true });
       if (mode === "tools-off") {
-        await api("PATCH", "/api/instances/openaiCompat", { tools: "false" }, 400);
+        await api("PATCH", `/api/instances/${instanceId}`, { tools: "false" }, 400);
         await api("PATCH", "/api/instances/claude", { tools: false }, 400);
-        const changed = await api("PATCH", "/api/instances/openaiCompat", { tools: false });
-        const instance = changed.instances.find((item: any) => item.instanceId === "openaiCompat");
+        const changed = await api("PATCH", `/api/instances/${instanceId}`, { tools: false });
+        const instance = changed.instances.find((item: any) => item.instanceId === instanceId);
         expect(instance.capabilities).toMatchObject({ agentsMcp: false, composioMcp: false });
       }
       await api("PATCH", `/api/mcp/servers/${mode}`, { enabled: true });
       const { bot } = await control(["new-bot", "--name", `API tool ${mode}`]);
-      await control(["set-model", "--bot", bot.id, "--instance", "openaiCompat", "--model", "fixture-model"]);
+      await control(["set-model", "--bot", bot.id, "--instance", instanceId, "--model", "fixture-model"]);
       await api("PATCH", `/api/bots/${bot.id}`, { mcpServers: [mode], description: "Verification assistant", soul: "Use structured tools when an operation is requested." });
       if (mode === "selected" || mode === "scope-empty") {
         await api("PATCH", `/api/bots/${bot.id}`, { toolScope: { allow: mode === "selected" ? [`mcp:${mode}:write_file`] : [] } });
@@ -157,6 +172,11 @@ it("runs structured MCP calls through real harness approval and continuation, pr
       const messages = await control(["messages", "--bot", bot.id, "--task", bot.activeTaskId, "--limit", "20"]);
       const first = delivered(requests[before]!);
       expectMemoryInTurn(requests[before]!, "Write the verification artifact if a structured tool is requested.");
+      if (mode === "ordinary") {
+        // the earlier modes' bots are this bot's teammates
+        expect(first.system).not.toContain(AVAILABILITY);
+        expect(first.turn).toContain(AVAILABILITY);
+      }
       expect(first.all).not.toContain("update it with your file tools");
       expect(first.all).not.toContain("File locations for this bot");
       expect(first.all).not.toContain("read its exact SKILL.md path above with your file tools");
@@ -205,6 +225,7 @@ it("runs structured MCP calls through real harness approval and continuation, pr
         const previewText = JSON.stringify(preview.sections);
         expect(previewText).toContain("Fixture prefers concise replies.");
         expect(previewText).not.toContain("update it with your file tools");
+        if (mode === "ordinary") expect(preview.sections.find((section: any) => section.id === "availability")?.text).toContain(AVAILABILITY);
         const { group } = await api("POST", "/api/groups", {
           name: "API memory room", memberIds: [bot.id],
           setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } },
@@ -224,8 +245,12 @@ it("runs structured MCP calls through real harness approval and continuation, pr
         }
       }
     }
+    const cleared = await api("PATCH", "/api/config", { [instanceId]: { key: "" } });
+    expect(cleared[instanceId].configured).toBe(false);
+    const fleet = await api("GET", "/api/instances");
+    expect(fleet.instances.find((item: any) => item.instanceId === instanceId).snapshot.state).toBe("unavailable");
   } finally {
-    const evidencePath = `${fixture.info.logPath}.openai-tools.json`;
+    const evidencePath = `${fixture.info.logPath}.${instanceId}-tools.json`;
     writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
     console.info(JSON.stringify({ evidencePath }));
     await fixture.close();

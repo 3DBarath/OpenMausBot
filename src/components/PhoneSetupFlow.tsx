@@ -20,8 +20,9 @@ import {
   Wifi,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import { phonePairingLink } from "../../shared/pairing-link";
 import {
-  companionPairingLink,
+  companionPairingAddressText,
   companionPairingRoute,
   companionPairingRoutePin,
   companionPairingRoutePinAvailable,
@@ -49,13 +50,20 @@ import {
   preparePhonePairingRoute,
   queuePhonePairingAttempt,
   releasePhonePairingAttempt,
+  secureAddressRequestLapsed,
   shouldArmPhoneSetupProvisioningTimeout,
+  shouldPrepareSecureAddress,
   startNonOverlappingPhoneSetupPoll,
   type PhoneSetupPhase,
   type PhonePairingAttemptLock,
   type PhonePairingAttemptQueue,
 } from "../lib/phone-setup";
 import type { CompanionAccountState } from "../types/ogb";
+import {
+  companionStateRefreshIsCurrent,
+  mutateCompanionBridgeState,
+  phonePairingManualCodeMode,
+} from "../lib/companion-state";
 import { ConnectionDetail } from "./ConnectionDetail";
 import { brand } from "../lib/brand";
 
@@ -84,6 +92,11 @@ export interface CompanionState {
   endpoints?: CompanionEndpoint[];
   secretPublicKey?: string;
   discovery?: { advertising: boolean; name: string };
+  /** The Windows adapter the Wi-Fi QR's address is on ("Wi-Fi"), present
+   * while a pairing window is open and Windows has that network down as
+   * Public, where its firewall drops a phone's connection
+   * (companion/src/windows-network.ts). */
+  publicNetwork?: string;
   error?: string;
 }
 
@@ -139,30 +152,6 @@ export const loadCompanionBridgeState = async (
   };
 };
 
-export interface CompanionStateMutationEpoch {
-  current: number;
-}
-
-/** Polls capture the epoch before reading. A mutation advances it both before
- * and after the IPC call, invalidating snapshots taken before or during that
- * mutation while leaving the independently loaded account result usable. */
-export const mutateCompanionBridgeState = async <State,>(
-  epoch: CompanionStateMutationEpoch,
-  mutate: () => Promise<State>,
-): Promise<State> => {
-  epoch.current += 1;
-  try {
-    return await mutate();
-  } finally {
-    epoch.current += 1;
-  }
-};
-
-export const companionStateRefreshIsCurrent = (
-  epoch: CompanionStateMutationEpoch,
-  refreshEpoch: number,
-): boolean => epoch.current === refreshEpoch;
-
 export const shouldHydrateCompanionEmail = (
   userEdited: boolean,
   account: CompanionAccountState,
@@ -174,14 +163,6 @@ export const companionAccountActionError = (
 ): string | null => {
   if (actionError) return actionError;
   return account?.status === "signed-out" ? account.message ?? null : null;
-};
-
-export const phonePairingManualCodeMode = (
-  pairingOpen: boolean,
-  pairingLink: string | null,
-): "details" | "direct" | "hidden" => {
-  if (!pairingOpen) return "hidden";
-  return pairingLink ? "details" : "direct";
 };
 
 export interface PhoneSetupController {
@@ -199,6 +180,8 @@ export interface PhoneSetupController {
   secondsLeft: number;
   address: string | undefined;
   pairingPort: number;
+  /** What to type on the phone: `https://host` for hosted, `host:port` otherwise. */
+  addressText: string | undefined;
   hostedReady: boolean;
   localFallback: boolean;
   tailscaleFallback: boolean;
@@ -412,10 +395,23 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         }
         const explicitRoute = routeMode !== "automatic";
         const gate = phonePairingGate(accountOverride ?? account, started, explicitRoute);
+        const remote = companionAccountBridge();
+        const prepare = remote?.prepare && shouldPrepareSecureAddress(routeMode, gate, accountOverride ?? account)
+          ? remote.prepare
+          : null;
         if (gate !== "open") {
           setProvisioning(gate === "wait" || gate === "start");
+          // The address is created now, under the spinner; the QR opens on
+          // the next refresh, or the account shows why it could not be.
+          if (prepare) {
+            const next = await mutateCompanionBridgeState(companionMutationEpoch, () => prepare());
+            if (isCurrent()) setAccount(next);
+          }
           return;
         }
+        // The address is already there and the QR does not wait for this:
+        // it only tells the desktop someone is pairing over it.
+        if (prepare) void Promise.resolve().then(() => prepare()).catch(() => {});
         if (explicitRoute && !companionPairingRoute(started, routeMode)) {
           setProvisioning(false);
           setError(routeMode === "tailscale"
@@ -753,13 +749,17 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       flow.tailscaleFallback ||
       flow.pairingAttempted ||
       setupTimedOut ||
-      !state ||
-      phonePairingGate(account, state, false) !== "open"
+      !state
     ) {
       return;
     }
-    void openPairing("automatic");
-  }, [account, flow.active, flow.localFallback, flow.pairingAttempted, flow.tailscaleFallback, openPairing, setupTimedOut, state]);
+    if (
+      phonePairingGate(account, state, false) === "open"
+      || (!provisioning && secureAddressRequestLapsed(account, state))
+    ) {
+      void openPairing("automatic");
+    }
+  }, [account, flow.active, flow.localFallback, flow.pairingAttempted, flow.tailscaleFallback, openPairing, provisioning, setupTimedOut, state]);
 
   const shouldPoll = flow.active || Boolean(state?.pairing);
   useEffect(() => {
@@ -791,7 +791,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
   );
   const pairingLink = useMemo(() => {
     if (!state?.pairing || !pairingRoute) return null;
-    return companionPairingLink({
+    return phonePairingLink({
       ...pairingRoute,
       code: state.pairing.code,
       token: state.pairing.token,
@@ -846,6 +846,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       : 0,
     address: pairingRoute?.address,
     pairingPort: pairingRoute?.port ?? state?.port ?? 8810,
+    addressText: pairingRoute ? companionPairingAddressText(pairingRoute) : undefined,
     hostedReady: Boolean(state?.endpoints?.some((endpoint) => endpoint.kind === "hosted")),
     localFallback: flow.localFallback,
     tailscaleFallback: flow.tailscaleFallback,
@@ -1238,6 +1239,12 @@ export function PhoneSetupFlowView({
       {!c.pairingExpired && manualCodeMode === "details" && c.state?.pairing && (
         <p className="mt-3 text-[11.5px] text-ink-secondary">{t("phone.code.expiresIn", { seconds: c.secondsLeft })}</p>
       )}
+      {/* Only the Wi-Fi QR is dialed on this network; a hosted QR connects outward. */}
+      {!c.pairingExpired && c.localFallback && c.state?.publicNetwork && (
+        <p role="note" className="mt-3 w-full max-w-[390px] rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-left text-[12px] leading-relaxed text-warning">
+          {t("phone.code.publicNetwork", { network: c.state.publicNetwork })}
+        </p>
+      )}
       {c.pairingExpired && (
         <button onClick={c.refreshCode} className="mt-5 rounded-lg bg-accent px-5 py-2.5 text-[14px] font-medium text-white">
           {t("phone.code.createNew")}
@@ -1251,7 +1258,7 @@ export function PhoneSetupFlowView({
             <div className="mt-1 font-mono text-[22px] tracking-[0.25em] text-ink">{c.state.pairing.code}</div>
             {c.address && (
               <div className="mt-3">
-                <ConnectionDetail label={t("phone.code.address")} value={`${c.address}:${c.pairingPort}`} />
+                <ConnectionDetail label={t("phone.code.address")} value={c.addressText ?? `${c.address}:${c.pairingPort}`} />
               </div>
             )}
           </div>

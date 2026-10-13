@@ -175,7 +175,7 @@ describe("ModelPicker with a signed-out or missing Claude", () => {
     fixture.instances = [codex, notFound()];
     const html = open(bot("claude", "claude-opus-5-5")).html;
     expect(html).toContain('aria-label="Claude"');
-    expect(html).toContain("Install Claude");
+    expect(html).toContain("Set up Claude");
     expect(html).toContain("`claude` CLI not found");
     expect(html).toContain("npm install -g @anthropic-ai/claude-code");
     // Local models need the CLI too, so there is no way in to them yet.
@@ -199,6 +199,19 @@ describe("the way into API keys", () => {
     expect(opened.html).toContain("Add API keys");
     (entry!.props.onClick as () => void)();
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+  });
+
+  // MOCA-292: once a key is saved, this shortcut is also how a mistyped key gets fixed.
+  it("says the shortcut changes keys too once a key is saved", () => {
+    const openai: InstanceInfo = {
+      instanceId: "openai", driverKind: "openai-compat", displayName: "OpenAI", access: "api",
+      snapshot: { state: "available", authenticated: true, version: null },
+      models: { default: "gpt-5", options: [{ id: "gpt-5", label: "GPT-5" }] },
+    };
+    fixture.instances = [codex, openai];
+    const opened = open(bot("codex", "gpt-5.6"));
+    expect(opened.html).toContain("Add or change API keys");
+    expect(opened.html).not.toContain(">Add API keys<");
   });
 
   it("ends the rail's API keys group with a way to add one", () => {

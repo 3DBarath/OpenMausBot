@@ -1,5 +1,6 @@
 import type { Assertion } from "../types.ts";
 import type { WorldSnapshot } from "./snapshot.ts";
+import { TURN_CLOCK_LEAD } from "../../server/turn-clock.ts";
 
 /** Pure scorers: each assertion is evaluated against the world snapshot
  * the runner collected after the scenario steps finished. The snapshot is
@@ -15,17 +16,31 @@ const deepEqual = (left: unknown, right: unknown): boolean => JSON.stringify(lef
 
 const fmt = (value: unknown): string => JSON.stringify(value, null, 2);
 
-/** Only Claude's leading driver-authored volatile update is an instruction
- * surface. User quotes and text after the reminder are not instructions. */
-function volatileInstructions(prompt: string): string {
+/** The per-turn clock line (server/turn-clock.ts) rides between the update
+ * and the person's text. Only that one leading line is dropped. */
+function withoutLeadingTurnClock(suffix: string): string {
+  const lead = "\n\n" + TURN_CLOCK_LEAD;
+  if (!suffix.startsWith(lead)) return suffix;
+  const end = suffix.indexOf("\n\n", lead.length);
+  return end === -1 ? suffix : suffix.slice(end);
+}
+
+/** Only a leading Claude update wrapped around captured raw user input is
+ * an instruction surface. User copies and unproven inputs fail closed. */
+function volatileInstructions(prompt: string, messages: WorldSnapshot["threads"][string]): string {
   try {
     const envelope = JSON.parse(prompt) as { type?: string; message?: { role?: string; content?: unknown } };
     const content = envelope?.message?.content;
     if (envelope?.type !== "user" || envelope.message?.role !== "user" || typeof content !== "string") return "";
+    if (messages.some(message => message.role === "user" && message.text === content)) return "";
     const prefix = "<system-reminder>\nThis part of your instructions changed since this session started. It replaces the earlier copy:\n\n";
     if (!content.startsWith(prefix)) return "";
-    const end = content.indexOf("\n</system-reminder>", prefix.length);
-    return end === -1 ? "" : content.slice(prefix.length, end);
+    const closing = "\n</system-reminder>";
+    const end = content.indexOf(closing, prefix.length);
+    if (end === -1) return "";
+    const suffix = withoutLeadingTurnClock(content.slice(end + closing.length));
+    if (!messages.some(message => message.role === "user" && typeof message.text === "string" && suffix === "\n\n" + message.text)) return "";
+    return content.slice(prefix.length, end);
   } catch {
     return "";
   }
@@ -103,7 +118,7 @@ function score(assertion: Assertion, world: WorldSnapshot): { pass: boolean; det
       const turn = world.turns.find((entry) => entry.bot === assertion.bot && entry.index === assertion.turn);
       return turn === undefined
         ? { pass: false, detail: "no evidence turn " + assertion.turn + " for this bot" }
-        : turn.system.includes(assertion.includes) || assertion.kind === "instructionsInclude" && volatileInstructions(turn.prompt).includes(assertion.includes)
+        : turn.system.includes(assertion.includes) || assertion.kind === "instructionsInclude" && volatileInstructions(turn.prompt, world.threads[turn.threadId] ?? []).includes(assertion.includes)
           ? { pass: true, detail: assertion.kind === "instructionsInclude" ? "model instructions contain the pinned text" : "system prompt contains the pinned text" }
           : { pass: false, detail: assertion.kind === "instructionsInclude"
             ? "model instructions lacked: " + assertion.includes + "\nsystem:\n" + turn.system + "\nprompt:\n" + turn.prompt

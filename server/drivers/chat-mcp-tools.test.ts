@@ -7,6 +7,7 @@ import { augmentedPath } from "../env-path.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolSession } from "./chat-mcp-tools.ts";
 import type { ToolScope } from "../../shared/tool-scope.ts";
 import { startFakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
+import { whopLikeCatalog } from "../testing/whop-like-catalog.ts";
 
 const dirs: string[] = [];
 const sessions: ChatToolSession[] = [];
@@ -73,6 +74,23 @@ describe("Chat MCP session", () => {
   it("starts no server when the owner selected no MCP tools", async () => {
     const f = fixture();
     const session = await f.mount(false, false, { allow: ["native:ask_user"] });
+    expect(session.definitions).toEqual([]);
+    expect(existsSync(f.receipt)).toBe(false);
+  });
+
+  it.each([undefined, { allow: ["mcp:data:write"] }])("mounts Data without computer access and preserves selected tool arguments (%j)", async (scope) => {
+    const f = fixture();
+    const session = await mountChatTools({ data: f.server }, f.controller.signal, false, scope);
+    sessions.push(session);
+    expect(session.definitions).toEqual([{ type: "function", function: { name: "data_write", description: "Fixture write", parameters: schema } }]);
+    await expect(session.execute("data_write", { value: "query receipt" }, f.controller.signal)).resolves.toEqual({ text: "recorded:query receipt", ok: true });
+    expect(f.read().calls.at(-1)).toMatchObject({ method: "tools/call", params: { name: "write", arguments: { value: "query receipt" } } });
+  });
+
+  it("does not start Data when the owner's tool selection excludes it", async () => {
+    const f = fixture();
+    const session = await mountChatTools({ data: f.server }, f.controller.signal, false, { allow: ["native:ask_user"] });
+    sessions.push(session);
     expect(session.definitions).toEqual([]);
     expect(existsSync(f.receipt)).toBe(false);
   });
@@ -305,6 +323,179 @@ describe("Chat MCP session", () => {
   });
 });
 
+/** "Always allow this session" names the tool on its server as launched. */
+const grantFor = (server: string, tool: string) => expect.stringMatching(new RegExp(`^\\["${server}","[0-9a-f]{64}","${tool}"\\]$`));
+
+describe("Chat MCP approvals by server", () => {
+  it("asks nothing for OpenMausBot's agents server, and grants no session-wide allow on the person's computer", async () => {
+    const agents = fixture(); const audit = fixture(); const computer = fixture();
+    const session = await mountChatTools({
+      agents: agents.server, custom: { audit: audit.server },
+      localComputer: { ...computer.server, scope: "local-computer" },
+    }, agents.controller.signal, true);
+    sessions.push(session);
+    expect(session.definitions.map((tool) => tool.function.name).sort()).toEqual(["agents_write", "audit_write", "computer_write"]);
+    expect(session.view("agents_write", { value: "x" })).toEqual({ title: "agents_write", input: { value: "x" }, ask: false });
+    expect(session.view("audit_write", { value: "x" })).toEqual({ title: "audit_write", input: { value: "x" }, ask: true, grant: grantFor("audit", "write") });
+    expect(session.view("computer_write", { value: "x" })).toEqual({ title: "computer_write", input: { value: "x" }, ask: true });
+  });
+
+  it("ties an allow to the server as launched: the same server keeps it, a changed one under the same name does not", async () => {
+    const audit = fixture(); const other = fixture();
+    const grant = async (server: typeof audit.server) => {
+      const session = await mountChatTools({ custom: { audit: server } }, audit.controller.signal);
+      sessions.push(session);
+      return session.view("audit_write", { value: "x" }).grant;
+    };
+    const first = await grant(audit.server);
+    expect(first).toEqual(grantFor("audit", "write"));
+    // a later turn mounts the same server again
+    expect(await grant({ ...audit.server, env: { ...audit.server.env } })).toBe(first);
+    // the person pointed "audit" at another command, or changed its credential
+    expect(await grant(other.server)).not.toBe(first);
+    expect(await grant({ ...audit.server, env: { ...audit.server.env, AUDIT_TOKEN: "rotated" } })).not.toBe(first);
+    // and the hash keeps no credential
+    expect(first).not.toContain("rotated");
+  });
+
+  it("knows the harness's mounts by what the harness passed, not by a server's name", async () => {
+    const lookalike = fixture(); const vm = fixture();
+    const session = await mountChatTools({ custom: { agents: lookalike.server }, localComputer: vm.server }, lookalike.controller.signal, true);
+    sessions.push(session);
+    expect(session.view("agents_write", { value: "x" })).toMatchObject({ ask: true, grant: grantFor("agents", "write") });
+    // an isolated VM is not the person's own computer
+    expect(session.view("computer_write", { value: "x" })).toMatchObject({ ask: true, grant: grantFor("computer", "write") });
+  });
+});
+
+describe("Chat MCP tool directory", () => {
+  const catalog = whopLikeCatalog(300);
+  async function mountWhop(toolScope?: ToolScope) {
+    const remote = await startFakeHttpMcp({ tools: catalog });
+    const controller = new AbortController(); controllers.push(controller);
+    try {
+      const session = await mountChatTools({ custom: { whop: { type: "http", url: remote.url, headers: {} } } }, controller.signal, false, toolScope);
+      sessions.push(session);
+      return { remote, controller, session };
+    } catch (error) { await remote.close(); throw error; }
+  }
+
+  it("searches a 300-tool URL server instead of refusing it at the 128-tool limit", async () => {
+    const { remote, controller, session } = await mountWhop();
+    try {
+      expect(session.definitions.map((tool) => tool.function.name)).toEqual(["whop_search_tools", "whop_describe_tool", "whop_call_tool"]);
+      const search = await session.execute("whop_search_tools", { query: "list payments" }, controller.signal);
+      expect(JSON.parse(search.text).matches[0].name).toBe("payments_list");
+      // searching runs no tool of the server, so no card; call_tool shows its target
+      expect(session.view("whop_search_tools", { query: "list payments" })).toEqual({ title: "whop_search_tools", input: { query: "list payments" }, ask: false });
+      const args = { name: "payments_list", arguments: { company_id: "biz_1" } };
+      // "Always allow this session" covers the tool call_tool runs, not call_tool
+      expect(session.view("whop_call_tool", args)).toEqual({ title: "whop_payments_list", input: { company_id: "biz_1" }, ask: true, grant: grantFor("whop", "payments_list") });
+      await expect(session.execute("whop_call_tool", args, controller.signal)).resolves.toMatchObject({ ok: true, text: "remote execution recorded" });
+      expect(remote.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1" } }]);
+      // a mistake the directory answers with guidance runs nothing and fails nothing
+      const nameless = await session.execute("whop_call_tool", { arguments: {} }, controller.signal);
+      expect(nameless).toMatchObject({ ok: true, text: expect.stringContaining("search_tools") });
+      expect(session.view("whop_call_tool", { arguments: {} }).ask).toBe(false);
+      const misfit = await session.execute("whop_call_tool", { name: "payments_list", arguments: { first: "ten" } }, controller.signal);
+      expect(misfit.ok).toBe(true);
+      expect(JSON.parse(misfit.text).problems).toContain("must have required property 'company_id'");
+      const unknown = await session.execute("whop_describe_tool", { name: "payments_teleport" }, controller.signal);
+      expect(unknown).toMatchObject({ ok: true, text: expect.stringContaining("search_tools") });
+      expect(remote.calls).toHaveLength(1);
+    } finally { await remote.close(); }
+  });
+
+  it("neither finds nor runs a tool outside the bot's selection", async () => {
+    // more than forty selected tools stay a searched catalog
+    const selected = [...catalog.filter((tool) => tool.name.endsWith("_list")).map((tool) => tool.name), "payments_get", "stats_get"];
+    const { remote, controller, session } = await mountWhop({ allow: selected.map((name) => `mcp:whop:${name}`) });
+    try {
+      expect(session.definitions.map((tool) => tool.function.name)).toEqual(["whop_search_tools", "whop_describe_tool", "whop_call_tool"]);
+      const found = JSON.parse((await session.execute("whop_search_tools", { query: "create payments", limit: 20 }, controller.signal)).text).matches;
+      expect(found.map((match: { name: string }) => match.name).every((name: string) => selected.includes(name))).toBe(true);
+      expect(() => session.validate("whop_call_tool", { name: "payments_create", arguments: {} })).toThrow("Tool selection excludes this tool");
+      await expect(session.execute("whop_call_tool", { name: "payments_create", arguments: {} }, controller.signal)).rejects.toThrow("Tool selection excludes this tool");
+      expect(remote.calls).toEqual([]);
+      await expect(session.execute("whop_call_tool", { name: "payments_list", arguments: { company_id: "biz_1" } }, controller.signal)).resolves.toMatchObject({ ok: true });
+      expect(remote.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1" } }]);
+    } finally { await remote.close(); }
+  });
+
+  it("mounts a small URL server's own tools, unchanged", async () => {
+    const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(5) });
+    const controller = new AbortController(); controllers.push(controller);
+    try {
+      const session = await mountChatTools({ custom: { whop: { type: "http", url: remote.url, headers: {} } } }, controller.signal);
+      sessions.push(session);
+      expect(session.definitions.map((tool) => tool.function.name)).toEqual(whopLikeCatalog(5).map((tool) => `whop_${tool.name.replace("-", "_")}`));
+      expect(session.view("whop_payments_list", { company_id: "biz_1" })).toEqual({ title: "whop_payments_list", input: { company_id: "biz_1" }, ask: true, grant: grantFor("whop", "payments_list") });
+    } finally { await remote.close(); }
+  });
+});
+
+describe("Chat MCP startup budgets", () => {
+  /** Runs fake time forward in small steps until `condition` holds, so
+   * real I/O and the faked clock both make progress. */
+  /** Lets real I/O run, the faked clock standing still, until `condition`. */
+  async function untilReal(condition: () => boolean): Promise<void> {
+    const started = Date.now();
+    while (!condition() && Date.now() - started < 15_000) await new Promise((resolve) => setImmediate(resolve));
+    expect(condition()).toBe(true);
+  }
+  /** Once a deadline has passed: steps the faked clock too, for cleanup
+   * that polls on a timer, but by at most `budgetMs` in all, pausing in
+   * real time between ticks so a stopping process can exit. */
+  async function settleWithin(budgetMs: number, condition: () => boolean): Promise<void> {
+    for (let spent = 0; !condition() && spent < budgetMs; spent += 25) {
+      const until = Date.now() + 20;
+      while (Date.now() < until) await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(25);
+    }
+    expect(condition()).toBe(true);
+  }
+  function watch<T>(pending: Promise<T>) {
+    const state: { done: boolean; value?: T; error?: unknown } = { done: false };
+    void pending.then((value) => { state.done = true; state.value = value; }, (error: unknown) => { state.done = true; state.error = error; });
+    return state;
+  }
+
+  it("gives a searched URL server 30 seconds to list its tools", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(300), toolsDelayMs: 20_000 });
+    const controller = new AbortController(); controllers.push(controller);
+    try {
+      const mounting = watch(mountChatTools({ custom: { whop: { type: "http", url: remote.url, headers: {} } } }, controller.signal));
+      await untilReal(() => remote.delayedToolsLists === 1);
+      // well past the 8 seconds a command server gets
+      await vi.advanceTimersByTimeAsync(20_000);
+      await untilReal(() => mounting.done);
+      expect(mounting.error).toBeUndefined();
+      sessions.push(mounting.value!);
+      expect(mounting.value!.definitions).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+      await remote.close();
+    }
+  });
+
+  it("still gives a command server 8 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const f = fixture(`if (message.method === "tools/list") return;`);
+      const mounting = watch(f.mount());
+      const listed = () => { try { return f.read().calls.some((call) => call.method === "tools/list"); } catch { return false; } };
+      await untilReal(listed);
+      await vi.advanceTimersByTimeAsync(7_900);
+      expect(mounting.done).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      // stopped at 8 seconds: well short of the 30 a URL server gets
+      await settleWithin(1_000, () => mounting.done);
+      expect(String(mounting.error)).toMatch(/timed out/);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("Chat MCP schema validation", () => {
   it("retains native unsigned/composition constraints while exposing an object schema", async () => {
     const f = fixture("", { type: "object", properties: { value: { type: "integer", format: "uint32" } },
@@ -394,5 +585,20 @@ describe("Chat MCP schema validation", () => {
     const f = fixture("", toolSchema);
     await expect(f.mount()).rejects.toThrow("schema could not be validated");
     expect(alive(f.read().pid)).toBe(false);
+  });
+
+  it("honors the configured per-call timeout instead of the fixed default", async () => {
+    // The fixture answers tools/call only after a delay; a short callTimeoutMs
+    // must trip the timeout, a generous one lets the same call complete.
+    const delayed = `if (message.method === "tools/call") { setTimeout(() => reply(message, {content:[{type:"text",text:"recorded:"+message.params.arguments.value}]}), 400); return; }`;
+    const f = fixture(delayed);
+    const short = await mountChatTools({ custom: { audit: f.server } }, f.controller.signal, false, undefined, 100);
+    sessions.push(short);
+    await expect(short.execute("audit_write", { value: "x" }, f.controller.signal)).rejects.toThrow("MCP request timed out");
+    await expect(f.read().calls.filter((call) => call.method === "tools/call")).toHaveLength(1);
+
+    const long = await mountChatTools({ custom: { audit: f.server } }, f.controller.signal, false, undefined, 5_000);
+    sessions.push(long);
+    await expect(long.execute("audit_write", { value: "y" }, f.controller.signal)).resolves.toMatchObject({ ok: true, text: "recorded:y" });
   });
 });

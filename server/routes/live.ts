@@ -5,11 +5,14 @@
 // companion allows the first four for the phone apps (companion/src/routes.ts).
 // The fifth, device-revoked, is the companion's own notice that it unpaired a
 // phone; a phone can never send it (companion/src/routes.ts COMPANION_NOTICES).
+// A call from the desktop app is free; one from a phone needs an active Pro
+// plan (402 `needsPro`, before the key's 409 `needsKey`). The phones' starts
+// come through here too, with the device the companion vouched for.
 import type { IncomingMessage } from "node:http";
 import { z } from "zod";
 import type { LiveSettings } from "../../shared/wire.ts";
 import { LiveSessionError, MAX_SDP_BYTES } from "../live-call.ts";
-import { LiveCallBusyError, type LiveCallController } from "../live-call-controller.ts";
+import { LiveCallBusyError, LiveCallNeedsProError, type LiveCallController } from "../live-call-controller.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
 
 export interface LiveRouteDeps {
@@ -26,11 +29,11 @@ const sessionBody = z.object({
   threadId: id.optional(),
   // Not trimmed: the SDP offer goes to OpenAI byte for byte.
   sdp: z.string().min(1).refine((sdp) => Buffer.byteLength(sdp) <= MAX_SDP_BYTES),
-  client: z.enum(["desktop", "ios", "android"]),
+  client: z.enum(["desktop", "web", "ios", "android"]),
 }).strict();
 const endBody = z.object({ callId: z.string().min(1).max(120) }).strict();
 // Strict, so `key` (or anything else) is refused rather than ignored: the key
-// is only ever set on the computer that runs the harness.
+// is saved through the desktop's credential store or PUT /api/config, never here.
 const settingsBody = z.object({
   voice: z.string().trim().max(40).regex(/^[a-z]*$/).optional(),
   readTypedReplies: z.boolean().optional(),
@@ -74,6 +77,8 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
         return json(res, 201, { call, transport: { type: "webrtc", sdp } });
       } catch (error) {
         if (error instanceof LiveCallBusyError) return json(res, 409, { error: error.message, activeCall: error.call });
+        // a client shows its Pro prompt, never the key form
+        if (error instanceof LiveCallNeedsProError) return json(res, 402, { error: error.message, needsPro: true });
         if (error instanceof LiveSessionError) {
           // The one 409 a session refuses with is a missing key.
           return json(res, error.status, error.status === 409 ? { error: error.message, needsKey: true } : { error: error.message });
@@ -102,7 +107,7 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
     if (method === "PATCH" && path === "/api/live/settings") {
       const parsed = settingsBody.safeParse(await bodyOf(req, readBody));
       if (!parsed.success) {
-        return json(res, 400, { error: "Those Live settings are not valid. The OpenAI key can only be changed on the computer that runs OpenMausBot." });
+        return json(res, 400, { error: "Those Live settings are not valid." });
       }
       // as PUT /api/config: an empty patch is not saved (or broadcast)
       if (!Object.keys(parsed.data).length) return json(res, 400, { error: "nothing to save" });

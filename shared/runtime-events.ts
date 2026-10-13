@@ -71,6 +71,17 @@ export type RuntimeEvent = RuntimeEventBase &
         usage?: { input: number; output: number; cachedInput?: number };
       }
     | {
+        /** A resumable terminal: the turn exhausted its model/tool budget,
+         * and a structured handoff was persisted. The harness may start a
+         * `Continue:` thread automatically; an assigned turn's requester gets
+         * the handoff with the stop instead (server/turn-continuation.ts). */
+        type: "cap.exhausted";
+        /** Absolute path to the persisted handoff for the dead turn. */
+        handoffPath: string;
+        /** What stopped the turn without a final answer. */
+        reason: "cap";
+      }
+    | {
         type: "turn.wait_started";
         /** The computer resource this turn queued behind (e.g. "computer:box:bx_…"). */
         resource: string;
@@ -128,9 +139,10 @@ export type RuntimeEvent = RuntimeEventBase &
         questions?: AskQuestion[];
         /** Where the ask came from: a harness tool call ("tool" — the
          * default, and what every event before this field implied), or a
-         * block parsed out of model-authored final output ("output", the
-         * turn-held transport). Cards and logs can badge the latter as
-         * agent-composed; untrusted-input rules apply either way. */
+         * block parsed out of model-authored final output ("output", only in
+         * event logs the removed Computer engine wrote). Cards and logs can
+         * badge the latter as agent-composed; untrusted-input rules apply
+         * either way. */
         origin?: "tool" | "output";
         approvalScope?: "local-computer";
         /** Provider asks to widen its configured sandbox. Only explicit Full
@@ -171,7 +183,11 @@ export type RuntimeEvent = RuntimeEventBase &
     // transient error or a legacy provider's diagnostic during cancellation.
     // `claudeUpdate: true` narrows a setup failure to "this Claude Code is
     // too old for the model": the UI offers to run `claude update` for them.
-    | { type: "runtime.error"; message: string; setup?: boolean; terminal?: boolean; claudeUpdate?: boolean }
+    // `trialCredit`: the trial's Claude credit refused the call (used up, no
+    // longer on this Cloud, paused for now, or too little left for this
+    // request); its engine stops offering itself only when used up or gone
+    // (server/cloud-credit-provider.ts).
+    | { type: "runtime.error"; message: string; setup?: boolean; terminal?: boolean; claudeUpdate?: boolean; trialCredit?: "used_up" | "ended" | "paused" | "too_low" }
     /** Something the person should know that did not fail the turn — for
      * example, a saved model the engine no longer offers was replaced. */
     | { type: "runtime.notice"; message: string }

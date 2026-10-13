@@ -1,14 +1,16 @@
 // Per-turn MCP transport for the shared Chat Completions runtime. Approval is
 // owned by the caller; only registered, schema-validated calls reach this file.
-import { Ajv, type ValidateFunction } from "ajv";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import formats from "ajv-formats";
+import { createHash } from "node:crypto";
+import type { ValidateFunction } from "ajv";
 import { stripControlPlaneEnv } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { chatImage, type ChatImagePart } from "./chat-images.ts";
+import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
 import { mcpStdioServer } from "../mcp-gate-config.ts";
+import { REMOTE_MCP_STARTUP_MS, remoteMcpSpec } from "../mcp-http.ts";
+import { compileToolSchema } from "../mcp-schema-validator.ts";
 import { allowsTool, canUseMcpServer, parseToolScope, type ToolScope } from "../../shared/tool-scope.ts";
 
 export interface ChatToolDefinition {
@@ -16,19 +18,39 @@ export interface ChatToolDefinition {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 export interface ChatToolResult { text: string; ok: boolean; images?: ChatImagePart[] }
+/** How one call is shown to the person: the tool named on its approval card
+ * and in the transcript, the input previewed there, whether a card is needed
+ * at all, and what "Always allow this session" on that card keeps allowed:
+ * the exact tool on its exact server, the server as launched (a changed
+ * command, URL or credential is another server, as it is a new process to a
+ * warm Claude). No grant for the person's own computer, which no engine lets
+ * a session-wide allow cover. */
+export interface ChatToolCallView { title: string; input: Record<string, unknown>; ask: boolean; grant?: string }
 /** The transport cannot safely continue this turn. A dispatched operation may
  * already have taken effect, so callers must not retry it through a new round. */
 export class ChatToolSessionError extends Error {}
 export interface ChatToolSession {
   definitions: ChatToolDefinition[];
   validate(name: string, args: unknown): void;
+  /** A searched server's search_tools and describe_tool read only its
+   * catalog, so they need no card; call_tool is shown as the tool it runs.
+   * OpenMausBot's own agents server needs none either, as on Claude
+   * (pre-allowed mcp__agents) and Codex (auto-approved mount): the harness
+   * authorizes each of its routes itself. */
+  view(name: string, args: Record<string, unknown>): ChatToolCallView;
   execute(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ChatToolResult>;
   close(): Promise<void>;
 }
 
 type Server = { command: string; args: string[]; env: Record<string, string> };
+/** A provider-safe tool name: the server's name and the tool's, joined. */
+function chatToolName(server: string, tool: string): string {
+  return `${server}_${tool}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
+}
 const STARTUP_MS = 8_000;
-const CALL_MS = 10 * 60_000;
+/** Historic per-call ceiling for a bot's MCP tools; a turn can override it
+ * with SendTurnInput.mcpCallTimeoutMs (server config `mcp.callTimeoutMinutes`). */
+const DEFAULT_CALL_MS = 10 * 60_000;
 const FRAME_BYTES = 2 * 1024 * 1024;
 const OUTPUT_BYTES = 50 * 1024;
 const TOOL_COUNT = 128;
@@ -172,8 +194,8 @@ class ChatMcpClient {
     }
   }
 
-  async tools(signal: AbortSignal, include: (tool: unknown) => boolean = () => true): Promise<unknown[]> {
-    const deadline = Date.now() + STARTUP_MS;
+  async tools(signal: AbortSignal, include: (tool: unknown) => boolean = () => true, startupMs = STARTUP_MS): Promise<unknown[]> {
+    const deadline = Date.now() + startupMs;
     const remaining = () => {
       if (Date.now() >= deadline) throw new Error("MCP startup timed out");
       return deadline - Date.now();
@@ -201,35 +223,6 @@ class ChatMcpClient {
   }
 }
 
-// A schema is a contract, so conversion that drops constraints is not safe.
-// Ajv validates the same schema sent to the provider without coercing values,
-// applying defaults, removing fields, or fetching external references.
-const validatorOptions = {
-  strict: true, allErrors: false, coerceTypes: false, useDefaults: false,
-  removeAdditional: false, validateFormats: true, ownProperties: true, logger: false as const,
-  // These are style diagnostics, not unsupported validation keywords. Valid
-  // schemas may require undeclared names, use untyped composition branches,
-  // or describe an open tuple. Ajv still enforces every constraint.
-  strictRequired: false, strictTypes: false, strictTuples: false,
-};
-export function compileToolSchema(schema: Record<string, unknown>): ValidateFunction {
-  const dialect = schema.$schema;
-  if (dialect !== undefined && dialect !== "http://json-schema.org/draft-07/schema#" && dialect !== "https://json-schema.org/draft/2020-12/schema") {
-    throw new Error("MCP tool schema uses an unsupported dialect; use JSON Schema draft-07 or 2020-12");
-  }
-  // One compiler per schema also prevents external IDs from resolving against
-  // unrelated tools or retaining schemas after the turn has closed.
-  const compiler = dialect === "https://json-schema.org/draft/2020-12/schema"
-    ? new Ajv2020(validatorOptions) : new Ajv(validatorOptions);
-  // ajv-formats is CommonJS and exports the plugin as both module.exports
-  // and .default; the latter also matches its NodeNext declaration.
-  formats.default(compiler);
-  compiler.addFormat("uint32", { type: "number", validate: value => Number.isInteger(value) && value >= 0 && value <= 4294967295 });
-  compiler.addFormat("uint64", { type: "number", validate: value => Number.isSafeInteger(value) && value >= 0 });
-  try { return compiler.compile(schema); }
-  catch { throw new Error("MCP tool schema could not be validated; check its constraints, formats, and references"); }
-}
-
 function boundedText(value: string): string {
   const bytes = Buffer.from(value);
   if (bytes.length <= OUTPUT_BYTES) return value;
@@ -254,20 +247,26 @@ function omitBlankDefaults(builtInBrowser: boolean, tool: string, args: unknown)
   }
 }
 
-export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal, computerUse = false, toolScope?: ToolScope): Promise<ChatToolSession> {
+export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal, computerUse = false, toolScope?: ToolScope, callTimeoutMs: number = DEFAULT_CALL_MS): Promise<ChatToolSession> {
   const parsed = parseToolScope(toolScope);
   if (!parsed.ok) throw new Error(parsed.error);
   const scope = parsed.scope;
   const servers: Array<[string, Server]> = [];
+  /** URL servers this runtime searches rather than lists (mcp-directory.ts):
+   * every tool here rides every request, under a 128-tool cap. */
+  const searchable = new Set<string>();
   const eligible = (server: string) => scope === undefined || canUseMcpServer(scope, server);
   if (computerUse && integrations?.localComputer && eligible("computer")) servers.push(["computer", integrations.localComputer]);
   if (computerUse && integrations?.browser && eligible("browser")) servers.push(["browser", integrations.browser]);
   if (integrations?.agents && eligible("agents")) servers.push(["agents", integrations.agents]);
   if (integrations?.composio && eligible("composio")) servers.push(["composio", integrations.composio]);
+  if (integrations?.data && eligible("data")) servers.push(["data", integrations.data]);
   for (const [name, server] of Object.entries(integrations?.custom ?? {})) {
     if (!eligible(name)) continue;
-    const stdio = mcpStdioServer(server, { nodeEnv: { ELECTRON_RUN_AS_NODE: "1" } });
+    const remote = remoteMcpSpec(server) !== undefined;
+    const stdio = mcpStdioServer(server, { nodeEnv: { ELECTRON_RUN_AS_NODE: "1" }, ...(remote ? { directory: { name, ...(scope ? { toolScope: scope } : {}) } } : {}) });
     if (!stdio) throw new Error("MCP server configuration is invalid");
+    if (remote) searchable.add(name);
     servers.push([name, { command: stdio.command, args: stdio.args ?? [], env: stdio.env ?? {} }]);
   }
   if (servers.length > 32) throw new Error("MCP server count exceeds the 32-server limit");
@@ -286,7 +285,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const cancel = () => { void close().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   const definitions: ChatToolDefinition[] = [];
-  const registered = new Map<string, { client: ChatMcpClient; server: string; builtInBrowser: boolean; name: string; schema: ValidateFunction }>();
+  const registered = new Map<string, { client: ChatMcpClient; server: string; launch: string; builtInBrowser: boolean; agents: boolean; hostComputer: boolean; name: string; schema: ValidateFunction; searched: boolean }>();
   try {
     if (signal.aborted) throw aborted();
     // Start independent servers concurrently; consume results in config order
@@ -297,13 +296,25 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       // image delivery, including custom servers. Text stays bounded below.
       const client = new ChatMcpClient(descriptor, computerUse);
       clients.push(client);
-      const include = (tool: unknown) => scope === undefined || (object(tool) && typeof tool.name === "string" && allowsTool(scope, { kind: "mcp", server: name, name: tool.name }));
-      const tools = await client.tools(signal, include);
-      return { name, client, builtInBrowser: descriptor === integrations?.browser, tools };
+      // A searched server's three directory tools are already narrowed to
+      // the selection by the proxy, which checks call_tool's target as well.
+      const include = (tool: unknown) => scope === undefined || (object(tool) && typeof tool.name === "string"
+        && ((searchable.has(name) && isDirectoryTool(tool.name)) || allowsTool(scope, { kind: "mcp", server: name, name: tool.name })));
+      // A searched URL server answers over the internet: its initialize and
+      // whole tools/list get the URL budget; command servers keep theirs.
+      const tools = await client.tools(signal, include, searchable.has(name) ? REMOTE_MCP_STARTUP_MS : STARTUP_MS);
+      // Harness mounts are known by the descriptor the harness passed, never
+      // by a name a configured server could also claim.
+      // What the server is, for a grant: hashed, so no credential is kept.
+      // A bridge into a machine minted a fresh bearer this turn, so its
+      // grants last a turn, as a warm engine restarts for it (perTurn).
+      const launch = createHash("sha256").update(JSON.stringify(descriptor)).digest("hex");
+      return { name, client, launch, builtInBrowser: descriptor === integrations?.browser, agents: descriptor === integrations?.agents,
+        hostComputer: descriptor === integrations?.localComputer && integrations?.localComputer?.scope === "local-computer", tools };
     }));
     for (const mount of mounts) {
       if (mount.status === "rejected") throw mount.reason;
-      const { name: server, client, builtInBrowser, tools } = mount.value;
+      const { name: server, client, launch, builtInBrowser, agents, hostComputer, tools } = mount.value;
       const originalNames = new Set<string>();
       for (const tool of tools) {
         if (!object(tool) || typeof tool.name !== "string" || !tool.name.trim() || originalNames.has(tool.name)) throw new Error("MCP server advertised an invalid or duplicate tool name");
@@ -321,32 +332,49 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         }
         const description = (typeof tool.description === "string" ? tool.description : "Configured MCP tool") +
           (Object.keys(constraints).length ? " Additional argument constraints (validated before execution): " + JSON.stringify(constraints) : "");
-        const base = `${server}_${tool.name}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
+        const base = chatToolName(server, tool.name);
         let name = base;
         for (let index = 2; registered.has(name); index += 1) { const suffix = `_${index}`; name = base.slice(0, 64 - suffix.length) + suffix; }
-        registered.set(name, { client, server, builtInBrowser, name: tool.name, schema });
+        registered.set(name, { client, server, launch, builtInBrowser, agents, hostComputer, name: tool.name, schema, searched: searchable.has(server) });
         definitions.push({ type: "function", function: { name, description, parameters } });
         if (Buffer.byteLength(JSON.stringify(definitions)) > CATALOG_BYTES) throw new Error("MCP tool catalog exceeds the 1MB limit");
       }
     }
     if (signal.aborted || closed) throw aborted();
   } catch (error) { await close(); throw error; }
+  /** The upstream tool a call runs (see directoryCallTarget). */
+  const target = (tool: { name: string; searched: boolean }, args: unknown) => tool.searched ? directoryCallTarget(tool.name, args) : tool.name;
   const validate = (name: string, args: unknown) => {
     if (closed || signal.aborted) throw new ChatToolSessionError("MCP session closed");
     const tool = registered.get(name);
     if (!tool) throw new Error("The requested tool was not advertised for this turn");
-    if (scope !== undefined && !allowsTool(scope, { kind: "mcp", server: tool.server, name: tool.name })) throw new Error("Tool selection excludes this tool");
+    const excluded = (runs: string | undefined) => scope !== undefined && runs !== undefined
+      && !allowsTool(scope, { kind: "mcp", server: tool.server, name: runs });
+    // A searched server's directory checks its own tools' arguments and
+    // answers a mistake with guidance: a wrong name or a malformed search
+    // ran nothing, and must not end the turn as a failed tool call.
+    const directory = tool.searched && isDirectoryTool(tool.name);
+    if (!directory && excluded(tool.name)) throw new Error("Tool selection excludes this tool");
     omitBlankDefaults(tool.builtInBrowser, tool.name, args);
-    if (!object(args) || !tool.schema(args)) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");
+    if (!object(args) || (!directory && !tool.schema(args))) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");
+    if (tool.searched && excluded(target(tool, args))) throw new Error("Tool selection excludes this tool");
+  };
+  const view = (name: string, args: Record<string, unknown>): ChatToolCallView => {
+    const tool = registered.get(name);
+    const runs = tool ? target(tool, args) : name;
+    if (runs === undefined || tool?.agents) return { title: name, input: args, ask: false };
+    const grant = tool && !tool.hostComputer ? JSON.stringify([tool.server, tool.launch, runs]) : undefined;
+    if (!tool?.searched || tool.name !== CALL_TOOL) return { title: name, input: args, ask: true, ...(grant ? { grant } : {}) };
+    return { title: chatToolName(tool.server, runs), input: object(args.arguments) ? args.arguments : {}, ask: true, ...(grant ? { grant } : {}) };
   };
   return {
-    definitions, validate, close,
+    definitions, validate, view, close,
     async execute(name, args, callSignal) {
       validate(name, args);
       if (callSignal.aborted) { await close(); throw aborted(); }
       const tool = registered.get(name)!;
       try {
-        const result = await tool.client.call("tools/call", { name: tool.name, arguments: args }, AbortSignal.any([signal, callSignal]), CALL_MS);
+        const result = await tool.client.call("tools/call", { name: tool.name, arguments: args }, AbortSignal.any([signal, callSignal]), callTimeoutMs);
         if (signal.aborted || callSignal.aborted) throw aborted();
         if (!object(result) || !Array.isArray(result.content) || (result.isError !== undefined && typeof result.isError !== "boolean")) throw new Error("MCP tool returned an invalid result; execution outcome may be uncertain");
         const parts: string[] = [];

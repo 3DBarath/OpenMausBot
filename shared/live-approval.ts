@@ -8,12 +8,12 @@ export type LiveCardKind = "approval" | "review" | "question";
 
 /** "approval": a provider or peer ask the voice may decide with a strict yes/no.
  * "review": a harness-native proposal (skill, routine, profile, default
- * model, tightening, team setup) that must be reviewed on screen.
+ * model, team setup) that must be reviewed on screen.
  * "question": a provider question. An expired proposal is settled: nothing
  * can answer it any more. */
 export function liveCardKind(card: OptionCardData | undefined): LiveCardKind | null {
   if (!card?.requestId || card.answered || card.dismissed || card.expired) return null;
-  if (card.skillRequest || card.routineRequest || card.profileRequest || card.modelRequest || card.tighteningRequest || card.teamSetupRequest) {
+  if (card.skillRequest || card.routineRequest || card.profileRequest || card.modelRequest || card.teamSetupRequest) {
     return "review";
   }
   return card.tool ? "approval" : "question";
@@ -111,6 +111,12 @@ export function spokenConnectorPrompt(label: string): string {
  * never travel through the call, so the voice never asks for it aloud. */
 export function spokenSecretPrompt(label: string): string {
   return `Tell the user, in your own words, that you need ${brief(label || "a credential", 80)} entered in the chat on screen before you can go on. Never ask them to say it aloud.`;
+}
+
+/** The bot waits for the person to sign in to a site themselves (a sign-in
+ * card). The password goes into the page only, never through the call. */
+export function spokenSignInPrompt(site: string): string {
+  return `Tell the user, in your own words, that you need them to sign in to ${brief(site || "a website", 80)} themselves on screen, then press Done in the chat, before you can go on. Never ask them to say a password or code aloud.`;
 }
 
 export function spokenQuestionPrompt(card: OptionCardData): string {

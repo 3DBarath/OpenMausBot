@@ -47,13 +47,14 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
-import { writeFileAtomic } from "./atomic.ts";
+import { writeFileAtomic, writeFileAtomicIfChanged } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
+import { parseSkillCommand } from "../shared/skill-command.ts";
 
 // SKILL.md parsing and the static scan live in shared/ so the package
 // format (Admin and the renderer included) validates skills with the exact
@@ -262,9 +263,10 @@ function readManagedLinks(botId: string): string[] {
   }
 }
 
+// Rebuilt on every turn and almost always the same list.
 function writeManagedLinks(botId: string, names: string[]): void {
   mkdirSync(skillStateDir(botId), { recursive: true, mode: 0o700 });
-  writeFileAtomic(managedLinksPath(botId), `${JSON.stringify([...new Set(names)].sort(), null, 2)}\n`, { mode: 0o600 });
+  writeFileAtomicIfChanged(managedLinksPath(botId), `${JSON.stringify([...new Set(names)].sort(), null, 2)}\n`, { mode: 0o600 });
 }
 
 function manifestFromFile(path: string): SkillManifest | null {
@@ -1374,6 +1376,38 @@ export function applySkillWriteWithReceipt(
   }
 }
 
+/** Undo for a learned-skill write that applied without a person: a create
+ * is removed; an update gets the SKILL.md it replaced back, as a fresh
+ * revision through the same stage and apply path. Only while the skill is
+ * exactly as that write left it; otherwise `stale`, and nothing changes. */
+export function undoSkillWrite(
+  botId: string,
+  write: { stagedId: string; name: string; action: StagedSkillAction; previous?: { skillMd: string; source: string } },
+): { undone: true } | { stale: true } | { error: string } {
+  const entry = readManifest(botId)[write.name];
+  if (!entry || entry.appliedStageId !== write.stagedId || !installedLearnedSkillMatches(botId, write.name, entry)) {
+    return { stale: true };
+  }
+  if (write.action === "create") {
+    const removed = removeSkill(botId, write.name);
+    return "error" in removed ? removed : { undone: true };
+  }
+  if (!write.previous) return { error: "This change can't be undone here." };
+  const staged = stageSkillWrite(botId, {
+    action: "update",
+    targetName: write.name,
+    files: [{ path: "SKILL.md", content: write.previous.skillMd }],
+    source: write.previous.source,
+  });
+  if ("error" in staged) return staged;
+  const applied = applyStagedSkillWrite(botId, staged.id, { expectedSha256: staged.sha256 });
+  if ("error" in applied) {
+    rejectStagedSkillWrite(botId, staged.id);
+    return applied;
+  }
+  return { undone: true };
+}
+
 /** The skills block appended to a bot's system prompt: enabled skills only,
  * index lines only — the same progressive-disclosure shape the spec asks
  * agents for. Bodies never ride the prompt; the bot reads the file when a
@@ -1421,6 +1455,32 @@ function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly stri
     loggedIndexOmissions.delete(botId);
   }
   return block(lines, omitted.length);
+}
+
+/** The SKILL.md a bot reads for one enabled skill: the reviewed workspace
+ * copy, or the library file for an assigned library skill. The same path
+ * the prompt index names, so a `/name` turn points at exactly that file. */
+export function enabledSkillFile(botId: string, name: string, assignedLibrary?: readonly string[]): string | null {
+  const skill = resolveBotSkills(botId, assignedLibrary).find((entry) => entry.name === name && entry.enabled);
+  if (!skill) return null;
+  const entry = readManifest(botId)[name];
+  return entry ? join(skillTarget(workspaceDir(botId), name, entry), "SKILL.md") : librarySkillFilePath(name);
+}
+
+/** The text the engine reads for a `/name` turn (shared/skill-command.ts).
+ * Any other message, or a name that is not an enabled skill of this bot,
+ * passes through unchanged, so an engine's own slash commands still work. */
+export function expandSkillCommandTurnText(botId: string, text: string, assignedLibrary?: readonly string[]): string {
+  if (!text.trimStart().startsWith("/")) return text;
+  const names = resolveBotSkills(botId, assignedLibrary).filter((skill) => skill.enabled).map((skill) => skill.name);
+  const command = parseSkillCommand(text, names);
+  if (!command) return text;
+  const file = enabledSkillFile(botId, command.name, assignedLibrary);
+  if (!file) return text;
+  const lead = `The user ran your ${command.name} skill with /${command.name}. Read ${JSON.stringify(file)} with your file tools and follow it for this turn.`;
+  return command.request
+    ? `${lead} Where the skill says {input}, use the request.\n\nRequest: ${command.request}`
+    : `${lead} There is no further request, so run it as the skill describes.`;
 }
 
 // --- Skills library composition (features.skillsLibrary) ---

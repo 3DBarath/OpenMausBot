@@ -20,7 +20,7 @@ const SECRET_KEY_PARTS = ["token", "secret", "password", "passwd", "apikey", "ap
  * every real one is spelled (API_KEY, consumer-key, xai_key). */
 function isSecretName(name: string): boolean {
   const lower = name.toLowerCase();
-  if (lower === "omb_gate_upstream" || lower === "omb_remote_mcp_server") return true;
+  if (lower === "omb_gate_upstream" || lower === "omb_remote_mcp_server" || lower.startsWith("omb_remote_mcp_config_")) return true;
   if (SECRET_KEY_PARTS.some((part) => lower.includes(part))) return true;
   return /(^|[_.-])keys?$/.test(lower);
 }
@@ -30,7 +30,7 @@ import { mask, redactSecretsInText } from "../shared/redact.ts";
 // Text-shaped secret redaction lives in shared/redact.ts now, so the client
 // (task timeline) and the server scrub identically without the client
 // bundling server code; re-exported here so existing importers keep working.
-export { mask, redactSecretsInText } from "../shared/redact.ts";
+export { addHeldSecretScrubber, HELD_SECRET_MASK, mask, redactSecretsInText, scrubHeldSecrets } from "../shared/redact.ts";
 
 // ── content-shaped secrets ────────────────────────────────────────────
 // What a bot's own reply, a tool title, or a permission card can carry —

@@ -11,6 +11,7 @@ import {
   connectionStatus,
   listConnectorTools,
   listToolkits,
+  toolkitCategories,
   mcpIntegration,
   normalizeAccountAlias,
   prepareProjectSession,
@@ -57,6 +58,7 @@ const calls: Array<{
 let malformedConnectedAccounts = false;
 let connectedAccountsUnavailable = false;
 let emptyConnectedAccounts = false;
+let connectedAccountsOverride: Array<{ id: string; alias?: string; status?: string; toolkit: { slug: string } }> | null = null;
 // The grant editor's tools/list fixture: null keeps the legacy one-frame
 // {source:"broker"} answer the relayMcp tests assert on.
 let brokerMcpTools: Array<{ name: string; description?: string }> | null = null;
@@ -284,7 +286,7 @@ beforeAll(async () => {
     if (req.method === "GET" && url.pathname === "/api/v3/toolkits") {
       res.writeHead(200, { "content-type": "application/json" });
       if (apiKey === "ak_catalog_a") {
-        return res.end(JSON.stringify({ items: [{ slug: "notion", name: "Catalog A" }] }));
+        return res.end(JSON.stringify({ items: [{ slug: "notion", name: "Catalog A", meta: { categories: [{ id: "productivity", name: "Productivity" }, { id: "documents", name: " Documents " }, { id: "productivity", name: "Productivity" }] } }] }));
       }
       if (apiKey === "ak_catalog_b") {
         return res.end(JSON.stringify({ items: [{ slug: "linear", name: "Catalog B" }] }));
@@ -348,6 +350,7 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "application/json" });
       if (malformedConnectedAccounts) return res.end(JSON.stringify({ items: {} }));
       if (emptyConnectedAccounts) return res.end(JSON.stringify({ items: [] }));
+      if (connectedAccountsOverride) return res.end(JSON.stringify({ items: connectedAccountsOverride }));
       if (url.searchParams.get("cursor") === "accounts-page-2") {
         return res.end(JSON.stringify({
           items: [
@@ -458,6 +461,9 @@ describe.sequential("Composio Sessions", () => {
     const second = await listToolkits({ composio: { apiKey: "ak_catalog_b" } });
 
     expect(first.cards).toEqual([expect.objectContaining({ slug: "notion", label: "Catalog A" })]);
+    // the toolkit's own categories ride along, trimmed and once each
+    expect(first.cards[0]?.categories).toEqual(["Productivity", "Documents"]);
+    expect(second.cards[0]).not.toHaveProperty("categories");
     expect(second.cards).toEqual([expect.objectContaining({ slug: "linear", label: "Catalog B" })]);
     expect(calls.slice(before).filter((call) => call.path === "/api/v3/toolkits").map((call) => call.apiKey)).toEqual([
       "ak_catalog_a",
@@ -1198,6 +1204,80 @@ describe.sequential("Composio Sessions", () => {
       emptyConnectedAccounts = false;
     }
   });
+
+  it("retries unfinished or expired flows with fresh aliases without replacing or deleting accounts", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "stale-local-user", sessionId: "trs_test" },
+    };
+    try {
+      for (const status of ["INITIALIZING", "INITIATED", "EXPIRED"]) {
+        connectedAccountsOverride = [
+          { id: "ca_unfinished", alias: "personal", status, toolkit: { slug: "slack" } },
+          { id: "ca_expired", status: "expired", toolkit: { slug: "SLACK" } },
+          { id: "ca_other_toolkit", status: "ACTIVE", toolkit: { slug: "github" } },
+        ];
+        const before = calls.length;
+        await expect(authorizeService(cfg, "SLACK")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+        await expect(authorizeService(cfg, "slack")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+        const since = calls.slice(before);
+        const links = since.filter((call) => call.method === "POST" && call.path.endsWith("/link"));
+        expect(links).toHaveLength(2);
+        for (const link of links) expect(link.body).toEqual({ toolkit: "slack", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
+        expect(links[0].body.alias).not.toBe(links[1].body.alias);
+        expect(since.filter((call) => call.path.endsWith("/connected_accounts")).every((call) =>
+          new URLSearchParams(call.query).get("user_ids") === "openmausbot_existing"
+        )).toBe(true);
+        expect(since.some((call) => call.method === "DELETE" || call.method === "PATCH")).toBe(false);
+        expect(connectedAccountsOverride[0].alias).toBe("personal");
+      }
+    } finally {
+      connectedAccountsOverride = null;
+    }
+  });
+
+  it("preserves explicit aliases and requires one when any existing account is not a retryable flow", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    try {
+      for (const status of ["ACTIVE", "INACTIVE", "FAILED", "REVOKED", "PENDING", "FUTURE_STATUS", undefined]) {
+        connectedAccountsOverride = [
+          { id: "ca_existing", alias: "Personal", status, toolkit: { slug: "slack" } },
+        ];
+        const before = calls.length;
+        await expect(authorizeService(cfg, "slack")).rejects.toThrow(/alias.*not replaced/i);
+        connectedAccountsOverride.push({ id: "ca_unfinished", status: "INITIALIZING", toolkit: { slug: "slack" } });
+        await expect(authorizeService(cfg, "slack")).rejects.toThrow(/alias.*not replaced/i);
+        await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
+        expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
+      }
+      connectedAccountsOverride = [{ id: "ca_expired", alias: "Personal", status: "EXPIRED", toolkit: { slug: "slack" } }];
+      await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
+      await expect(authorizeService(cfg, "slack", "  team  ")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+      expect(calls.filter((call) => call.method === "POST" && call.path.endsWith("/link")).at(-1)?.body).toEqual({
+        toolkit: "slack", alias: "team",
+      });
+    } finally {
+      connectedAccountsOverride = null;
+    }
+  });
+
+  it("does not bypass the account cap when retrying pending connections", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    connectedAccountsOverride = Array.from({ length: 5 }, (_, index) => ({
+      id: `ca_pending_${index}`, status: "INITIALIZING", toolkit: { slug: "slack" },
+    }));
+    const before = calls.length;
+    try {
+      await expect(authorizeService(cfg, "slack")).rejects.toThrow(/maximum of 5 accounts/i);
+      await expect(authorizeService(cfg, "slack", "team")).rejects.toThrow(/maximum of 5 accounts/i);
+      expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
+    } finally {
+      connectedAccountsOverride = null;
+    }
+  });
 });
 
 describe("connector tool inventory", () => {
@@ -1258,5 +1338,15 @@ describe("connector tool inventory", () => {
       brokerMcpTools = null;
       setManagedBrokerAccess(null);
     }
+  });
+});
+
+describe("toolkitCategories", () => {
+  it("reads named objects and plain strings, and drops anything else", () => {
+    expect(toolkitCategories([{ id: "crm", name: "CRM" }, "Sales", { id: "x" }, 7, null, "  "])).toEqual(["CRM", "Sales"]);
+    expect(toolkitCategories(undefined)).toBeUndefined();
+    expect(toolkitCategories("CRM")).toBeUndefined();
+    expect(toolkitCategories([])).toBeUndefined();
+    expect(toolkitCategories(["a", "b", "c", "d", "e"])).toHaveLength(4);
   });
 });

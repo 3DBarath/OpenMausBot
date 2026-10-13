@@ -40,7 +40,7 @@ export interface BoatDeletionIdentity {
 
 export interface BoatDeletionOperationReceipt {
   id: string;
-  kind: "box";
+  kind: "sandbox";
   targetId: string;
   status: BoatDeletionStatus;
 }
@@ -384,7 +384,7 @@ function parseOperation(
   if (
     typeof operation.id !== "string"
     || !OPERATION_ID.test(operation.id)
-    || operation.kind !== "box"
+    || operation.kind !== "sandbox"
     || operation.targetId !== boxId
     || typeof operation.status !== "string"
     || !PROVIDER_STATUSES.has(operation.status)
@@ -492,18 +492,12 @@ export function boatDeletionSnapshot(): BoatDeletionRecord[] {
   return withJournalLock((records) => records.map(clone));
 }
 
-export const listBoatDeletions = boatDeletionSnapshot;
-
 export function getBoatDeletion(boxId: string): BoatDeletionRecord | null {
   if (!BOAT_ID.test(boxId)) throw new Error("invalid cloud computer id for deletion");
   return withJournalLock((records) => {
     const record = records.find((candidate) => candidate.boxId === boxId);
     return record ? clone(record) : null;
   });
-}
-
-export function isBoatDeletionPending(boxId: string): boolean {
-  return getBoatDeletion(boxId) !== null;
 }
 
 export function hasPendingBoatDeletionForBot(botId: string): boolean {

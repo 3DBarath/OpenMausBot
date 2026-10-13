@@ -4,7 +4,8 @@
 //
 //   Run log — readable, redacted activity from the visible conversation.
 //   Events — the harness's normalized RuntimeEvent stream: turns, tool
-//            items, requests, token usage, errors. Follows live over SSE.
+//            items, requests, token usage, errors. Follows the app's live
+//            stream.
 //   Raw    — the provider's own protocol messages, verbatim (the native
 //            tee). Read from disk; refreshed when a turn settles.
 //
@@ -16,7 +17,7 @@ import { useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useCaptionChrome } from "@/components/DesktopCapabilities";
 import { formatTime, toRows, type InspectorEntry, type InspectorPage, type InspectorRow } from "@/lib/inspector";
-import { openLiveEvents } from "@/lib/live-events";
+import { listenLiveFrames } from "@/lib/live-events";
 import type { RuntimeEvent } from "../../shared/runtime-events";
 import { RunLog } from "./RunLog";
 import { timelineEvents } from "@/lib/taskTimeline";
@@ -27,7 +28,7 @@ type Lens = "run" | "events" | "raw";
 export function InspectorPanel({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   // Docked flush under the Windows caption corner: drop the header 16px.
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const threadId = bot.threadId;
   const [lens, setLens] = useState<Lens>("run");
   const activity = useMemo(() => timelineEvents(visibleMessages(bot)), [bot]);
@@ -39,7 +40,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
   const loadAbort = useRef<AbortController | null>(null);
   const managedRefresh = useRef<() => void>(() => {});
 
-  const load = useCallback(async (): Promise<boolean> => {
+  const load = useCallback(async () => {
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
@@ -49,14 +50,12 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
       // SAFETY: this same-version renderer calls the harness's typed
       // inspector endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as InspectorPage;
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted) return;
       setPage(next);
       setError(null);
-      return true;
     } catch (e) {
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
-      return false;
     } finally {
       if (loadAbort.current === controller) loadAbort.current = null;
     }
@@ -71,10 +70,9 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
     return () => loadAbort.current?.abort();
   }, [load]);
 
-  // live: append this thread's runtime events as they stream, and re-read
-  // the disk when a turn settles so the native tee (not on the SSE) catches
-  // up. Own EventSource on purpose: the store folds runtime events into
-  // chat state and does not re-emit them.
+  // live: append this thread's runtime events as the app's stream carries
+  // them, and re-read the disk when a turn settles so the native tee (not on
+  // the stream) catches up.
   useEffect(() => {
     let alive = true;
     let settle: ReturnType<typeof setTimeout> | null = null;
@@ -103,46 +101,28 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
       for (const runtime of pendingRuntime.splice(0)) appendRuntime(runtime);
     };
 
-    const refresh = async (flushLiveOnFailure: boolean): Promise<boolean> => {
+    const refresh = async () => {
       const generation = ++refreshGeneration;
       refreshing = true;
-      const loaded = await load();
+      await load();
       // A later refresh aborts the earlier fetch. Only its completion owns
       // the buffered live tail, otherwise the earlier finally can flush
       // frames immediately before the newer snapshot overwrites them.
-      if (!alive || generation !== refreshGeneration) return false;
+      if (!alive || generation !== refreshGeneration) return;
       refreshing = false;
-      // An ordinary Reload keeps the previous page when its fetch fails, so
-      // live frames buffered during that request still belong on that page.
-      // A replacement snapshot must not expose them: its caller will close
-      // and replay the stream from the last acknowledged cursor instead.
-      if (!loaded) {
-        if (flushLiveOnFailure) flushPendingRuntime();
-        return false;
-      }
+      // A failed reload keeps the previous page, so frames buffered during
+      // it still belong there; after a good one, eventId drops repeats.
       flushPendingRuntime();
-      return true;
     };
-    const requestRefresh = () => void refresh(true);
-    const refreshFromSnapshot = (): Promise<boolean> => {
-      // A refused resume starts a new stream generation. Frames retained by
-      // an earlier failed refresh will be present in the new disk snapshot or
-      // replayed again, so do not carry them across the generation boundary.
-      pendingRuntime.splice(0);
-      return refresh(false);
-    };
+    const requestRefresh = () => void refresh();
     managedRefresh.current = requestRefresh;
 
-    const stopLive = openLiveEvents({
-      screens: false,
-      onSnapshotRequired: refreshFromSnapshot,
+    // A gap the stream could not replay is on disk: reload it.
+    const stopLive = listenLiveFrames({
+      onMissedFrames: requestRefresh,
       onFrame: (frame) => {
         if (frame.kind !== "runtime") return;
-        const event = frame.event;
-        if (!event || Array.isArray(event) || Object(event) !== event) return;
-        // SAFETY: runtime stream frames are produced from the typed harness
-        // bus; this guard rejects non-object transport corruption.
-        const runtime = event as RuntimeEvent;
+        const runtime = frame.event;
         if (runtime.threadId !== threadId) return;
         if (refreshing) pendingRuntime.push(runtime);
         else appendRuntime(runtime);
@@ -190,7 +170,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
 
   return (
     <aside aria-label="Inspector" className="animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel md:static md:z-auto md:w-[min(460px,45vw)] md:shrink-0">
-      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
+      <div {...dragProps} className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <span className="flex items-center gap-2 text-[15px] font-semibold text-ink">
           <Bug size={16} className="text-ink-secondary" /> Inspector
         </span>
