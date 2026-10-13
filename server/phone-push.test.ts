@@ -170,6 +170,19 @@ describe("dispatching a notification", () => {
     expect(sends()).toHaveLength(0);
   });
 
+  it("keeps a phone's opt-out when it registers again without `enabled`", async () => {
+    const push = make();
+    await push.register("session:s1", { token: TOKEN_A, environment: "production", enabled: false });
+    // the launch-time refresh docs/ios-companion.md shows omits `enabled`
+    await push.register("session:s1", { token: TOKEN_B, environment: "production", pairing: "pair-tag-1" });
+    expect(push.device("session:s1")).toMatchObject({ enabled: false, pairing: "pair-tag-1" });
+    expect(make().device("session:s1")).toMatchObject({ enabled: false });
+    expect(await push.dispatch(approval())).toEqual([{ key: "session:s1", outcome: "opted-out" }]);
+    // only an explicit value changes it
+    await push.register("session:s1", { token: TOKEN_B, environment: "production", enabled: true });
+    expect(push.device("session:s1")).toMatchObject({ enabled: true });
+  });
+
   it("is a silent no-op without a control-plane account", async () => {
     const push = make();
     await push.register("session:s1", { token: TOKEN_A, environment: "production" });

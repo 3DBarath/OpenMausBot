@@ -344,8 +344,8 @@ const featureConfigSchema = z.object({
    * turns. Off until explicitly enabled — see roomMemoryCaptureEnabled. */
   roomMemoryCapture: z.boolean().optional(),
   /** Closed-app phone alerts: a notification also wakes a paired phone
-   * through the hosted relay (server/phone-push.ts). On unless explicitly
-   * switched off — see phonePushEnabled. */
+   * through the hosted relay. On unless explicitly switched off — see
+   * phonePushEnabled in server/phone-push.ts. */
   phonePush: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
@@ -899,25 +899,6 @@ export function autoRecallEnabled(cfg: AppConfig): boolean {
  * it either way (roomFeedsBot in server/index.ts). */
 export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
   return cfg.features?.roomMemoryCapture === true;
-}
-
-/** Closed-app phone alerts. On unless explicitly switched off; with no
- * control-plane account on this harness nothing is sent either way. Each
- * phone may also opt out on its own, and each bot's notification switch
- * still decides whether there is an alert at all. */
-export function phonePushEnabled(cfg: AppConfig): boolean {
-  return cfg.features?.phonePush !== false;
-}
-
-export const DEFAULT_CAPTURE_QUIET_MS = 2 * 60_000;
-export const DEFAULT_TIDY_HOUR = 3;
-
-export function captureQuietMs(cfg: AppConfig): number {
-  return cfg.memory?.captureQuietMs ?? DEFAULT_CAPTURE_QUIET_MS;
-}
-
-export function tidyHour(cfg: AppConfig): number {
-  return cfg.memory?.tidyHour ?? DEFAULT_TIDY_HOUR;
 }
 
 export function showToolCallsEnabled(cfg: AppConfig): boolean {

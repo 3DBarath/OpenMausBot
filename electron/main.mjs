@@ -18,7 +18,7 @@ import {
   installDesktopCrashListeners,
   readSafeLogTail,
 } from "./diagnostics.mjs";
-import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
+import { CREDENTIAL_PATCH, migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { evictStartupCacheOnce } from "./startup-cache-eviction.mjs";
 import { activateExistingWindow, releaseSingleInstanceLock } from "./single-instance.mjs";
 import { pollServerIdentity } from "./server-boot-probe.mjs";
@@ -87,7 +87,7 @@ import { createManagedDesktopClient, createManagedDesktopRelay, createManagedDes
 import { CHECKOUT_SOURCES, cloudMenuSublabel, cloudPlanSnapshot, createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
 import { createProPlanRelay } from "./pro-plan.mjs";
-import { createPhonePushRelaySync, phonePushRelayMessage } from "./phone-push-relay.mjs";
+import { createPhonePushRelay } from "./phone-push-relay.mjs";
 import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
@@ -395,8 +395,7 @@ const serverSupervisor = createServerSupervisor({
     // The Pro answer too: the Cloud sign-in may have changed since the spawn.
     syncProPlan();
     // ...and the phone-push relay access, which a new child does not have.
-    phonePushRelaySync.reset();
-    syncPhonePushRelay();
+    phonePushRelay.serverStarted();
     // A restarted runtime has no library catalog until main sends it again.
     orgLibrary?.runtimeReady();
     if (managedDesktop) void managedDesktop.refresh().catch(() => {});
@@ -748,7 +747,7 @@ export async function updateSecureCredentialDocument(derive, afterPersist) {
   } finally {
     secureCredentials = secureCredentialState.read();
     // a hosted sign-in, rotation or sign-out changes what phone push may use
-    syncPhonePushRelay();
+    phonePushRelay.sync();
   }
 }
 
@@ -1640,22 +1639,13 @@ function syncManagedComposioCredentials() {
   }
 }
 
-/** Closed-app phone alerts: the server reaches the push relay as this
- * installation (electron/phone-push-relay.mjs). Sent only when it changed. */
-const phonePushRelaySync = createPhonePushRelaySync();
-function syncPhonePushRelay() {
-  const controlPlane = resolveCompanionControlPlaneURL({ isPackaged: app.isPackaged, environment: process.env });
-  phonePushRelaySync.sync(phonePushRelayMessage(secureCredentials, controlPlane), (message) => {
-    if (!serverProc) return false;
-    try {
-      serverProc.postMessage(message);
-      return true;
-    } catch (error) {
-      slog(`phone push relay sync failed: ${error?.message ?? error}`);
-      return false;
-    }
-  });
-}
+/** Closed-app phone alerts reach the push relay as this installation (phone-push-relay.mjs). */
+const phonePushRelay = createPhonePushRelay({
+  controlPlane: () => resolveCompanionControlPlaneURL({ isPackaged: app.isPackaged, environment: process.env }),
+  credentials: () => secureCredentials,
+  server: () => serverProc,
+  log: slog,
+});
 
 // The page is built at failure time (not import time): the message depends on
 // how the boot failed, and the log path comes from LOG_DIR so Windows and
@@ -3735,19 +3725,6 @@ ipcMain.handle("desktop:capabilities", async (event) =>
     localConnection: await cuaReady,
   }),
 );
-
-const CREDENTIAL_PATCH = {
-  composioApiKey: (value) => ({ composio: { apiKey: value } }),
-  xaiApiKey: (value) => ({ xai: { key: value } }),
-  boxToken: (value) => ({ box: { token: value } }),
-  opencodeGoApiKey: (value) => ({ opencodeGo: { apiKey: value } }),
-  ttsKey: (value) => ({ tts: { key: value } }),
-  fishAudioKey: (value) => ({ tts: { fishKey: value } }),
-  jevApiKey: (value) => ({ decider: { key: value } }),
-  openaiImageApiKey: (value) => ({ imageGen: { key: value } }),
-  customImageApiKey: (value) => ({ imageGen: { customApiKey: value } }),
-  openaiLiveKey: (value) => ({ live: { key: value } }),
-};
 
 async function saveWorkspaceCredential(name, value) {
   const patchFor = CREDENTIAL_PATCH[name];

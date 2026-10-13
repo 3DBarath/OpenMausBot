@@ -43,6 +43,15 @@ import {
 } from "../shared/phone-push.ts";
 import type { Notification } from "../shared/notification.ts";
 import { writeFileAtomic } from "./atomic.ts";
+import type { AppConfig } from "./config.ts";
+
+/** Closed-app phone alerts. On unless explicitly switched off; with no
+ * control-plane account on this harness nothing is sent either way. Each
+ * phone may also opt out on its own, and each bot's notification switch
+ * still decides whether there is an alert at all. */
+export function phonePushEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.phonePush !== false;
+}
 
 /** Where and as whom the harness talks to the relay. */
 export interface PhonePushAccess {

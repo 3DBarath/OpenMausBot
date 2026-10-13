@@ -32,7 +32,11 @@ FAKE_CLAUDE_REPLIES='["PRIVATE-REPLY-TEXT /Users/someone/secret.txt sk-live-abc"
 node --experimental-strip-types scripts/control-omb.ts launch
 ```
 
-Then, with the printed URL:
+Then set `URL` to the address the launcher printed, for example:
+
+```sh
+URL=<printed launcher address>   # e.g. URL=http://127.0.0.1:PORT
+```
 
 1. Register a companion phone (the headers the sidecar adds):
    `curl -X PUT $URL/api/push/device -H 'x-openmausbot-companion: 1' -H 'x-openmausbot-companion-device: fixture-phone' -H 'content-type: application/json' -d '{"token":"<64 hex>","environment":"sandbox","pairing":"fixture-pair-1"}'`

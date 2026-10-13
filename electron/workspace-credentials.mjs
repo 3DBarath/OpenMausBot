@@ -72,3 +72,16 @@ export function workspaceCredentialEnv(credentials) {
   }
   return env;
 }
+
+export const CREDENTIAL_PATCH = {
+  composioApiKey: (value) => ({ composio: { apiKey: value } }),
+  xaiApiKey: (value) => ({ xai: { key: value } }),
+  boxToken: (value) => ({ box: { token: value } }),
+  opencodeGoApiKey: (value) => ({ opencodeGo: { apiKey: value } }),
+  ttsKey: (value) => ({ tts: { key: value } }),
+  fishAudioKey: (value) => ({ tts: { fishKey: value } }),
+  jevApiKey: (value) => ({ decider: { key: value } }),
+  openaiImageApiKey: (value) => ({ imageGen: { key: value } }),
+  customImageApiKey: (value) => ({ imageGen: { customApiKey: value } }),
+  openaiLiveKey: (value) => ({ live: { key: value } }),
+};

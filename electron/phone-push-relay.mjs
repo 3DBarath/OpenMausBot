@@ -43,3 +43,28 @@ export function createPhonePushRelaySync() {
     },
   };
 }
+
+/** What main runs: `sync()` after the credential document may have changed,
+ * `serverStarted()` once a new server child is ready. The getters are read
+ * at each call, since main reassigns the credentials and the server child. */
+export function createPhonePushRelay({ controlPlane, credentials, server, log }) {
+  const relaySync = createPhonePushRelaySync();
+  const sync = () => relaySync.sync(phonePushRelayMessage(credentials(), controlPlane()), (message) => {
+    const proc = server();
+    if (!proc) return false;
+    try {
+      proc.postMessage(message);
+      return true;
+    } catch (error) {
+      log(`phone push relay sync failed: ${error?.message ?? error}`);
+      return false;
+    }
+  });
+  return {
+    sync,
+    serverStarted() {
+      relaySync.reset();
+      sync();
+    },
+  };
+}

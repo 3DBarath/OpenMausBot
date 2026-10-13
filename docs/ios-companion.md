@@ -273,7 +273,7 @@ conversation for 10 seconds and caps each phone at 30 pushes per 10 minutes.
 
    ```http
    PUT /api/push/device
-   {"token":"<lowercase hex>","environment":"production","pairing":"<tag>","enabled":true}
+   {"token":"<lowercase hex>","environment":"production","pairing":"<tag>"}
    ```
 
    - `environment`: `"sandbox"` for development-signed builds,
@@ -282,7 +282,9 @@ conversation for 10 seconds and caps each phone at 30 pushes per 10 minutes.
      computer and kept with its Keychain pairing. Every push echoes it, so a
      tap opens the computer that sent it.
    - `enabled`: optional per-phone opt-out. `false` keeps the registration
-     and sends nothing.
+     and sends nothing. Send it only when the person changes the setting:
+     a registration without it keeps the phone's previous choice (on for a
+     new phone), so the refresh sent on every launch never undoes an opt-out.
 
    It is idempotent; send it on every launch and whenever iOS issues a new
    token. The answer is `{"push":"on"|"off"|"no-account","device":{…},"relay":"registered"|"pending"|"off"}`.
@@ -321,10 +323,13 @@ conversation for 10 seconds and caps each phone at 30 pushes per 10 minutes.
    harness) as a plain alert, and an unknown `omb.v` as "open the app".
    Repeats for the same kind and conversation share an APNs collapse id, so a
    newer one replaces the older on the lock screen.
-5. **Route the tap.** Select the saved computer whose `pairing` matches (or
-   the current one), connect as usual, and open `threadId`: in the room
-   `roomId` when present, otherwise the bot `botId`'s conversation. Fetch the
-   content through the existing API; the push has none to show.
+5. **Route the tap.** Select the saved computer whose `pairing` matches;
+   only a push without `pairing` uses the current computer. If `pairing` is
+   present but matches no saved computer (it was removed from the phone),
+   open the app without navigating. Otherwise connect as usual and open
+   `threadId`: in the room `roomId` when present, otherwise the bot `botId`'s
+   conversation. Fetch the content through the existing API; the push has
+   none to show.
 6. **Foreground race.** If a push arrives while the app has just reconnected
    and is showing the same alert from the event stream,
    `userNotificationCenter(_:willPresent:)` may suppress it.

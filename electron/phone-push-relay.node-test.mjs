@@ -5,7 +5,7 @@ import {
   COMPANION_ACCOUNT_CLEANUP_PENDING_FIELD,
   COMPANION_INSTALLATION_CREDENTIAL_FIELD,
 } from "./companion-account-service.mjs";
-import { PHONE_PUSH_RELAY_MESSAGE, createPhonePushRelaySync, phonePushRelayMessage } from "./phone-push-relay.mjs";
+import { PHONE_PUSH_RELAY_MESSAGE, createPhonePushRelay, createPhonePushRelaySync, phonePushRelayMessage } from "./phone-push-relay.mjs";
 
 const CREDENTIAL = `omb_install_${"a".repeat(22)}.${"b".repeat(43)}`;
 const ORIGIN = "https://control.example.test";
@@ -48,4 +48,29 @@ test("sends only changes, and everything again to a new server", () => {
   assert.equal(sync.sync(phonePushRelayMessage({}, ORIGIN), () => false), false);
   assert.equal(sync.sync(phonePushRelayMessage({}, ORIGIN), post), true);
   assert.equal(sent.length, 3);
+});
+
+test("main's relay reads the current credentials and server at each call, and resends to a new server", () => {
+  let credentials = {};
+  let proc = null;
+  const sent = [];
+  const logged = [];
+  const relay = createPhonePushRelay({
+    controlPlane: () => ORIGIN,
+    credentials: () => credentials,
+    server: () => proc,
+    log: (line) => logged.push(line),
+  });
+  relay.sync(); // no server yet: nothing sent, nothing recorded
+  proc = { postMessage: (message) => sent.push(message) };
+  credentials = { [COMPANION_INSTALLATION_CREDENTIAL_FIELD]: CREDENTIAL };
+  relay.sync();
+  relay.sync();
+  assert.deepEqual(sent, [{ type: PHONE_PUSH_RELAY_MESSAGE, access: { controlPlane: ORIGIN, credential: CREDENTIAL } }]);
+  relay.serverStarted();
+  assert.equal(sent.length, 2);
+  proc = { postMessage: () => { throw new Error("channel closed"); } };
+  credentials = {};
+  relay.sync();
+  assert.match(logged[0], /phone push relay sync failed: channel closed/);
 });
