@@ -153,6 +153,12 @@ describe("container images", () => {
     expect(last(chain("runtime"), "ENV")).toMatch(/^AGENT_BROWSER_EXECUTABLE_PATH=\/opt\/openmausbot-browser\/chrome .*NODE_ENV=production$/);
   });
 
+  it("runs the server under an init in every compose file, so Chrome's orphaned helpers are reaped", () => {
+    for (const file of ["../compose.yaml", "../deploy/docker-compose.yml"]) {
+      expect(parse(readFileSync(new URL(file, import.meta.url), "utf8")).services.omb.init, file).toBe(true);
+    }
+  });
+
   it("never runs a build step with HOME on the volume, so nothing lands in what a fresh volume starts with", () => {
     for (const target of ["server", "cloud-home"]) {
       const steps = chain(target);

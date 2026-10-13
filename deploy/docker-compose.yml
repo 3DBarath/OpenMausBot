@@ -9,6 +9,10 @@
 #   docker compose up -d --build                        # or build from source
 services:
   omb:
+    # A small init as PID 1 reaps orphaned processes: Chrome helpers whose
+    # agent-browser daemon exited would otherwise stay as zombies (compose.yaml
+    # and Cloud homes set it too).
+    init: true
     build:
       context: ..
       args:
