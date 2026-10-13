@@ -99,8 +99,10 @@
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
 //                      every PostToolUse command with the event JSON on
-//                      stdin (synchronously, inheriting this env), and once
-//                      at the end run the Stop commands.
+//                      stdin (synchronously, inheriting this env), then for
+//                      a failed scripted call the PostToolUseFailure
+//                      commands (echoing any additionalContext they print
+//                      into the reply), and once at the end the Stop commands.
 //   FAKE_CLAUDE_COMPACT 1: on this process's second and later turns, play a
 //                      compaction the way the CLI does — run the PreCompact
 //                      hooks (trigger auto), then the SessionStart hooks with
@@ -908,6 +910,13 @@ const playTurn = (prompt: JsonValue, late = false) => {
       out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: call.name, input: call.input }], usage } });
       out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !call.ok, content: call.output }] } });
       runHooks("PostToolUse", { tool_name: call.name, tool_input: call.input, tool_response: call.output, tool_use_id: id });
+      if (!call.ok) {
+        // the real CLI reads additionalContext from a failure hook's
+        // hookSpecificOutput; the fake echoes it into the reply instead
+        const printed = runHooks("PostToolUseFailure", { tool_name: call.name, tool_input: call.input, tool_use_id: id, error: typeof call.output === "string" ? call.output : JSON.stringify(call.output), is_interrupt: false });
+        const context = printed.trim() ? (() => { try { return JSON.parse(printed).hookSpecificOutput?.additionalContext; } catch { return undefined; } })() : undefined;
+        if (typeof context === "string" && context) replyParts = [`${context}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
+      }
     }
     for (const text of replyParts) out({ type: "assistant", message: { content: [{ type: "text", text }], usage } });
   } else {

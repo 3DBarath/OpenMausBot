@@ -12,6 +12,7 @@ import { writeFileAtomic } from "./atomic.ts";
 import { rm as removeDirectory } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ToolResults, TOOL_RESULT_MAX_CHARS } from "./tool-results.ts";
+import { fixHintFor, HINT_PREFIX } from "./tool-hints.ts";
 import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
@@ -7755,8 +7756,9 @@ const TOOL_RESULT_SPILL_MAX = 512 * 1024;
  * full result: it is redacted, spilled to a private file, and attached to
  * the activity row the fold already wrote for that call, which flips the
  * turn's evidence to "full" for the digest. Idempotent on the tool_use_id
- * (a re-delivered hook never double-writes). Other events are accepted and
- * ignored here; item 0.4 gives PreCompact/SessionStart/Stop their meaning. */
+ * (a re-delivered hook never double-writes). PostToolUseFailure may answer
+ * with a fix hint. Other events are accepted and ignored here; item 0.4
+ * gives PreCompact/SessionStart/Stop their meaning. */
 const DIGESTS_AFTER_COMPACTION = 2;
 function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: boolean; ignored?: string; context?: string; hookSpecificOutput?: unknown } {
   const event = body && typeof body === "object" ? (body as { event?: unknown; payload?: unknown }) : {};
@@ -7783,6 +7785,17 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
     return { ok: true, context };
   }
   if (name === "Stop") return { ok: true };
+  // A failed native tool (Bash, Read, …): a known failure gets its fix hint
+  // beside the error (server/tool-hints.ts). The harness's own tools carry
+  // theirs in the result already, so the same hint is never added twice.
+  if (name === "PostToolUseFailure") {
+    const tool = typeof payload.tool_name === "string" ? payload.tool_name : "";
+    const error = typeof payload.error === "string" ? payload.error : "";
+    if (!tool || !error || payload.is_interrupt === true) return { ok: true, ignored: "failure without a tool error" };
+    const hint = fixHintFor({ tool, text: error });
+    if (!hint || error.includes(hint.hint)) return { ok: true };
+    return { ok: true, hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: `${HINT_PREFIX}${hint.hint}` } };
+  }
   if (name !== "PostToolUse") return { ok: true, ignored: name || "unknown" };
   const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : "";
   if (!toolUseId) return { ok: true, ignored: "PostToolUse without tool_use_id" };
