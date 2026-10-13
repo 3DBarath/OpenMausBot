@@ -1,8 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
 import { BotCreationDraft, EMPTY_BOT_DEFAULTS } from "./bot-creation-draft";
 import { api } from "@/state/store";
+import { newBotApprovalMode } from "../../shared/approval-mode";
 
 describe("isolated creation draft", () => {
+  const approvalDefault = (selection: { instanceId: string }) => newBotApprovalMode(selection.instanceId === "work-account" ? "codex" : "claudeAgent");
+
+  it("follows the selected provider's default without saving it into the reusable template", () => {
+    const draft = new BotCreationDraft(EMPTY_BOT_DEFAULTS, vi.fn(), undefined, approvalDefault);
+    expect(draft.bot.approvalMode).toBe("ask");
+    draft.setModel({ instanceId: "work-account", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe("full");
+    expect(draft.export().profile).not.toHaveProperty("approvalMode");
+    expect(draft.export(true).profile.approvalMode).toBe("full");
+    draft.setModel({ instanceId: "claude", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe("ask");
+  });
+
+  it.each(["ask", "auto", "custom"] as const)("preserves an explicit %s choice across model changes", mode => {
+    const draft = new BotCreationDraft({ ...EMPTY_BOT_DEFAULTS, profile: { approvalMode: mode } }, vi.fn(), undefined, approvalDefault);
+    draft.setModel({ instanceId: "work-account", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe(mode);
+    expect(draft.export(true).profile.approvalMode).toBe(mode);
+    draft.setModel({ instanceId: "claude", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe(mode);
+  });
+
+  it("keeps an explicit Ask selection after viewing the inferred Full default", () => {
+    const draft = new BotCreationDraft(EMPTY_BOT_DEFAULTS, vi.fn(), undefined, approvalDefault);
+    draft.setModel({ instanceId: "work-account", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe("full");
+    draft.patch({ approvalMode: "ask" });
+    draft.setModel({ instanceId: "other", model: "fixture" });
+    draft.setModel({ instanceId: "work-account", model: "fixture" });
+    expect(draft.bot.approvalMode).toBe("ask");
+  });
+
   it("clears a selection without exposing a malformed null bot status", async () => {
     const draft = new BotCreationDraft({ ...EMPTY_BOT_DEFAULTS, profile: { toolScope: { allow: [] } } }, vi.fn());
     expect(draft.bot).toHaveProperty("toolScope", { allow: [] });

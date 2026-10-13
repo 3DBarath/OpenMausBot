@@ -1,6 +1,62 @@
 import { expect, it } from "vitest";
 import { launchVerificationServer } from "../scripts/control-omb.ts";
 
+it("defaults new Codex bots and tasks to Full access without changing explicit or saved permissions", async () => {
+  const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, undefined, ["codex"]);
+  const api = async (method: string, path: string, body?: unknown, status = 200, token?: string) => {
+    const response = await fetch(`${fixture.info.url}${path}`, {
+      method, headers: { "content-type": "application/json", origin: fixture.info.url,
+        ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const data = await response.json() as any;
+    expect(response.status, JSON.stringify(data)).toBe(status);
+    return data;
+  };
+  try {
+    const before = (await api("GET", "/api/bots")).bots;
+    const instances = (await api("GET", "/api/instances")).instances;
+    const codex = instances.find((instance: any) => instance.instanceId === "codex");
+    const claude = instances.find((instance: any) => instance.instanceId === "claude");
+    const modelSelection = { instanceId: "codex", model: codex.models.default };
+    await api("PATCH", "/api/config", { defaultModelSelection: modelSelection });
+    const defaults = await api("GET", "/api/bot-defaults");
+    expect(defaults.allowsFullAccessDefault).toBe(true);
+    expect(defaults.defaults.profile.approvalMode).toBeUndefined();
+    expect(defaults.modelSelection).toMatchObject(modelSelection);
+    const full = (await api("POST", "/api/bots", { name: "Codex default" }, 201)).bot;
+    expect(full).toMatchObject({ modelSelection, approvalMode: "full", autoApprove: false });
+    expect(full.tasks[0].approvalMode).toBe("full");
+    expect((await api("POST", `/api/bots/${full.id}/tasks`, {}, 201)).task.approvalMode).toBe("full");
+    for (const approvalMode of ["ask", "auto"]) {
+      const explicit = (await api("POST", "/api/bots", { name: `Explicit ${approvalMode}`, settings: { approvalMode } }, 201)).bot;
+      expect(explicit.approvalMode).toBe(approvalMode);
+      expect(explicit.tasks[0].approvalMode).toBe(approvalMode);
+      expect((await api("POST", `/api/bots/${explicit.id}/tasks`, {}, 201)).task.approvalMode).toBe(approvalMode);
+    }
+    const other = (await api("POST", "/api/bots", {
+      name: "Claude unchanged", modelSelection: { instanceId: "claude", model: claude.models.default },
+    }, 201)).bot;
+    expect(other.approvalMode).toBe("ask");
+    expect(other.tasks[0].approvalMode).toBe("ask");
+    const pairing = await api("POST", "/api/auth/pairing", { label: "Fixture member", scopes: ["client"] });
+    const member = (await api("POST", "/api/auth/pair", { code: pairing.code })).token;
+    await api("GET", "/api/bot-defaults", undefined, 403, member);
+    const count = (await api("GET", "/api/bots")).bots.length;
+    await api("POST", "/api/bots", { name: "Member cannot create unrestricted bot" }, 403, member);
+    await api("POST", "/api/bots", { name: "Member cannot grant Full", settings: { approvalMode: "full" } }, 403, member);
+    expect((await api("GET", "/api/bots")).bots).toHaveLength(count);
+    await api("PATCH", "/api/config", { newBotDefaults: { profile: { approvalMode: "ask" } } });
+    const savedAsk = (await api("POST", "/api/bots", { name: "Saved Ask default" }, 201)).bot;
+    expect(savedAsk.approvalMode).toBe("ask");
+    expect(savedAsk.tasks[0].approvalMode).toBe("ask");
+    expect((await api("GET", "/api/bot-defaults")).defaults.profile.approvalMode).toBe("ask");
+    const after = (await api("GET", "/api/bots")).bots;
+    for (const bot of before) expect(after.find((entry: any) => entry.id === bot.id)).toEqual(bot);
+    console.info(JSON.stringify({ url: fixture.info.url, logPath: fixture.info.logPath, fullBotId: full.id }));
+  } finally { await fixture.close(); }
+}, 90_000);
+
 it("applies independent creation templates through the real isolated HTTP routes", async () => {
   const fixture = await launchVerificationServer();
   const api = async (method: string, path: string, body?: unknown, status = 200) => {

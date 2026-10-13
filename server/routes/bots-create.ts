@@ -7,6 +7,7 @@
 // preset (server/presets.ts) are applied around the store's own creation;
 // anything that fails before creation is complete deletes the bot again.
 import type { WireBot } from "../../shared/wire.ts";
+import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { validateBotCwd } from "../bot-cwd.ts";
 import { parseBotProfilePatch } from "../bot-profile.ts";
 import { parseVisibility } from "../bot-visibility.ts";
@@ -52,6 +53,7 @@ export interface BotCreateRouteDeps {
   storedAvatarExists(avatarUrl: string): boolean;
   /** The workspace's default model, from provider discovery or the hosted policy. */
   defaultSelection(): Promise<ModelSelection>;
+  defaultApprovalMode(selection: ModelSelection): ApprovalMode;
   checkedModelSelection(raw: unknown, current?: { selection: ModelSelection; busy: boolean }, requireAvailableModel?: boolean): ModelSelectionCheck;
   /** Whether a request comes from one of the Cloud owner's own devices. */
   cloudOwnerSession(auth: RequestAuth): boolean;
@@ -150,7 +152,11 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
         selection = checked.selection;
       }
       if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
-      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
+      // Never infer elevated access for a non-admin paired session, even
+      // if the outer route gate later permits member creation.
+      const approvalMode = settings.approvalMode ?? (auth.kind === "session" && !auth.scopes.includes("admin")
+        ? "ask" : deps.defaultApprovalMode(selection));
+      if (approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
         return json(res, 400, { error: "This provider does not support Full access" });
       }
       // Keep the capacity check immediately beside the synchronous write.
@@ -162,6 +168,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
       const created = body.visibility === undefined ? null : parseVisibility(body.visibility);
       if (created && !created.ok) return json(res, 400, { error: created.error });
       const bot = store.createBot({ ...profile.patch, soul: settings.soul, section, modelSelection: selection,
+        approvalMode,
         toolScope: settings.toolScope ?? undefined,
         ...(created?.ok ? { visibility: created.visibility } : {}) });
       const createdRoutines: Array<{ id: string; enabled: boolean }> = [];
@@ -171,12 +178,13 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
           // Store creation completes workspace defaults (including effort).
           // Applying the rest of the template must not undo that selection.
           ...ordinary, name: bot.name, section, modelSelection: bot.modelSelection,
+          approvalMode,
           mascotExpression: ordinary.mascotExpression ?? undefined,
           avatarUrl: ordinary.avatarUrl || undefined,
           computer: ordinary.computer ?? undefined, cwd: checkedCwd.cwd ?? undefined,
           peers: ordinary.peers ?? undefined, mcpServers: ordinary.mcpServers ?? undefined,
           browserProfile: ordinary.browserProfile || undefined,
-          autoApprove: ordinary.approvalMode === "auto",
+          autoApprove: approvalMode === "auto",
         });
         // What the preset brings wins over the saved defaults for the same
         // skill name or note file.

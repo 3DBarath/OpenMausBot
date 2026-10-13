@@ -48,6 +48,26 @@ permission profiles and older-server fallback.
 
 ## Checks
 
+New unmanaged Codex bots default to Full access, which selects native
+`dangerFullAccess` rather than the Windows sandbox helper. This is not sandbox
+repair: Ask/Auto/Custom still need working native sandbox setup. Saved choices,
+existing records, managed installations and other providers keep their defaults.
+The new-bot dialog shows the inferred mode and retains explicit choices; dialog
+creation finishes through the existing desktop grant flow. Creation/reload contracts and
+an isolated HTTP fixture cover the default and first/new-thread inheritance:
+
+```sh
+pnpm exec vitest run server/approval-mode.test.ts server/store.test.ts server/new-bot-defaults.e2e.test.ts src/lib/bot-creation-draft.test.ts src/lib/create-configured-bot.test.ts src/components/NewBotDialog.test.ts
+pnpm exec vitest run server/onboarding-model-default.e2e.test.ts
+```
+
+The fresh starter can precede provider sign-in: a private creation marker resolves
+its default once the first provider connects. Explicit permission changes cancel
+that pending default, and legacy records never receive the marker. An isolated
+macOS fixture verified a first Codex turn with `dangerFullAccess`/`never`, while
+explicit Ask retained `workspaceWrite`/`on-request`. Provider responses were
+synthetic; this does not verify Windows UAC or repair the customer's sandbox.
+
 ```sh
 pnpm exec vitest run server/drivers/codex.test.ts server/drivers/codex-instructions.test.ts
 pnpm typecheck

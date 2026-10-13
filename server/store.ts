@@ -421,6 +421,8 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
     /** Explicit bot-wide grant, including existing threads. */
     allThreads?: true;
   };
+  /** A new starter awaiting its first provider, never a legacy mode fallback. */
+  pendingApprovalDefault?: true;
   /** Receipt committed with a confirmed profile, for retrying card settlement. */
   lastProfileRequestId?: string;
   /** Receipt committed with a reviewed team batch; prevents replay after a lost response. */
@@ -438,7 +440,7 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
  * WireTask[], avatarUrl is coerced to always-present). The exactness
  * assertion fails to compile when either side drifts, so a new server
  * field forces a decision — wire-visible or private here. */
-export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTeamSetupReceipt" | "packageBase" | "assignedSkills";
+export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "pendingApprovalDefault" | "lastProfileRequestId" | "lastTeamSetupReceipt" | "packageBase" | "assignedSkills";
 export type BotWireProjection = Pick<BotRecord, Exclude<keyof BotRecord, BotWirePrivateKeys>>;
 export type BotWireProjectionIsExact = AssertExact<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection> & AssertSameKeys<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection>;
 export const botWireProjectionIsExact: BotWireProjectionIsExact = true;
@@ -750,6 +752,10 @@ export class Store {
         delete b.approvalMode;
         botsMigrated = true;
       }
+      if (b.pendingApprovalDefault !== undefined && (b.pendingApprovalDefault !== true || b.modelSelection.instanceId || b.modelSelection.model)) {
+        delete b.pendingApprovalDefault;
+        botsMigrated = true;
+      }
       // A trusted elevation is a prepare/confirm/activate commit. If the
       // desktop process or its private reply path died before activation,
       // the durable marker survives beside the mode in the same atomic
@@ -774,6 +780,7 @@ export class Store {
         }
         }
         delete b.approvalGrant;
+        delete b.pendingApprovalDefault;
         botsMigrated = true;
       }
       const avatar = botAvatarProfile(b);
@@ -1851,13 +1858,14 @@ export class Store {
     profile: Partial<
       Pick<
         BotRecord,
-        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility" | "toolScope"
+        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility" | "toolScope" | "approvalMode"
       >
     > = {},
     opts: {
       /** false = no greeting/onboarding seed. Imported bots must not open
        * with a first-person greeting the user never asked for. */
       seedMessages?: boolean;
+      pendingApprovalDefault?: boolean;
     } = {},
   ): BotRecord {
     const toolScope = parseToolScope(profile.toolScope);
@@ -1865,6 +1873,7 @@ export class Store {
     this.rememberSections([profile.section]);
     const name = profile.name?.trim() || pickBotName(this.bots.map((b) => b.name));
     const section = sectionKey(profile.section);
+    const modelSelection = this.newBotSelection(profile.modelSelection);
     const bot: BotRecord = {
       id: newId(),
       threadId: newId(),
@@ -1881,7 +1890,9 @@ export class Store {
       ...(profile.visibility && profile.visibility !== "everyone" ? { visibility: structuredClone(profile.visibility) } : {}),
       ...(toolScope.scope ? { toolScope: toolScope.scope } : {}),
       unread: false,
-      modelSelection: this.newBotSelection(profile.modelSelection),
+      modelSelection,
+      ...(opts.pendingApprovalDefault && !modelSelection.instanceId && !modelSelection.model ? { pendingApprovalDefault: true as const } : {}),
+      ...(profile.approvalMode !== undefined ? { approvalMode: profile.approvalMode, autoApprove: profile.approvalMode === "auto" } : {}),
       resumeCursors: {},
       createdAt: Date.now(),
     };
@@ -1893,6 +1904,7 @@ export class Store {
       createdAt: bot.createdAt,
       updatedAt: bot.createdAt,
       resumeCursors: {},
+      ...(profile.approvalMode !== undefined ? { approvalMode: profile.approvalMode, autoApprove: profile.approvalMode === "auto" } : {}),
       unread: false,
       activity: "idle",
       busy: false,
@@ -2024,10 +2036,20 @@ export class Store {
    * applyTeamSetup's task stamping (withDefaultModel): every thread that
    * follows the bot moves to the new model, and a thread's own model, which a
    * person picked there, stays. */
-  applyModelDefault(id: string, modelSelection: ModelSelection): BotRecord | null {
+  applyModelDefault(id: string, modelSelection: ModelSelection,
+    defaultApprovalMode?: (selection: ModelSelection) => ApprovalMode): BotRecord | null {
     const previous = this.bot(id);
     if (!previous) return null;
     const next: BotRecord = { ...previous, modelSelection: structuredClone(modelSelection), tasks: this.withDefaultModel(previous, modelSelection) };
+    if (previous.pendingApprovalDefault && modelSelection.instanceId && modelSelection.model) {
+      delete next.pendingApprovalDefault;
+      if (defaultApprovalMode && !previous.modelSelection.instanceId && !previous.modelSelection.model) {
+        const approvalMode = defaultApprovalMode(modelSelection);
+        Object.assign(next, { approvalMode, autoApprove: approvalMode === "auto" });
+        next.tasks = next.tasks?.map(task => task.modelSelection === undefined
+          ? { ...task, approvalMode, autoApprove: approvalMode === "auto" } : task);
+      }
+    }
     this.saveBots(this.bots.map((candidate) => candidate.id === id ? next : candidate));
     this.bots = this.bots.map((candidate) => candidate.id === id ? next : candidate);
     this.emit({ type: "bot", botId: id });
@@ -2099,6 +2121,9 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    if (["approvalMode", "autoApprove", "approvalGrant"].some(key => Object.hasOwn(patch, key))) {
+      patch = { ...patch, pendingApprovalDefault: undefined };
+    }
     // Grants are the one field whose shape every writer must share, so the
     // store normalizes them itself: API patches arrive pre-validated, import
     // paths pass {}, and an internal caller that skips the parser still
@@ -2766,6 +2791,7 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     if (patch.projectId !== undefined && !this.project(botId, patch.projectId)) return null;
+    if (Object.hasOwn(patch, "approvalMode") || Object.hasOwn(patch, "autoApprove")) delete bot.pendingApprovalDefault;
     for (const key of TASK_PATCH_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
         Object.assign(task, { [key]: structuredClone(patch[key]) });
@@ -2834,7 +2860,8 @@ export class Store {
     // every other thread keeps its model and the level it runs at now.
     const others = updateBotDefault ? this.withDefaultModel(bot, selection)! : bot.tasks!;
     const nextTasks = bot.tasks!.map((candidate, index) => candidate === task ? nextTask : others[index]!);
-    const botPatch = updateBotDefault ? { modelSelection: structuredClone(selection), ...approval } : {};
+    const botPatch = { ...(updateBotDefault ? { modelSelection: structuredClone(selection), ...approval } : {}),
+      ...(resetApprovalToAsk || Object.hasOwn(taskPatch, "approvalMode") || Object.hasOwn(taskPatch, "autoApprove") ? { pendingApprovalDefault: undefined } : {}) };
     this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, ...botPatch, tasks: nextTasks } : candidate));
     bot.tasks!.forEach((candidate, index) => Object.assign(candidate, nextTasks[index]));
     Object.assign(bot, botPatch);
@@ -2880,10 +2907,10 @@ export class Store {
     if (!bot) return null;
     const patch = { approvalMode: mode, autoApprove: mode === "auto", ...(mode === "full" ? { alwaysAllow: [] } : {}) };
     const tasks = (bot.tasks ?? []).map(task => ({ ...task, ...patch }));
-    const next = { ...bot, ...patch, approvalGrant: undefined, tasks };
+    const next = { ...bot, ...patch, approvalGrant: undefined, pendingApprovalDefault: undefined, tasks };
     this.saveBots(this.bots.map(candidate => candidate === bot ? next : candidate));
     bot.tasks?.forEach((task, index) => Object.assign(task, tasks[index]));
-    Object.assign(bot, patch, { approvalGrant: undefined });
+    Object.assign(bot, patch, { approvalGrant: undefined, pendingApprovalDefault: undefined });
     this.emit({ type: "bot", botId });
     return bot;
   }
@@ -2921,6 +2948,7 @@ export class Store {
     const bot = this.bot(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
+    if (approvalMode !== undefined) delete bot.pendingApprovalDefault;
     const createdAt = Date.now();
     const task: TaskRecord = {
       threadId: newId(),
@@ -3056,8 +3084,8 @@ export class Store {
 
   /** First-run seed: one bot so the app never opens empty — it gets a
    * random friendly name like every other bot. */
-  seedIfEmpty() {
+  seedIfEmpty(approvalMode?: ApprovalMode, pendingApprovalDefault = false) {
     if (!this.needsSeed()) return;
-    this.createBot();
+    this.createBot({ approvalMode }, { pendingApprovalDefault });
   }
 }

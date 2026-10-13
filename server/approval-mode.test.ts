@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPROVAL_MODES,
   approvalModeFor,
+  newBotApprovalMode,
   supportsApprovalMode,
   modelSwitchNeedsAsk,
   hasNativeAutoReview,
@@ -12,6 +13,14 @@ import {
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 
 describe("approval modes", () => {
+  it("defaults only new unmanaged Codex bots to Full, never existing records", () => {
+    expect(newBotApprovalMode("codex")).toBe("full");
+    expect(newBotApprovalMode("codex", false)).toBe("ask");
+    for (const driver of [undefined, "claudeAgent", "grokAgent", "openai-compat", "unknown"]) {
+      expect(newBotApprovalMode(driver)).toBe("ask");
+    }
+    expect(approvalModeFor({})).toBe("ask");
+  });
   it("carries Full silently to any engine that runs it; Custom never crosses engines", () => {
     for (const driver of ["codex", "claudeAgent", "grokAgent", "antigravityAgent", "piAgent", "customAcp"]) {
       expect(modelSwitchNeedsAsk("ask", "codex", driver)).toBe(false);

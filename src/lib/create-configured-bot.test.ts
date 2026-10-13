@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, persistBotUpdate, type Bot } from "@/state/store";
 import { BotCreationDraft, EMPTY_BOT_DEFAULTS } from "./bot-creation-draft";
-import { createConfiguredBot } from "./create-configured-bot";
+import { createConfiguredBot, preparedBotTemplate } from "./create-configured-bot";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -9,7 +9,8 @@ describe("configured bot creation", () => {
   function fixture(mode: "ask" | "auto" | "full" | "custom", fail = 0, selection?: Bot["modelSelection"]) {
     const draft = new BotCreationDraft(EMPTY_BOT_DEFAULTS, vi.fn());
     draft.patch({ name: "Fixture", approvalMode: mode, notifications: false });
-    let bot = { ...draft.bot, id: "created", threadId: "initial", approvalMode: "ask" } as Bot;
+    let bot = { ...draft.bot, id: "created", threadId: "initial", approvalMode: "ask",
+      tasks: [{ threadId: "initial", title: "New task", createdAt: 1, approvalMode: "ask", autoApprove: false }] } as Bot;
     if (selection) bot.modelSelection = selection;
     const events: string[] = [];
     const bodies: unknown[] = [];
@@ -17,14 +18,19 @@ describe("configured bot creation", () => {
       events.push(`${init?.method} ${path}`);
       const body = JSON.parse(String(init?.body ?? "{}"));
       bodies.push(body);
-      if (init?.method === "PATCH") bot = { ...bot, ...body };
+      if (init?.method === "PATCH") {
+        if (path === "/api/bots/created/tasks/initial") bot = { ...bot, tasks: bot.tasks?.map(task => ({ ...task, ...body })) };
+        else bot = { ...bot, ...body };
+      }
       return { bot };
     }) as unknown as typeof api;
     let grants = 0;
     const approvals = { setMode: vi.fn(async (_id: string, grant: string, options?: { threadId?: string }) => {
       events.push(`grant ${options?.threadId ?? "bot"}`);
       if (++grants === fail) throw new Error("Grant rejected");
-      bot = { ...bot, approvalMode: grant } as Bot;
+      bot = options?.threadId
+        ? { ...bot, tasks: bot.tasks?.map(task => task.threadId === options.threadId ? { ...task, approvalMode: grant } : task) } as Bot
+        : { ...bot, approvalMode: grant } as Bot;
       return bot;
     }) };
     return { draft, events, bodies, request, approvals };
@@ -60,7 +66,9 @@ describe("configured bot creation", () => {
       const f = fixture(mode);
       const result = await createConfiguredBot(f.draft, f.request, persistBotUpdate, f.approvals);
       expect(f.bodies[0]).toMatchObject({ useDefaults: false, name: "Fixture" });
+      expect(f.bodies[0]).toMatchObject({ settings: { approvalMode: mode === "full" || mode === "custom" ? "ask" : mode } });
       expect(result.bot).toMatchObject({ approvalMode: mode, notifications: false });
+      if (mode === "full" || mode === "custom") expect(result.bot.tasks?.[0].approvalMode).toBe(mode);
       expect(result.warnings).toEqual([]);
       expect(f.events.filter(event => event.startsWith("grant"))).toEqual(
         mode === "full" || mode === "custom" ? ["grant bot", "grant initial"] : [],
@@ -69,10 +77,23 @@ describe("configured bot creation", () => {
     });
   }
 
+  it("grants the inferred Full default through the existing bot and initial-thread flow", async () => {
+    const f = fixture("ask");
+    const draft = new BotCreationDraft({ ...EMPTY_BOT_DEFAULTS, profile: { name: "Fixture",
+      modelSelection: { instanceId: "work-account", model: "fixture" } } }, vi.fn(), undefined, () => "full");
+    expect((await preparedBotTemplate(draft)).profile).not.toHaveProperty("approvalMode");
+    const result = await createConfiguredBot(draft, f.request, persistBotUpdate, f.approvals);
+    expect(f.bodies[0]).toMatchObject({ settings: { approvalMode: "ask" } });
+    expect(f.events.filter(event => event.startsWith("grant"))).toEqual(["grant bot", "grant initial"]);
+    expect(result.bot.approvalMode).toBe("full");
+    expect(result.bot.tasks?.[0].approvalMode).toBe("full");
+  });
+
   it("applies Full to the bot and its first thread over the API when there is no desktop bridge", async () => {
     const f = fixture("full");
     const result = await createConfiguredBot(f.draft, f.request, persistBotUpdate, undefined);
     expect(result.bot).toMatchObject({ approvalMode: "full" });
+    expect(result.bot.tasks?.[0].approvalMode).toBe("full");
     expect(f.events).toEqual(["POST /api/bots", "PATCH /api/bots/created", "PATCH /api/bots/created/tasks/initial"]);
     expect(f.bodies[1]).toMatchObject({ approvalMode: "full" });
     expect(f.bodies[2]).toEqual({ approvalMode: "full", acknowledgeLocalAuto: false });

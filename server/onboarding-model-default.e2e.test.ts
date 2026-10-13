@@ -11,13 +11,16 @@ const EMPTY = { instanceId: "", model: "" };
 const DEFAULT = { instanceId: "claude", model: "claude-sonnet-5" };
 const CHOSEN = { instanceId: "claude", model: "claude-opus-5" };
 const FAKE_CLI = fileURLToPath(new URL("./testing/fake-claude-cli.ts", import.meta.url));
+const FAKE_CODEX = fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url));
 
 type Fixture = {
   api: (method: string, path: string, body?: unknown) => Promise<any>;
   request: (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
   control: (...args: string[]) => Promise<any>;
-  restart: (options?: { clearStarter?: boolean; enabled?: boolean; signedOut?: boolean }) => Promise<void>;
+  restart: (options?: { clearStarter?: boolean; enabled?: boolean; signedOut?: boolean; freshCodex?: boolean }) => Promise<void>;
   connect: () => Promise<void>;
+  connectCodex: () => Promise<void>;
+  codexCalls: () => Array<{ method: string; params: any }>;
   makeCliAvailable: (holdProbe?: boolean) => { started: () => boolean; release: () => void; dispatched: () => boolean };
   saved: () => any[];
   receipt: () => { model: string; prompt: unknown };
@@ -51,11 +54,17 @@ async function withUnselectedStarter(check: (fixture: Fixture) => Promise<void>)
       bots.find((bot) => bot.id === starterId).modelSelection = EMPTY;
       writeFileSync(botsPath, JSON.stringify(bots));
     }
+    if (options.freshCodex) writeFileSync(botsPath, "[]");
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     config.instances.claude = { ...config.instances.claude, enabled: options.enabled ?? true,
       config: { ...config.instances.claude.config, cli: lateCli },
       environment: options.signedOut ? { FAKE_CLAUDE_AUTH: "out", FAKE_CLAUDE_MODE: "not-logged-in" } : {},
     };
+    if (options.freshCodex) {
+      config.instances.claude.enabled = false;
+      config.instances.codex = { driver: "codex", displayName: "Fixture Codex", config: { cli: join(dataDir, "missing-codex.mjs") },
+        environment: { FAKE_CODEX_DUMP: join(dataDir, "codex-turn.json"), FAKE_CODEX_DUMP_TURNS_ONLY: "1" } };
+    }
     writeFileSync(configPath, JSON.stringify(config));
     const log = openSync(logPath, "a", 0o600);
     server = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
@@ -71,6 +80,8 @@ async function withUnselectedStarter(check: (fixture: Fixture) => Promise<void>)
     await check({ api, request, saved, restart,
       control: (...args) => runControlOmb([...args, "--url", url]) as Promise<any>,
       connect: async () => { await api("PATCH", "/api/instances/claude", { cli: FAKE_CLI }); },
+      connectCodex: async () => { await api("PATCH", "/api/instances/codex", { cli: FAKE_CODEX }); },
+      codexCalls: () => JSON.parse(readFileSync(join(dataDir, "codex-turn.json"), "utf8")).calls,
       makeCliAvailable: (holdProbe = false) => {
         const gate = join(dataDir, "probe-release");
         const probes = join(dataDir, "probe-log");
@@ -98,6 +109,29 @@ async function withUnselectedStarter(check: (fixture: Fixture) => Promise<void>)
     console.info(JSON.stringify({ logPath }));
   }
 }
+
+it.each([undefined, "ask"] as const)("resolves an unconfigured new starter's Codex approval default, preserving explicit %s", async approvalMode => {
+  await withUnselectedStarter(async fixture => {
+    await fixture.restart({ freshCodex: true });
+    const starter = (await fixture.api("GET", "/api/bots")).bots[0];
+    expect(starter.modelSelection).toEqual(EMPTY);
+    // The pending creation default is private, never exposed to the renderer.
+    expect(starter).not.toHaveProperty("pendingApprovalDefault");
+    await fixture.api("PATCH", `/api/bots/${starter.id}`, { computer: "off", ...(approvalMode ? { approvalMode } : {}) });
+    await fixture.connectCodex();
+    const connected = (await fixture.api("GET", "/api/bots")).bots[0];
+    const expectedMode = approvalMode ?? "full";
+    expect(connected.modelSelection.instanceId).toBe("codex");
+    expect(connected.approvalMode).toBe(expectedMode);
+    expect(connected.tasks[0].approvalMode).toBe(expectedMode);
+    expect(fixture.saved()[0].pendingApprovalDefault).toBeUndefined();
+    await fixture.control("send", "--bot", starter.id, "--task", starter.threadId, "--text", "FIRST_CODEX_DEFAULT_FIXTURE");
+    expect((await fixture.control("wait", "--bot", starter.id, "--task", starter.threadId, "--timeout", "30")).status).toBe("settled");
+    const start = fixture.codexCalls().find(call => call.method === "turn/start")!;
+    expect(start.params.sandboxPolicy.type).toBe(approvalMode ? "workspaceWrite" : "dangerFullAccess");
+    expect(start.params.approvalPolicy).toBe(approvalMode ? "on-request" : "never");
+  });
+}, 120_000);
 
 async function send(fixture: Fixture, botId: string, threadId: string, text: string) {
   await fixture.control("send", "--bot", botId, "--task", threadId, "--text", text);

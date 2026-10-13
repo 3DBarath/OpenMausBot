@@ -3,6 +3,7 @@ import { api, type Bot, type ModelSelection } from "@/state/store";
 import type { BotUpdatePatch } from "@/state/bot-patch-queue";
 import type { Routine, RoutineInput } from "./routines";
 import type { ChosenPreset } from "./bot-presets";
+import type { ApprovalMode } from "../../shared/approval-mode";
 
 export const EMPTY_BOT_DEFAULTS: NewBotDefaults = { profile: {}, memory: {}, skills: [], routines: [] };
 
@@ -25,20 +26,22 @@ export class BotCreationDraft {
   avatarFile?: File;
   private avatarObjectUrl?: string;
 
-  constructor(defaults: NewBotDefaults, readonly changed: () => void, private network: typeof api = api) {
+  constructor(defaults: NewBotDefaults, readonly changed: () => void, private network: typeof api = api,
+    private defaultApprovalMode: (selection: ModelSelection) => ApprovalMode = () => "ask") {
     this.template = structuredClone(defaults);
     this.routines = defaults.routines.map(routine => this.routine({ ...routine, botId: this.id }));
   }
 
   get bot(): Bot {
     const { computer, cwd, peers, toolScope, ...profile } = this.template.profile;
-    return {
+    const bot: Bot = {
       id: this.id, threadId: this.id, name: "", title: "", description: "", soul: "",
       color: "green", notifications: true, unread: false, messages: [],
       modelSelection: { instanceId: "", model: "" }, ...profile,
       computer: computer ?? undefined, cwd: cwd ?? undefined, peers: peers ?? undefined,
       toolScope: toolScope ?? undefined,
     };
+    return { ...bot, approvalMode: profile.approvalMode ?? this.defaultApprovalMode(bot.modelSelection) };
   }
 
   patch(value: BotUpdatePatch & Partial<BotDefaultsProfile> & { acknowledgePeerScope?: boolean }) {
@@ -75,7 +78,11 @@ export class BotCreationDraft {
     this.changed();
   }
 
-  export(): NewBotDefaults { return structuredClone({ ...this.template, routines: this.routines.map(routineTemplate) }); }
+  export(resolveApprovalMode = false): NewBotDefaults {
+    return structuredClone({ ...this.template,
+      profile: resolveApprovalMode ? { ...this.template.profile, approvalMode: this.bot.approvalMode } : this.template.profile,
+      routines: this.routines.map(routineTemplate) });
+  }
 
   uploadAvatar = async (file: File): Promise<string> => {
     if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) throw new Error("Choose a PNG, JPEG, GIF, or WebP image");

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ effects: [] as EffectCallback[], dispatch: vi.fn(), api: vi.fn(), create: vi.fn(), setDraft: vi.fn(), ready: false, hook: 0, admin: false,
-  profile: {} as Record<string, unknown> }));
+  profile: {} as Record<string, unknown>, instances: [] as Array<{ instanceId: string; driverKind: string }> }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.admin }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
 vi.mock("react", async importOriginal => {
@@ -24,7 +24,7 @@ vi.mock("@/lib/create-configured-bot", async importOriginal => ({
 }));
 vi.mock("@/state/store", async importOriginal => {
   const store = await importOriginal<typeof import("@/state/store")>();
-  return { ...store, api: fixture.api, BotEditorStore: () => null, useStore: () => ({ state: store.initialState, dispatch: fixture.dispatch }) };
+  return { ...store, api: fixture.api, BotEditorStore: () => null, useStore: () => ({ state: { ...store.initialState, instances: fixture.instances }, dispatch: fixture.dispatch }) };
 });
 import { LocalNewBotDialog as NewBotDialog, CompanionNewBotDialog, NewBotDialog as RoutedNewBotDialog } from "./NewBotDialog";
 
@@ -42,7 +42,7 @@ function render(defaultsMode = false, onCreated?: () => void | Promise<void>) {
 }
 beforeEach(() => {
   fixture.effects = []; fixture.dispatch.mockReset(); fixture.api.mockReset();
-  fixture.ready = false; fixture.admin = false; fixture.create.mockReset(); fixture.setDraft.mockReset(); fixture.profile = {};
+  fixture.ready = false; fixture.admin = false; fixture.create.mockReset(); fixture.setDraft.mockReset(); fixture.profile = {}; fixture.instances = [];
   fixture.api.mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -134,6 +134,28 @@ describe("bot draft dialog", () => {
     fixture.effects[0]();
     await vi.waitFor(() => expect(fixture.setDraft).toHaveBeenCalledOnce());
     expect(fixture.setDraft.mock.calls[0]![0].bot.modelSelection).toEqual(available);
+  });
+
+  it.each([true, false, undefined])("shows the Codex Full default only when the server permits it (%s)", async allowsFullAccessDefault => {
+    fixture.instances = [{ instanceId: "work-account", driverKind: "codex" }];
+    fixture.api.mockResolvedValue({ defaults: { profile: {}, memory: {}, skills: [], routines: [] },
+      modelSelection: { instanceId: "work-account", model: "fixture" }, suggestedName: "Fixture", allowsFullAccessDefault });
+    render();
+    fixture.effects[0]();
+    await vi.waitFor(() => expect(fixture.setDraft).toHaveBeenCalledOnce());
+    const draft = fixture.setDraft.mock.calls[0]![0];
+    expect(draft.bot.approvalMode).toBe(allowsFullAccessDefault ? "full" : "ask");
+    expect(draft.export().profile).not.toHaveProperty("approvalMode");
+  });
+
+  it("keeps a saved Ask default even when Codex would otherwise default to Full", async () => {
+    fixture.instances = [{ instanceId: "work-account", driverKind: "codex" }];
+    fixture.api.mockResolvedValue({ defaults: { profile: { approvalMode: "ask" }, memory: {}, skills: [], routines: [] },
+      modelSelection: { instanceId: "work-account", model: "fixture" }, suggestedName: "Fixture", allowsFullAccessDefault: true });
+    render();
+    fixture.effects[0]();
+    await vi.waitFor(() => expect(fixture.setDraft).toHaveBeenCalledOnce());
+    expect(fixture.setDraft.mock.calls[0]![0].bot.approvalMode).toBe("ask");
   });
 
   it.each([

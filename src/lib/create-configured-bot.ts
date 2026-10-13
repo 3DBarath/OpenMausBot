@@ -5,8 +5,8 @@ import { imageAttachmentFromFile } from "./composer-attachments";
 import type { BotVisibility } from "../../shared/wire";
 import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar";
 
-export async function preparedBotTemplate(draft: BotCreationDraft) {
-  const template = draft.export();
+export async function preparedBotTemplate(draft: BotCreationDraft, resolveApprovalMode = false) {
+  const template = draft.export(resolveApprovalMode);
   if (template.profile.avatarUrl?.startsWith("blob:")) {
     if (!draft.avatarFile) throw new Error("Choose the avatar image again");
     const uploaded = await imageAttachmentFromFile(draft.avatarFile);
@@ -26,7 +26,7 @@ export async function createConfiguredBot(
   approvals = desktopApprovalBridge(),
   visibility?: BotVisibility,
 ): Promise<{ bot: Bot; warnings: string[] }> {
-  const template = await preparedBotTemplate(draft);
+  const template = await preparedBotTemplate(draft, true);
   const { chiefOfStaff, managedSections, toolScope, ...profile } = template.profile;
   if (!profile.name?.trim()) throw new Error("Give the bot a name");
   // The server adds a chosen preset's skills (switched on only for an
@@ -37,7 +37,9 @@ export async function createConfiguredBot(
     method: "POST", body: JSON.stringify({ name: profile.name, title: profile.title,
       description: profile.description, modelSelection: profile.modelSelection, section: profile.section,
       requireAvailableModel: true, useDefaults: false, ...(visibility !== undefined ? { visibility } : {}),
-      ...(Object.hasOwn(template.profile, "toolScope") ? { settings: { toolScope } } : {}),
+      // Elevated levels still finish through the existing private grant flow.
+      settings: { approvalMode: profile.approvalMode === "full" || profile.approvalMode === "custom" ? "ask" : profile.approvalMode,
+        ...(Object.hasOwn(template.profile, "toolScope") ? { toolScope } : {}) },
       ...(preset ? { preset: preset.id } : {}) }),
   });
   let bot = response.bot;
@@ -64,6 +66,7 @@ export async function createConfiguredBot(
       if (granted.approvalMode !== profile.approvalMode) {
         throw new Error("The initial thread's requested approval level was not granted");
       }
+      bot = { ...bot, ...granted };
     }
     for (const [path, text] of Object.entries(template.memory)) {
       if (preset?.notes.includes(path)) continue;

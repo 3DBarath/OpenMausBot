@@ -10,6 +10,7 @@ import { t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { visibilityFromForm, type VisibilityMode } from "./bot-settings/VisibilitySection";
 import type { NewBotDefaults } from "../../shared/new-bot-defaults";
+import { newBotApprovalMode } from "../../shared/approval-mode";
 import type { Routine } from "@/lib/routines";
 import { IdentitySection } from "./bot-settings/IdentitySection";
 import { SoulSection } from "./bot-settings/SoulSection";
@@ -71,6 +72,8 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   defaultsMode?: boolean; onClose?: () => void; section?: string; onCreated?: (bot: Bot) => void | Promise<void>; preserveSelection?: boolean;
 } = {}) {
   const parent = useStore();
+  const instances = useRef(parent.state.instances);
+  instances.current = parent.state.instances;
   const [, render] = useState(0);
   const [draft, setDraft] = useState(() => new BotCreationDraft(EMPTY_BOT_DEFAULTS, () => render(value => value + 1)));
   const [active, setActive] = useState<Section>("Identity");
@@ -93,7 +96,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   };
   useEffect(() => {
     let cancelled = false;
-    void api<{ defaults: NewBotDefaults; modelSelection: ModelSelection; suggestedName: string }>("/api/bot-defaults")
+    void api<{ defaults: NewBotDefaults; modelSelection: ModelSelection; suggestedName: string; allowsFullAccessDefault?: boolean }>("/api/bot-defaults")
       .then(result => {
         if (cancelled) return;
         const defaults = structuredClone(result.defaults);
@@ -103,7 +106,9 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
         }
         if (!defaultsMode) defaults.profile.name = defaults.profile.name?.trim() || result.suggestedName;
         if (section !== undefined) defaults.profile.section = section;
-        setDraft(new BotCreationDraft(defaults, () => render(value => value + 1)));
+        setDraft(new BotCreationDraft(defaults, () => render(value => value + 1), undefined,
+          selection => newBotApprovalMode(instances.current.find(instance => instance.instanceId === selection.instanceId)?.driverKind,
+            result.allowsFullAccessDefault === true)));
         setReady(true);
       }).catch(cause => { if (!cancelled) setError(String(cause)); });
     return () => { cancelled = true; };
@@ -166,7 +171,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       if (action.type === "updateBot" && action.botId === draft.id) draft.patch(action.patch);
       else if (action.type === "setModel" && action.botId === draft.id) {
         draft.setModel(action.selection);
-        if (action.resetApprovalToAsk) draft.patch({ approvalMode: "ask" });
+        if (action.resetApprovalToAsk && draft.template.profile.approvalMode !== undefined) draft.patch({ approvalMode: "ask" });
       } else if (action.type === "routinePatched") { /* Applied by the draft transport. */ }
       else if (action.type === "toggleSettings") { /* Editor links stay inside this dialog. */ }
       else parent.dispatch(action);

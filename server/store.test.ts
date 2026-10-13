@@ -28,6 +28,7 @@ import type { TeamSetupRequest } from "../shared/team-setup.ts";
 import { SECTION_CONTEXTS_FILE, readSectionContext, writeSectionContext } from "./section-context.ts";
 import { TeamComputers } from "./team-computers.ts";
 import { allowsTool } from "../shared/tool-scope.ts";
+import { approvalModeFor } from "../shared/approval-mode.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -44,6 +45,36 @@ describe("Store", () => {
     expect(() => store.patchBot(bot.id, { toolScope: { allow: null } } as never)).toThrow(/tool selection/i);
     store.patchBot(bot.id, { toolScope: undefined } as never);
     expect(new Store(selection).bot(bot.id)).not.toHaveProperty("toolScope");
+  });
+
+  it.each(["ask", "auto", "full", "custom"] as const)("persists creation approval %s before publishing the bot and its first task", (approvalMode) => {
+    const store = new Store(selection);
+    const published: BotRecord[] = [];
+    store.onChange((event) => {
+      if (event.type === "bot") published.push(structuredClone(store.bot(event.botId)!));
+    });
+    const bot = store.createBot({ approvalMode }, { seedMessages: false });
+    const expected = { approvalMode, autoApprove: approvalMode === "auto" };
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject(expected);
+    expect(published[0].tasks?.[0]).toMatchObject(expected);
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)).toMatchObject(expected);
+    expect(reloaded.taskByThread(bot.id, bot.threadId)).toMatchObject(expected);
+    expect(reloaded.createTask(bot.id)).toMatchObject(expected);
+  });
+
+  it("does not infer Full access for a legacy Codex bot on reload or when creating its next task", () => {
+    const codex = () => ({ instanceId: "codex", model: "gpt-6-sol" });
+    const original = new Store(codex, undefined, () => "codex");
+    const bot = original.createBot({}, { seedMessages: false });
+    expect(bot.approvalMode).toBeUndefined();
+    const reloaded = new Store(codex, undefined, () => "codex");
+    reloaded.seedIfEmpty("full");
+    const restored = reloaded.bot(bot.id)!;
+    expect(approvalModeFor(restored)).toBe("ask");
+    expect(approvalModeFor(reloaded.createTask(bot.id)!)).toBe("ask");
+    expect(reloaded.bots).toHaveLength(1);
   });
 
   it.each([undefined, { allow: ["native:read"] }, { deny: ["native:bash"] }])("does not activate a wider tool selection when saving %j fails", (toolScope) => {
@@ -1573,6 +1604,104 @@ describe("Store", () => {
     const reloaded = new Store(selection);
     reloaded.seedIfEmpty();
     expect(reloaded.bots).toHaveLength(1);
+  });
+
+  it("applies a first-run approval default only to an empty store", () => {
+    const store = new Store(selection);
+    store.seedIfEmpty("full");
+    const bot = store.bots[0];
+    expect(bot.approvalMode).toBe("full");
+    expect(bot.tasks?.[0].approvalMode).toBe("full");
+    store.setAllThreadApprovalMode(bot.id, "ask");
+    const reloaded = new Store(selection);
+    reloaded.seedIfEmpty("full");
+    expect(reloaded.bots).toHaveLength(1);
+    expect(reloaded.bot(bot.id)?.approvalMode).toBe("ask");
+    expect(reloaded.taskByThread(bot.id, bot.threadId)?.approvalMode).toBe("ask");
+  });
+
+  it.each([
+    { instanceId: "codex", approvalMode: "full" },
+    { instanceId: "claude", approvalMode: "ask" },
+    { instanceId: "codex", approvalMode: "ask" },
+  ] as const)("resolves a pending new starter to $instanceId/$approvalMode atomically after restart", ({ instanceId, approvalMode }) => {
+    const empty = () => ({ instanceId: "", model: "" });
+    const store = new Store(empty);
+    store.seedIfEmpty("ask", true);
+    const bot = store.bots[0];
+    expect(bot.pendingApprovalDefault).toBe(true);
+    expect(bot.tasks?.[0].approvalMode).toBe("ask");
+    const restarted = new Store(empty);
+    expect(restarted.bot(bot.id)?.pendingApprovalDefault).toBe(true);
+    const published: BotRecord[] = [];
+    restarted.onChange(event => {
+      if (event.type === "bot") published.push(structuredClone(restarted.bot(event.botId)!));
+    });
+    const next = { instanceId, model: "fixture-model" };
+    const resolve = vi.fn(() => approvalMode);
+    const configured = restarted.applyModelDefault(bot.id, next, resolve)!;
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(next);
+    expect(configured.pendingApprovalDefault).toBeUndefined();
+    expect(configured.approvalMode).toBe(approvalMode);
+    expect(configured.tasks?.[0].approvalMode).toBe(approvalMode);
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({ modelSelection: next, approvalMode });
+    expect(published[0].tasks?.[0].approvalMode).toBe(approvalMode);
+    const reloaded = new Store(empty);
+    expect(reloaded.bot(bot.id)?.pendingApprovalDefault).toBeUndefined();
+    expect(reloaded.bot(bot.id)?.approvalMode).toBe(approvalMode);
+    expect(reloaded.taskByThread(bot.id, bot.threadId)?.approvalMode).toBe(approvalMode);
+    expect(reloaded.createTask(bot.id)?.approvalMode).toBe(approvalMode);
+  });
+
+  it.each(["bot", "task", "all", "switch", "grant", "new-task"])("preserves an explicit permission choice made through %s before a starter connects", (writer) => {
+    const empty = () => ({ instanceId: "", model: "" });
+    const store = new Store(empty);
+    store.seedIfEmpty("ask", true);
+    const bot = store.bots[0];
+    const next = { instanceId: "codex", model: "fixture-model" };
+    if (writer === "bot") store.patchBot(bot.id, { approvalMode: "ask" });
+    else if (writer === "task") store.patchTask(bot.id, bot.threadId, { approvalMode: "ask" });
+    else if (writer === "all") store.setAllThreadApprovalMode(bot.id, "ask");
+    else if (writer === "switch") store.switchTaskModel(bot.id, bot.threadId, next, false, true);
+    else if (writer === "new-task") store.createTask(bot.id, undefined, false, undefined, undefined, "ask");
+    else store.patchBot(bot.id, { approvalGrant: { requestId: "fixture-grant", mode: "full", phase: "prepared" } });
+    expect(bot.pendingApprovalDefault).toBeUndefined();
+    const restarted = new Store(empty);
+    const resolve = vi.fn(() => "full" as const);
+    const configured = restarted.applyModelDefault(bot.id, next, resolve)!;
+    expect(resolve).not.toHaveBeenCalled();
+    expect(approvalModeFor(configured)).toBe("ask");
+    expect(approvalModeFor(restarted.projectBotForTask(bot.id, bot.threadId)!)).toBe("ask");
+  });
+
+  it("never applies a creation approval default to an unmarked legacy blank bot", () => {
+    const empty = () => ({ instanceId: "", model: "" });
+    const store = new Store(empty);
+    const bot = store.createBot();
+    const restarted = new Store(empty);
+    const resolve = vi.fn(() => "full" as const);
+    const configured = restarted.applyModelDefault(bot.id, { instanceId: "codex", model: "fixture-model" }, resolve)!;
+    expect(resolve).not.toHaveBeenCalled();
+    expect(approvalModeFor(configured)).toBe("ask");
+    expect(restarted.taskByThread(bot.id, bot.threadId)?.approvalMode).toBe("ask");
+  });
+
+  it("leaves the pending starter and its permissions unchanged when provider-default persistence fails", () => {
+    const empty = () => ({ instanceId: "", model: "" });
+    const store = new Store(empty);
+    store.seedIfEmpty("ask", true);
+    const bot = store.bots[0];
+    const published = vi.fn();
+    store.onChange(published);
+    const save = vi.spyOn(store as unknown as { saveBots(): void }, "saveBots")
+      .mockImplementationOnce(() => { throw new Error("fixture disk full"); });
+    expect(() => store.applyModelDefault(bot.id, { instanceId: "codex", model: "fixture-model" }, () => "full")).toThrow("fixture disk full");
+    save.mockRestore();
+    expect(published).not.toHaveBeenCalled();
+    expect(store.bot(bot.id)).toMatchObject({ modelSelection: empty(), approvalMode: "ask", pendingApprovalDefault: true });
+    expect(store.taskByThread(bot.id, bot.threadId)?.approvalMode).toBe("ask");
+    expect(new Store(empty).bot(bot.id)).toMatchObject({ modelSelection: empty(), approvalMode: "ask", pendingApprovalDefault: true });
   });
 
   it("chains appended messages and keeps the newest as active leaf", () => {

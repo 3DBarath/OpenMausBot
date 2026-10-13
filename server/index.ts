@@ -37,6 +37,7 @@ import { phonePairingLink } from "../shared/pairing-link.ts";
 import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
 import {
   approvalModeFor,
+  newBotApprovalMode,
   modelSwitchNeedsAsk,
   isEmergencyApprovalDowngrade,
   isApprovalMode,
@@ -3636,7 +3637,7 @@ async function refreshUnsetModelSelections(instances?: readonly SelectableInstan
   const selection = withNewBotEffort(bootSelection, cfg.newBots?.effort,
     registry.get(bootSelection.instanceId)?.adapter.capabilities.effortLevels);
   for (const bot of store.bots) {
-    if (!bot.modelSelection.instanceId && !bot.modelSelection.model) store.applyModelDefault(bot.id, selection);
+    if (!bot.modelSelection.instanceId && !bot.modelSelection.model) store.applyModelDefault(bot.id, selection, defaultBotApprovalMode);
   }
 }
 
@@ -4119,6 +4120,10 @@ let bootSelection = { instanceId: "", model: "" };
 let enginesRead: Promise<void> | null = null;
 /** Preset bots for New bot, from shared files and the organization (presets.ts). */
 const presetStore = createPresetStore();
+const allowsFullAccessDefault = () => !HOSTED_WORKSPACE && !managedDesktop.enrolled() && managedPolicy.current() === null;
+const defaultBotApprovalMode = (selection: ModelSelection) => newBotApprovalMode(
+  registry.cliTarget(selection.instanceId)?.driverKind, allowsFullAccessDefault(),
+);
 const store = new Store(
   () => bootSelection,
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
@@ -4154,7 +4159,11 @@ for (const pending of startupCatalogs) {
     broadcast({ kind: "config", ...configStatus() });
   }, () => {});
 }
-store.seedIfEmpty();
+const starterApprovalMode = cfg.newBotDefaults?.profile.approvalMode ?? defaultBotApprovalMode(bootSelection);
+store.seedIfEmpty(starterApprovalMode === "custom" ||
+  (starterApprovalMode === "full" && (!allowsFullAccessDefault() || !supportsApprovalMode(bootSelection, "full")))
+  ? "ask" : starterApprovalMode,
+  !bootSelection.instanceId && !bootSelection.model && cfg.newBotDefaults?.profile.approvalMode === undefined && allowsFullAccessDefault());
 hostedModels?.reconcile(store);
 // Skills library boot sweep (features.skillsLibrary): migrate per-bot
 // copies into the shared library and apply assignments. Flag-off boots
@@ -4223,7 +4232,7 @@ const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
 };
 
 const wireBot = (bot: BotRecord): WireBot => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant, pendingApprovalDefault: _pendingApprovalDefault, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
   // private reply. Every ordinary client sees the effective Ask state during
   // that two-phase window, never a grant that may still roll back.
@@ -4246,7 +4255,7 @@ function toolScopeForTurn(botId: string) {
 /** The correlated private response carries the requested value so Electron
  * can validate it before sending the confirmation that makes it effective. */
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, pendingApprovalDefault: _pendingApprovalDefault, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   return { ...rest, approvalMode: approvalModeFor(rest), mainThreadId: botMainThread(bot.id), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
@@ -17438,6 +17447,7 @@ ROUTES.push(createBotCreateRoutes({
   hostedModels, supportsApprovalMode, cloudRoutineAuthors,
   routines: () => routines,
   storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
+  defaultApprovalMode: defaultBotApprovalMode,
 }));
 // The pinned-thread guard the bot routes below and the inline bot routes
 // build per request: a paired or companion client that names no thread on a
@@ -21124,6 +21134,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 200, {
         defaults: structuredClone(cfg.newBotDefaults ?? newBotDefaultsSchema.parse({})),
         modelSelection: await defaultSelection(),
+        allowsFullAccessDefault: allowsFullAccessDefault() && (auth.kind !== "session" || auth.scopes.includes("admin")),
         suggestedName: pickBotName(store.bots.map(bot => bot.name)),
       });
     }

@@ -6,6 +6,12 @@ export const APPROVAL_MODES = ["ask", "edits", "auto", "full", "custom"] as cons
 
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 
+/** A creation default, not a fallback for existing records. Codex Full
+ * avoids its Windows sandbox setup path; managed installations keep Ask. */
+export function newBotApprovalMode(driverKind: string | undefined, allowsFullAccess = true): ApprovalMode {
+  return driverKind === "codex" && allowsFullAccess ? "full" : "ask";
+}
+
 /** Only providers with an implemented permission mapping may expose a level.
  * `edits` (auto-accept edits) exists where the engine has such a mode:
  * Claude and Grok `acceptEdits`, Antigravity `auto_edit`, Qwen `auto-edit`,
