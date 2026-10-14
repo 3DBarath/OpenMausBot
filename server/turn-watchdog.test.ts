@@ -126,7 +126,8 @@ describe("TurnWatchdog", () => {
    describe("the stall handler", () => {
   function load() {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-    const from = source.indexOf("\nconst TURN_STALL_MS"), to = source.indexOf("\nwatchdog.start();");
+    const from = /^[ \t]*const TURN_STALL_MS\b/m.exec(source)?.index ?? -1;
+    const to = /^[ \t]*watchdog\.start\(\);/m.exec(source)?.index ?? -1;
     if (from < 0 || to <= from) throw new Error("Stall handler section moved");
     const code = ts.transpileModule(`${source.slice(from, to)}\nglobalThis.watchdog = watchdog;`,
       { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
