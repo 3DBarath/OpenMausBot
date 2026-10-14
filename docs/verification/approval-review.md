@@ -1,6 +1,6 @@
 # Configurable approval review verification
 
-This PR is independently based on upstream 0.1.109 (`a44ccb10`). It adds isolated
+This PR is independently based on upstream 0.1.109 (`c5b5343c`). It adds isolated
 review for app-owned Auto gates and Claude when its native reviewer explicitly
 reports inactive. A native active or unknown reviewer remains authoritative.
 

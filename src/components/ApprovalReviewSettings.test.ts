@@ -69,6 +69,27 @@ describe("ApprovalReviewSettings", () => {
     expect(render().effort.props.value).toBe("none");
   });
 
+  it("saves and reloads an omitted reviewer effort as the reasoning-off default", async () => {
+    choose(render().engine, "helper"); choose(render().model, "m");
+    choose(render().effort, "high");
+    choose(render().effort, "");
+    const saved = { model: { instanceId: "helper", model: "m" }, instructions: "" };
+    fixture.api.mockResolvedValue({ approvalReview: saved });
+    click(render().save); await flush();
+    expect(request().approvalReview).toEqual(saved);
+    expect(fixture.config.approvalReview).toEqual(saved);
+    fixture.values = [];
+    const reloaded = render();
+    expect(reloaded.effort.props.value).toBe("");
+    const defaultOption = nodes(reloaded.effort.props.children).find(node => node.props.value === "");
+    expect(defaultOption?.props.children).toBe(t("settings.approvalReview.defaultEffort"));
+    choose(reloaded.engine, "");
+    fixture.api.mockResolvedValue({ approvalReview: { instructions: "" } });
+    click(render().save); await flush();
+    expect(fixture.config.approvalReview).toEqual({ instructions: "" });
+    expect(render().html).toContain(t("settings.approvalReview.sessionStatus"));
+  });
+
   it("shows the exact immutable model review rules in a collapsed disclosure beside editable additional constraints", async () => {
     const view = render();
     const disclosure = view.all.find((node) => node.type === "details")!;

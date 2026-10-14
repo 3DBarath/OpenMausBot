@@ -72,7 +72,7 @@ export function ApprovalReviewSettings() {
         <label htmlFor="approval-review-effort" className="text-[13px] font-medium text-ink">{t("settings.approvalReview.effort")}</label>
         <select id="approval-review-effort" value={value.model.effort ?? ""} disabled={saving || !model} className={SELECT_CLASS}
           onChange={(event) => { const { effort: _effort, variant: _variant, ...selection } = value.model!; chooseModel({ ...selection, ...(event.target.value ? { effort: event.target.value as ModelSelection["effort"] } : {}) }); }}>
-          <option value="">{t("settings.approvalReview.providerDefault")}</option>
+          <option value="">{t("settings.approvalReview.defaultEffort")}</option>
           {value.model.effort && !levels.includes(value.model.effort) && <option value={value.model.effort} disabled>{value.model.effort}</option>}
           {levels.map((level) => <option key={level} value={level}>{effortLabel(level)}</option>)}
         </select>

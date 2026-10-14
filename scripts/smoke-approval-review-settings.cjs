@@ -73,6 +73,16 @@ if (process.versions.electron && process.argv.includes(childFlag)) {
       await until(() => evaluate("[...document.querySelector('#approval-review-engine').options].some(option => option.value === 'openaiCompat' && !option.disabled)"), "reload finishes loading reviewer catalog");
       assert.equal(await evaluate("document.getElementById('approval-review-instructions').value"), instructions);
       assert.equal(await evaluate("document.getElementById('approval-review-effort').value"), "none");
+      await select("approval-review-effort", "");
+      await save();
+      await until(async () => {
+        const review = (await config()).approvalReview;
+        return review?.model?.model === "fixture-review-model" && review?.model?.effort === undefined;
+      }, "saved default reasoning-off selection");
+      await window.loadURL(previewUrl);
+      await until(() => evaluate("document.getElementById('approval-review-model')?.value === 'fixture-review-model'"), "reload restores default reasoning selection");
+      await until(() => evaluate("document.getElementById('approval-review-effort')?.value === '' && !document.getElementById('approval-review-effort').disabled"), "reload finishes loading default reviewer effort");
+      assert.equal(await evaluate("document.getElementById('approval-review-effort').value"), "");
       window.setSize(390, 844);
       await until(() => evaluate("innerWidth === 390"), "narrow viewport");
       assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
@@ -88,7 +98,7 @@ if (process.versions.electron && process.argv.includes(childFlag)) {
       assert.equal(await evaluate("document.getElementById('approval-review-model').disabled"), true);
       assert.equal(await evaluate("document.getElementById('approval-review-instructions').value"), instructions);
       writeFileSync(join(evidence, "approval-review-settings-session.png"), (await window.webContents.capturePage()).toPNG());
-      const result = { selectedReviewerSaved: true, instructionsSaved: true, reloadPersisted: true, missingModelCannotSave: true, sessionFallbackSaved: true, narrowLayout: true };
+      const result = { selectedReviewerSaved: true, defaultReasoningOffSaved: true, instructionsSaved: true, reloadPersisted: true, missingModelCannotSave: true, sessionFallbackSaved: true, narrowLayout: true };
       writeFileSync(join(evidence, "approval-review-settings-ui.json"), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result));
       app.exit(0);

@@ -217,6 +217,12 @@ it("reviews exact Auto actions through real HTTP, persists settings, and leaves 
       additionalConstraints: settings.instructions,
     });
     expect(JSON.stringify(selected.messages)).toContain("Write fixture marker selected-allow");
+    const defaultReviewModel = { instanceId: "openaiCompat", model: reviewerModel };
+    await api("PUT", "/api/config", { approvalReview: { model: defaultReviewModel } });
+    expect((await api("GET", "/api/config")).approvalReview).toEqual({ model: defaultReviewModel, instructions: settings.instructions });
+    const defaulted = (await run("review-default-none", "allow"))[0]!;
+    expect(defaulted.model).toBe(reviewerModel);
+    expect(defaulted.reasoning_effort).toBe("none");
     await run("automatic-denial", "deny");
     await run("review-asks-human", "ask");
     await run("malformed-falls-back", "malformed");
