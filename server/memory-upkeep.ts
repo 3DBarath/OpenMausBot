@@ -260,13 +260,17 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       const parsed: Candidate[] = [];
       for (const candidate of proposed) {
         const turn = candidate.sourceTurn === undefined ? undefined : batch.turns[candidate.sourceTurn];
-        const sourceText = turn ? [turn.person, turn.bot, ...(turn.room ?? []).map(line => line.text)].join("\n").replace(/\s+/g, " ") : "";
-        const grounded = Boolean(turn && candidate.sourceQuote && sourceText.includes(candidate.sourceQuote.replace(/\s+/g, " ")));
+        const sources = turn ? [...(turn.room ?? [{ text: turn.person, messageId: turn.personMessageId }]), { text: turn.bot, messageId: turn.sourceMessageId }] : [];
+        const quoted = candidate.sourceQuote ? sources.find(source => source.text.replace(/\s+/g, " ").includes(candidate.sourceQuote!.replace(/\s+/g, " "))) : undefined;
+        const grounded = Boolean(quoted);
         if (candidate.teamName || turn?.failed || turn?.delegated || (!turn && batch.turns.some(turn => turn.failed || turn.delegated))) {
           if (!grounded || !turn || (turn.failed && candidate.kind !== "lesson" && candidate.kind !== "question")) continue;
-          if (candidate.teamName && ["decision", "lesson", "question", "outcome"].includes(candidate.kind)) deps.proposeShared?.(batch, candidate, turn);
-          // Shared proposals must not publish into personal profiles.
-          continue;
+          candidate.aboutUser = false;
+          if (candidate.teamName && (turn.room || turn.delegated) && ["decision", "lesson", "question", "outcome"].includes(candidate.kind)) {
+            deps.proposeShared?.(batch, candidate, { ...turn, sourceMessageId: quoted?.messageId });
+            continue;
+          }
+          if (turn.delegated && candidate.kind !== "lesson" && candidate.kind !== "question" && candidate.kind !== "outcome") continue;
         }
         if (candidate.kind === "outcome") {
           if (!grounded) continue;

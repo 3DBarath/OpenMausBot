@@ -119,11 +119,11 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   const accept = (entry: Entry) =>
     run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ accept: true, expectedRevision: entry.revision }) }));
   const remove = (entry: Entry) => run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}&revision=${entry.revision}`, { method: "DELETE" }));
-  const editDetail = (entry: Entry, detail: string) => {
-    if (detail.trim() === entry.detail) return;
-    void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ detail, expectedRevision: entry.revision }) })).then(saved => setUnsaved(current => {
+  const editDetail = (entry: Entry, detail: string, name?: string) => {
+    if (detail.trim() === entry.detail && (name === undefined || name === entry.name)) return;
+    void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ detail, ...(name === undefined ? {} : { name }), expectedRevision: entry.revision }) })).then(saved => setUnsaved(current => {
       const next = { ...current };
-      if (saved) delete next[entry.id]; else next[entry.id] = { name: entry.name, text: detail };
+      if (saved) delete next[entry.id]; else next[entry.id] = { name: name ?? entry.name, text: detail };
       return next;
     }));
   };
@@ -268,7 +268,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
                           {entry.evidence && <><p>{t("teamMemory.project", { path: entry.evidence.project.path, revision: entry.evidence.project.sha256.slice(0, 12) })}</p><p>{t("teamMemory.artifacts")} {entry.evidence.artifacts.map((file, index) => <button key={file.path} className="mr-2 underline" onClick={() => void downloadEvidence(entry, index)}>{t("teamMemory.download", { path: file.path })}</button>)}</p><p>{t("teamMemory.check", { check: entry.evidence.check })}</p>{entry.evidence.approval && <p>{t("teamMemory.approved", { name: entry.evidence.approval.by, date: new Date(entry.evidence.approval.at).toLocaleString() })}{entry.evidenceStatus === "stale" ? t("teamMemory.staleApproval") : ""}.</p>}<p>{t("teamMemory.savedOnly")}</p>
                             {entry.evidenceStatus !== "approved" && <button disabled={busyId !== null || entry.evidenceStatus === "stale"} className="underline disabled:opacity-50" onClick={() => void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ approveEvidence: true, expectedRevision: entry.revision }) }))}>{t("teamMemory.approve")}</button>}</>}
                         </div>}
-                        {!!entry.history?.length && <details className="mt-1 text-[11px] text-ink-secondary"><summary>{t("teamMemory.history")}</summary>{entry.history.map((version, index) => <div key={index} className="mt-1">{new Date(version.at).toLocaleDateString()}: {version.name} — {version.detail} <button disabled={busyId !== null} onClick={() => editDetail(entry, version.detail)} className="underline">{t("teamMemory.restore")}</button></div>)}</details>}
+                        {!!entry.history?.length && <details className="mt-1 text-[11px] text-ink-secondary"><summary>{t("teamMemory.history")}</summary>{entry.history.map((version, index) => <div key={index} className="mt-1">{new Date(version.at).toLocaleDateString()}: {version.name} — {version.detail} <button disabled={busyId !== null} onClick={() => editDetail(entry, version.detail, version.name)} className="underline">{t("teamMemory.restore")}</button></div>)}</details>}
                       </span>
                       <button aria-label={t(entry.pinned ? "teamMemory.unpin" : "teamMemory.pin", { name: entry.name })} aria-pressed={entry.pinned ?? false} disabled={busyId !== null} className="p-1 text-ink-secondary hover:text-accent" onClick={() => void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ pinned: !entry.pinned, expectedRevision: entry.revision }) }))}><Pin size={13} /></button>
                       <button

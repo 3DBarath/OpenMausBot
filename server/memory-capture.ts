@@ -43,6 +43,7 @@ export interface RoomLine {
 
 export interface CaptureTurn {
   sourceMessageId?: string;
+  personMessageId?: string;
   failed?: boolean;
   delegated?: boolean;
   evidence?: string;

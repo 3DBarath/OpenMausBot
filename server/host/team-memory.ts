@@ -17,7 +17,7 @@ export function createTeamMemoryActions(deps: {
     capture(batch: CaptureBatch, candidate: Candidate, turn: CaptureTurn) {
       const bot = store.bot(batch.botId);
       const room = store.groupByThread(batch.threadId);
-      if (!bot || !deps.mayCapture(bot.id, batch.threadId) || !sameAudience(bot.visibility, undefined)
+      if ((!room && !turn.delegated) || !bot || !deps.mayCapture(bot.id, batch.threadId) || !sameAudience(bot.visibility, undefined)
         || (room && sectionContextKey(room.section) !== sectionContextKey(bot.section))) return;
       const memory = deps.memory();
       const kind = candidate.kind === "lesson" ? "lesson" : candidate.kind === "question" ? "question" : candidate.kind === "outcome" ? "outcome" : "decision";

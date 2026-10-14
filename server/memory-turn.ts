@@ -21,5 +21,5 @@ export function memoryTurn(messages: readonly Message[], botId: string, turnId: 
   const tools = messages.filter(message => message.turnId === turnId && message.kind === "activity" && message.tool)
     .slice(-20).map(message => `${message.tool!.name}: ${message.tool!.ok === false ? "failed" : "observed"}`).join("; ");
   return { person: delegated ? "" : clean(asked?.text ?? ""), bot: clean(reply.text ?? ""), owner: !room && !delegated && !asked?.sender && !asked?.peerAsk && !asked?.relayed,
-    sourceMessageId: reply.id, turnId, failed, delegated, evidence: tools || "No tool evidence recorded", ...(room ? { room: lines } : {}) };
+    sourceMessageId: reply.id, personMessageId: delegated ? undefined : asked?.id, turnId, failed, delegated, evidence: tools || "No tool evidence recorded", ...(room ? { room: lines } : {}) };
 }

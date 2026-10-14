@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { recordProjectEvidence, projectEvidenceStatus, verifyProjectEvidence } from "./project-evidence.ts";
+import { recordProjectEvidence, projectEvidenceStatus, verifyProjectEvidence, openEvidenceArtifact } from "./project-evidence.ts";
 import { TeamMemory } from "./team-memory.ts";
 
 let root: string;
@@ -46,4 +46,15 @@ it("refuses paths and symlinks outside the project", async () => {
     symlinkSync(outside, join(root, "link"), process.platform === "win32" ? "junction" : "dir");
     await expect(recordProjectEvidence(root, { ...input, project: "link/private.aep" })).rejects.toThrow(/inside/);
   } finally { rmSync(outside, { recursive: true, force: true }); }
+});
+
+
+it("allows an unchanged preview after the project changes, but rejects changed previews", async () => {
+  const evidence = await recordProjectEvidence(root, input);
+  writeFileSync(join(root, "project.aep"), "new project");
+  const opened = await openEvidenceArtifact(evidence, 0);
+  try { expect(await opened.handle.readFile("utf8")).toBe("synthetic preview"); }
+  finally { await opened.handle.close(); }
+  writeFileSync(join(root, "preview.png"), "changed preview");
+  await expect(openEvidenceArtifact(evidence, 0)).rejects.toThrow(/changed/);
 });

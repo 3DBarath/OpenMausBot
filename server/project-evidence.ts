@@ -82,7 +82,7 @@ export async function verifyProjectEvidence(evidence: ProjectEvidence): Promise<
 /** Read only a recorded artifact, never a client-supplied path. */
 export async function openEvidenceArtifact(evidence: ProjectEvidence, index: number) {
   const file = evidence.artifacts[index];
-  if (!file || projectEvidenceStatus(evidence) === "stale") throw new Error("Evidence is missing or stale");
+  if (!file) throw new Error("Evidence is missing");
   const target = scopedPath(evidence.root, file.path);
   const handle = await open(target, "r");
   try {

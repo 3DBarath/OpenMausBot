@@ -54,3 +54,32 @@ it("retains late corrections in long capture input and labels omitted context", 
   expect(prompt).toContain("Final correction: orange");
   expect(prompt).toContain("middle omitted; consult source message");
 });
+
+
+it("does not turn private direct-chat decisions into shared proposals", async () => {
+  const { upkeep, shared } = harness(JSON.stringify([decision]));
+  try {
+    const report = await upkeep.capture({ botId: bot.id, threadId: "private", turns: [{ person: "Use orange", bot: "Understood", personMessageId: "request" }] });
+    expect(shared).not.toHaveBeenCalled();
+    expect(report.added).toBe(1);
+  } finally { upkeep.stop(); }
+});
+
+it("rejects a source quote assembled across two messages and keeps a real quote's ID", async () => {
+  const { upkeep, shared } = harness(JSON.stringify([{ ...decision, sourceQuote: "orange I will" }, decision]));
+  try {
+    await upkeep.capture({ botId: bot.id, threadId: "room", turns: [{ ...room, bot: "I will apply it" }] });
+    expect(shared).toHaveBeenCalledOnce();
+    expect(shared.mock.calls[0][2].sourceMessageId).toBe("request");
+  } finally { upkeep.stop(); }
+});
+
+it("keeps grounded private failure lessons without publishing them to About me", async () => {
+  const { upkeep, shared, profile } = harness(JSON.stringify([{ kind: "lesson", text: "Check fonts before rendering", sourceTurn: 0, sourceQuote: "Missing font", aboutUser: true }]));
+  try {
+    const report = await upkeep.capture({ botId: bot.id, threadId: "private", turns: [{ person: "Render", bot: "Missing font", failed: true, sourceMessageId: "reply" }] });
+    expect(report.added).toBe(1);
+    expect(shared).not.toHaveBeenCalled();
+    expect(profile.mock.calls.flatMap(call => call[1] ?? [])).toEqual([]);
+  } finally { upkeep.stop(); }
+});
