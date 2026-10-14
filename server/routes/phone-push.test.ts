@@ -1,5 +1,3 @@
-// /api/push/device, the way a request reaches it: through the table on a real
-// HTTP server. The identity is the authenticated one, never the body's.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";

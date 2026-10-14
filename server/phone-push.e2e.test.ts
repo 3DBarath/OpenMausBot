@@ -1,18 +1,3 @@
-// Closed-app phone alerts, end to end: the real server, a fake engine that
-// stops for approval in a room, and a fake control plane standing in for the
-// push relay (server/testing/fake-control-plane.ts). Two phones are paired,
-// one through a session and one through the companion; only the first holds
-// a live event stream.
-//
-//   1. a room approval produces exactly one push request: to the phone whose
-//      app is not open, and none to the phone that is watching live
-//   2. that request is content-free: kind, the bot's and room's names and
-//      opaque ids; never the command the bot asked to run
-//   3. it authenticates with the installation credential, to the relay origin
-//   4. revoking the paired session drops its registration at the relay
-//
-// The fake engine and the relay are local; nothing reaches Apple or a real
-// control plane, and the server runs in a temporary home.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,8 +78,6 @@ posixOnly("closed-app phone alerts through the relay", () => {
         USERPROFILE: home,
         OMB_PORT: String(port),
         OMB_WEBHOOK_PORT: String(port + 1),
-        // the relay this harness pushes through, and the credential it holds
-        // (the fleet's way of carrying it; serve --tunnel keeps it in a file)
         OMB_CONTROL_PLANE_URL: relay.url,
         OMB_INSTALLATION_CREDENTIAL: relay.credential,
       },
@@ -108,7 +91,6 @@ posixOnly("closed-app phone alerts through the relay", () => {
       try {
         if ((await fetch(`${base}/api/health`)).ok) break;
       } catch {
-        // still starting
       }
       if (Date.now() > deadline) throw new Error(`server never came up:\n${log}`);
       await new Promise((resolve) => setTimeout(resolve, 100));

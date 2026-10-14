@@ -1,14 +1,5 @@
 #!/usr/bin/env node
-// A stand-in for the hosted control plane's push relay (cloudflare/
-// control-plane, contract in shared/phone-push.ts), for tests and the
-// isolated verification fixture. It records every request it is sent and
-// answers the way the relay does: register/unregister, and send to a token
-// registered for the presenting credential. It never talks to Apple.
-// Self-contained on purpose (node built-ins only).
-//
-// As a script: `node --experimental-strip-types server/testing/fake-control-plane.ts [port] [log.jsonl]`
-// prints its URL and one fresh installation credential, and appends each
-// request it receives to the log as one JSON line.
+// As a script: `node --experimental-strip-types server/testing/fake-control-plane.ts [port] [log.jsonl]`.
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";

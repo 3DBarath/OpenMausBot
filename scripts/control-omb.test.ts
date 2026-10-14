@@ -38,10 +38,6 @@ describe("the fixture's Live call environment", () => {
     expect(childEnv({ OMB_OPENAI_LIVE_KEY: "sk-real" })).not.toHaveProperty("OMB_OPENAI_LIVE_KEY");
   });
 
-  // Live calls need Pro. A recipe that starts calls says so with
-  // OMB_PRO_PLAN=1; without it the fixture refuses them (402 needsPro).
-  // Phone push verification: the relay is the loopback fake, and the
-  // installation credential crosses only with it.
   it("lets a control plane cross only as the loopback fake, with its credential", () => {
     const credential = `omb_install_${"a".repeat(22)}.${"b".repeat(43)}`;
     expect(childEnv({ OMB_CONTROL_PLANE_URL: "http://127.0.0.1:4200", OMB_INSTALLATION_CREDENTIAL: credential }))

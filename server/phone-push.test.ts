@@ -173,7 +173,7 @@ describe("dispatching a notification", () => {
   it("keeps a phone's opt-out when it registers again without `enabled`", async () => {
     const push = make();
     await push.register("session:s1", { token: TOKEN_A, environment: "production", enabled: false });
-    // the launch-time refresh docs/ios-companion.md shows omits `enabled`
+    // the launch-time refresh omits `enabled`
     await push.register("session:s1", { token: TOKEN_B, environment: "production", pairing: "pair-tag-1" });
     expect(push.device("session:s1")).toMatchObject({ enabled: false, pairing: "pair-tag-1" });
     expect(make().device("session:s1")).toMatchObject({ enabled: false });

@@ -1,5 +1,3 @@
-// The one line a routine run card's message carries as text, for clients
-// that do not draw the card (moved unchanged from server/index.ts).
 import type { Message } from "./store.ts";
 
 export function routineRunFallbackText(card: NonNullable<Message["routineRun"]>): string {
@@ -29,8 +27,6 @@ export function routineRunFallbackText(card: NonNullable<Message["routineRun"]>)
                 ? "deferred: target busy"
               : card.status
   );
-  // Clients without the card (older phones) draw only this line, so it
-  // carries what the run said, not just that it finished.
   const detail = card.summary ?? card.error;
   return `Routine “${card.routineName}” ${state}${detail ? `\n\n${detail}` : ""}`;
 }

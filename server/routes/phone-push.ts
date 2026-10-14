@@ -1,17 +1,3 @@
-// /api/push/device: a paired phone registers the APNs token its app was
-// given, so the harness can wake it through the hosted relay while the app
-// is suspended or closed (server/phone-push.ts, contract in
-// shared/phone-push.ts and docs/ios-companion.md).
-//
-//   GET    → this phone's registration and whether pushes can leave at all
-//   PUT    → register or update { token, environment, pairing?, enabled? }
-//   DELETE → stop: drop the registration here and at the relay
-//
-// Only a phone can call these, and only for itself: the identity is the one
-// that authenticated the request (a paired session, or the device the
-// companion sidecar vouched for), never anything in the body. Client scope
-// is enough (server/request-auth.ts), and the companion forwards exactly
-// these three (companion/src/routes.ts).
 import type { IncomingMessage } from "node:http";
 
 import type { PhonePush } from "../phone-push.ts";
@@ -21,15 +7,8 @@ import { PASS, type RouteHandler } from "./table.ts";
 
 const DEVICE_ID = /^[\w-]{1,128}$/;
 
-/** Who this phone is, for push: `session:<id>` for a phone paired with this
- * server, `companion:<id>` for one the companion sidecar authenticated (it
- * sends its own id for the phone, never one the phone chose; under the
- * desktop app request-auth has already checked the companion's private
- * token). Null for anything else, the desktop app included. The event
- * stream is keyed the same way, so a phone with its app open is not also
- * pushed to. */
+/** Keyed by the identity that authenticated the request, never by anything in the body. */
 export function phonePushIdentity(req: IncomingMessage, auth: RequestAuth): string | null {
-  // A browser sign-in is a browser, not a phone app with an APNs token.
   if (auth.kind === "session") return auth.session.cookieOnly ? null : `session:${auth.session.id}`;
   if (req.headers["x-openmausbot-companion"] !== "1") return null;
   const device = req.headers["x-openmausbot-companion-device"];
