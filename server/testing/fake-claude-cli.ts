@@ -352,7 +352,12 @@ if (argAfter("--output-format") === "stream-json" && !argAfter("--input-format")
   let prompt = "";
   for await (const chunk of process.stdin) prompt += chunk;
   const dump = process.env.FAKE_CLAUDE_DUMP;
-  if (dump) writeDumpAtomic(dump, JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig: null }, null, 2));
+  if (dump) writeDumpAtomic(dump, JSON.stringify({
+    pid: process.pid, argv, env: process.env, prompt,
+    mcpConfig: JSON.parse(argAfter("--mcp-config") ?? "null"),
+    settings: JSON.parse(readFileSync(argAfter("--settings")!, "utf8")),
+    systemPrompt: argAfter("--system-prompt"),
+  }, null, 2));
   const text = "fake generated text";
   out({ type: "system", subtype: "init", tools: [] });
   out({ type: "assistant", message: { content: [{ type: "text", text }], stop_reason: "end_turn" } });

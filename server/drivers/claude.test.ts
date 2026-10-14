@@ -3597,17 +3597,22 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
-  it("declares safe same-provider permission review", async () => {
+  it.each(["medium", "none"] as const)("keeps same-provider permission review isolated at %s effort", async (effort) => {
     await create();
     const dump = join(scratch, "permission-review.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
-    await expect(instance.reviewPermission?.("review this request", { model: "claude-review-fixture", effort: "medium" })).resolves.toBe("fake generated text");
+    await expect(instance.reviewPermission?.("review this request", { model: "claude-review-fixture", effort })).resolves.toBe("fake generated text");
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("stream-json");
     expect(seen.argv[seen.argv.indexOf("--model") + 1]).toBe("claude-review-fixture");
-    expect(seen.argv[seen.argv.indexOf("--effort") + 1]).toBe("medium");
+    expect(seen.argv[seen.argv.indexOf("--effort") + 1]).toBe(effort);
     expect(seen.argv).toContain("--no-session-persistence");
     expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+    expect(seen.argv[seen.argv.indexOf("--setting-sources") + 1]).toBe("");
+    expect(seen.settings.disableAllHooks).toBe(true);
+    expect(seen.argv).not.toContain("--resume");
   });
 
   it("runs helper calls tool-free and isolated, in an empty folder it then removes", async () => {
