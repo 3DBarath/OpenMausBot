@@ -4330,6 +4330,16 @@
   "teamMemory.searchable": "Searchable",
   "teamMemory.history": "Previous versions",
   "teamMemory.restore": "Restore text",
+  "teamMemory.status": "Status: {status}. Accepting a note does not approve its output.",
+  "teamMemory.project": "Saved project: {path} · revision {revision}",
+  "teamMemory.artifacts": "Artifacts:",
+  "teamMemory.download": "Download {path}",
+  "teamMemory.check": "Agent reports: {check}",
+  "teamMemory.approved": "Approved by {name} on {date}",
+  "teamMemory.staleApproval": " — this approval is now stale",
+  "teamMemory.savedOnly": "Only saved files are tracked; unsaved editor changes are not verified.",
+  "teamMemory.approve": "Approve this revision",
   "teamMemory.pin": "Pin {name}",
-  "teamMemory.unpin": "Unpin {name}"
+  "teamMemory.unpin": "Unpin {name}",
+  "teamMemory.unavailable": "This evidence changed or is unavailable. Reload before reviewing."
 }

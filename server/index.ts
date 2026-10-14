@@ -122,6 +122,9 @@ import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
 import { createSkillReview, turnToolSteps } from "./skill-review.ts";
 import type { CaptureTurn, RoomLine } from "./memory-capture.ts";
+import { memoryTurn } from "./memory-turn.ts";
+import { evidenceInputSchema } from "./project-evidence.ts";
+import { createTeamMemoryActions } from "./host/team-memory.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
 import {
@@ -7295,6 +7298,12 @@ bus.subscribe((event: RuntimeEvent) => {
 
 // Memory upkeep (server/memory-upkeep.ts): background capture, About me
 // suggestions and the nightly tidy-up, for bots with the switch on.
+const teamMemoryActions = createTeamMemoryActions({ store, memory: () => teamMemory, roomFeedsBot,
+  mayCapture: (botId, threadId) => {
+    const room = store.groupByThread(threadId);
+    return !room || roomCaptureAllowed(room, store.bot(botId));
+  },
+});
 const memoryUpkeep = createMemoryUpkeep({
   bots: () => store.bots,
   bot: (id) => store.bot(id) ?? undefined,
@@ -7341,12 +7350,8 @@ const memoryUpkeep = createMemoryUpkeep({
     return facts.length;
   },
   sourceLabel: (botId, threadId) => memorySourceLabel({ room: store.groupByThread(threadId), task: store.taskByThread(botId, threadId), threadId }),
-  // A room turn is asked again when its batch is captured: the switch, the
-  // room's members or who can see the bot may have changed since.
-  mayCapture: (botId, threadId) => {
-    const room = store.groupByThread(threadId);
-    return !room || roomCaptureAllowed(room, store.bot(botId));
-  },
+  mayCapture: teamMemoryActions.mayCapture,
+  proposeShared: teamMemoryActions.capture,
   // Turns still waiting at the last shutdown, read back from the transcript.
   // The checks that need only stored state run again; the in-memory ones
   // (internal, unattended) already passed before the turn was queued.
@@ -7385,21 +7390,10 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
-/** One finished turn as capture reads it: the person's message and the bot's
- * reply, or null when the reply is not on the active path (rewound) or the
- * message was another bot's ask. */
-function captureTurnFor(threadId: string, turnId: string): CaptureTurn | null {
-  const path = store.activePath(threadId);
-  const replyAt = path.findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId);
-  if (replyAt < 0) return null;
-  const asked = path.slice(0, replyAt).findLast((message) => message.role === "user" && message.kind === "text");
-  if (!asked || asked.peerAsk) return null;
-  return {
-    person: extractTurnImages(asked.text ?? "").text,
-    bot: path[replyAt]!.text ?? "",
-    owner: !asked.sender,
-    turnId,
-  };
+/** Capture the visible private turn, retaining delegation and failure provenance. */
+function captureTurnFor(threadId: string, turnId: string, botId?: string, failed = false): CaptureTurn | null {
+  const bot = botId ? store.bot(botId) : store.botByThread(threadId);
+  return bot ? memoryTurn(store.activePath(threadId), bot.id, turnId, Boolean(store.groupByThread(threadId)), failed) : null;
 }
 
 // Prompt-cache keep-warm (server/cache-keepwarm.ts; design from Cache Tax,
@@ -7517,7 +7511,7 @@ function roomCaptureAllowed(room: GroupRecord, bot: BotRecord | null | undefined
  * path, or no person wrote in that stretch (a chain of bots asking bots
  * teaches nothing the person said). A webhook's post is nobody's words and
  * is left out. */
-function captureRoomTurnFor(threadId: string, botId: string, turnId: string): CaptureTurn | null {
+function captureRoomTurnFor(threadId: string, botId: string, turnId: string, failed = false): CaptureTurn | null {
   const path = store.activePath(threadId);
   const replyAt = path.findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId && message.from?.botId === botId);
   if (replyAt < 0) return null;
@@ -7528,9 +7522,9 @@ function captureRoomTurnFor(threadId: string, botId: string, turnId: string): Ca
     if (message.role === "user") {
       if (message.peerAsk || message.aside) continue;
       const text = extractTurnImages(message.text).text;
-      lines.push(message.sender ? { by: "other", name: message.sender.name, text } : { by: "person", name: "Person", text });
+      lines.push(message.sender ? { by: "other", name: message.sender.name, text, messageId: message.id } : { by: "person", name: "Person", text, messageId: message.id });
     } else if (message.role === "bot" && message.from && message.from.botId !== botId && !message.webhookPost) {
-      lines.push({ by: "peer", name: message.from.name, text: message.text });
+      lines.push({ by: "peer", name: message.from.name, text: message.text, messageId: message.id });
     }
   }
   const read = lines.slice(-ROOM_CAPTURE_LINES);
@@ -7541,7 +7535,7 @@ function captureRoomTurnFor(threadId: string, botId: string, turnId: string): Ca
     // another person's words in the batch keep About me out of it
     owner: !read.some((line) => line.by === "other"),
     turnId,
-    room: read,
+    room: read, failed, sourceMessageId: path[replyAt]!.id,
   };
 }
 
@@ -7552,7 +7546,7 @@ function captureRoomTurnFor(threadId: string, botId: string, turnId: string): Ca
 // unattended one, or a failed turn.
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
-  if (event.type !== "turn.completed" || !event.turnId || !event.ok) return;
+  if (event.type !== "turn.completed" || !event.turnId) return;
   try {
     const room = store.groupByThread(event.threadId);
     if (room) {
@@ -7561,18 +7555,18 @@ bus.subscribe((event: RuntimeEvent) => {
       const reply = store.activePath(event.threadId).findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === event.turnId);
       const member = reply?.from ? store.bot(reply.from.botId) : undefined;
       if (!roomCaptureAllowed(room, member) || isUnattended(member.id, event.threadId)) return;
-      const turn = captureRoomTurnFor(event.threadId, member.id, event.turnId);
+      const turn = captureRoomTurnFor(event.threadId, member.id, event.turnId, !event.ok);
       if (turn) memoryUpkeep.noteTurn(member.id, event.threadId, turn);
       return;
     }
     const bot = store.botByThread(event.threadId);
-    if (!bot || !upkeepEnabled(bot) || isInternalTurn(event.threadId)
+    if (!bot || !upkeepEnabled(bot)
       || isUnattended(bot.id, event.threadId) || routines?.runForThread(event.threadId)) return;
     // On a Cloud home the bot's memory reaches its owner's turns (and a lent
     // Mac): nothing is captured from a conversation anyone else wrote in.
     if (CLOUD_HOME && !cloudOwnerOnlyThread(event.threadId)) return;
-    const turn = captureTurnFor(event.threadId, event.turnId);
-    if (turn) memoryUpkeep.noteTurn(bot.id, event.threadId, turn);
+    const turn = captureTurnFor(event.threadId, event.turnId, bot.id, !event.ok);
+    if (turn && (!isInternalTurn(event.threadId) || turn.delegated)) memoryUpkeep.noteTurn(bot.id, event.threadId, turn);
   } catch (error) {
     console.warn(`memory upkeep: could not queue a turn for capture: ${(error as Error).message}`);
   }
@@ -19058,6 +19052,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           fromThreadId: z.string().min(1).max(128),
           kind: z.string(),
           key: z.string().max(240).optional(),
+          evidence: evidenceInputSchema.optional(),
           name: z.string(),
           detail: z.string(),
           aliases: z.array(z.string()).optional(),
@@ -19076,15 +19071,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         let proposed: ReturnType<TeamMemory["propose"]>;
         try {
-          proposed = teamMemory.propose(
-            from.section,
-            { key: body.key, kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
-            { botId: from.id, botName: from.name, threadId: body.fromThreadId, at: Date.now() },
-          );
+          proposed = await teamMemoryActions.propose({ ...body, kind: body.kind as TeamMemoryKind }, from, requireActiveInternalCapability, liveTurnByThread.get(body.fromThreadId));
         } catch (error) {
           return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
         }
         const summary = `${proposed.entry.kind[0].toUpperCase()}${proposed.entry.kind.slice(1)}: ${proposed.entry.name}${proposed.entry.aliases.length ? ` (also ${proposed.entry.aliases.join(", ")})` : ""} — ${proposed.entry.detail}`;
+        const section = sectionContextKey(from.section);
         const card = store.appendMessage(body.fromThreadId, {
           role: "bot",
           kind: "options",
@@ -19095,7 +19087,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             options: ["Remember", "Skip"],
             requestId: proposed.entry.id,
             tool: "propose_team_memory",
-            teamMemoryRequest: { section: sectionContextKey(from.section), entryId: proposed.entry.id, kind: proposed.entry.kind },
+            teamMemoryRequest: { section, entryId: proposed.entry.id, kind: proposed.entry.kind },
           },
         });
         appendDecision(DATA_DIR, {
@@ -19256,8 +19248,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (scope !== "all" && scope !== "conversations" && scope !== "memory" && scope !== "team") {
           return json(res, 400, { error: "scope must be all, conversations, memory, or team" });
         }
-        const memoryHits = scope === "conversations" || scope === "team" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
-        if (scope === "memory" || scope === "team") return json(res, 200, { hits: [], memoryHits, teamHits: scope === "team" ? teamMemory.search(from.section, q, limit, range) : [] });
+        const teamHits = scope === "conversations" || scope === "memory" ? [] : teamMemory.search(from.section, q, limit, range);
+        if (scope === "team") return json(res, 200, { hits: [], memoryHits: [], teamHits });
+        const memoryHits = scope === "conversations" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
+        if (scope === "memory") return json(res, 200, { hits: [], memoryHits });
         // Own threads: the bot's main chat and tasks, and the rooms it is a
         // member of with their tasks — conversations it already saw in full.
         // Still own-bot: another bot's threads never enter this list.
@@ -19293,7 +19287,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (inRoom) {
           discloseRecall(from, fromThreadId, hits.filter((hit) => hit.crossed).map((hit) => hit.threadId));
         }
-        return json(res, 200, { hits, memoryHits, teamHits: scope === "conversations" ? [] : teamMemory.search(from.section, q, limit, range) });
+        return json(res, 200, { hits, memoryHits, teamHits });
       }
       // session_read: the whole message behind a session_search hit. Same
       // own-bot scope — a message id from another bot's thread reads as

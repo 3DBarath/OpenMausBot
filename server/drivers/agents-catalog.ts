@@ -769,17 +769,18 @@ const TOOL_DEFINITIONS = [
   {
     name: "propose_team_memory",
     description:
-      "Propose a shared fact or decision. Additions and replacements wait for admin review; accepted facts stay unchanged until then. End this turn while pending; do not claim it is remembered.",
+      "Propose a shared fact, decision, lesson, open question or outcome. Additions and replacements wait for admin review; accepted facts stay unchanged until then. End this turn while pending; do not claim it is remembered.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        kind: { type: "string", enum: ["person", "place", "decision", "term"], description: "What kind of entry this is." },
+        kind: { type: "string", enum: ["person", "place", "decision", "term", "lesson", "question", "outcome"], description: "What kind of entry this is." },
         name: { type: "string", maxLength: 120, description: "Short title or name." },
         detail: { type: "string", maxLength: 600, description: "The fact, decision or result, with its context and brief rationale." },
         aliases: { type: "array", maxItems: 8, items: { type: "string", maxLength: 120 }, description: "Other names or abbreviations." },
         key: { type: "string", maxLength: 240, description: "Stable project/fact key (tapa/colour). Reuse for corrections, even if the name changes." },
-
+        evidence: { type: "object", additionalProperties: false, description: "For outcomes: files inside the working folder, fingerprinted by the server. Checked means agent-reported; owner approval is separate. Changed files invalidate evidence.",
+          properties: { project: { type: "string" }, artifacts: { type: "array", minItems: 1, maxItems: 4, items: { type: "string" } }, stage: { type: "string", enum: ["rendered", "checked"] }, check: { type: "string", maxLength: 600, description: "What you actually checked and remaining limitations" } }, required: ["project", "artifacts", "stage", "check"] },
       },
       required: ["kind", "name", "detail"],
     },

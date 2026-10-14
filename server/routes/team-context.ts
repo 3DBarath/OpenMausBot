@@ -9,16 +9,17 @@ import { z } from "zod";
 import { SECTION_CONTEXT_MAX_BYTES, readSectionContext, sectionContextKey, sectionContextLabel, writeSectionContext } from "../section-context.ts";
 import { sectionKey, type Store } from "../store.ts";
 import { TEAM_MEMORY_KINDS, TeamMemory, TeamMemoryConflict, type TeamMemoryKind } from "../team-memory.ts";
+import { verifyProjectEvidence, openEvidenceArtifact } from "../project-evidence.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface TeamContextRouteDeps {
   store: Pick<Store, "sections" | "bots" | "groups">;
-  teamMemory: Pick<TeamMemory, "list" | "propose" | "resolve" | "update" | "remove" | "promptSelection">;
+  teamMemory: Pick<TeamMemory, "list" | "propose" | "resolve" | "update" | "remove" | "promptSelection" | "approveEvidence">;
 }
 
 export function createTeamContextRoutes(deps: TeamContextRouteDeps): RouteHandler {
   const { store, teamMemory } = deps;
-  return async ({ req, res, url, path, method, json, readBody }) => {
+  return async ({ req, res, url, path, method, auth, json, readBody }) => {
     /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
     // ── section context: a user-owned team brief ────────────────────────
@@ -56,6 +57,23 @@ export function createTeamContextRoutes(deps: TeamContextRouteDeps): RouteHandle
         return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
     }
+    m = path.match(/^\/api\/team-memory\/([\w-]+)\/evidence$/);
+    if (m && method === "GET") {
+      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
+      const entry = teamMemory.list(url.searchParams.get("section")).find(candidate => candidate.id === m![1]);
+      const index = Number(url.searchParams.get("artifact"));
+      if (!entry?.evidence || !Number.isInteger(index) || index < 0) return json(res, 404, { error: "No such evidence" });
+      try {
+        const file = await openEvidenceArtifact(entry.evidence, index);
+        res.writeHead(200, { "content-type": "application/octet-stream", "content-length": file.bytes,
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        const stream = file.handle.createReadStream({ autoClose: true });
+        stream.on("error", () => res.destroy());
+        res.once("close", () => stream.destroy());
+        stream.pipe(res);
+        return;
+      } catch (error) { return json(res, 409, { error: error instanceof Error ? error.message : String(error) }); }
+    }
     m = path.match(/^\/api\/team-memory\/([\w-]+)$/);
     if (m && (method === "PATCH" || method === "DELETE")) {
       if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
@@ -65,6 +83,10 @@ export function createTeamContextRoutes(deps: TeamContextRouteDeps): RouteHandle
       try {
         if (method === "DELETE") {
           if (!teamMemory.remove(section, m[1], body.expectedRevision)) return json(res, 404, { error: "no such entry" });
+        } else if (body.approveEvidence === true) {
+          const entry = teamMemory.list(section).find(candidate => candidate.id === m![1]);
+          if (!entry?.evidence || !await verifyProjectEvidence(entry.evidence)) return json(res, 409, { error: "Evidence is missing or stale. Record the current revision first." });
+          if (!teamMemory.approveEvidence(section, m[1], body.expectedRevision, auth.kind === "session" ? auth.session.email ?? auth.session.label : "local owner")) return json(res, 404, { error: "No accepted outcome with evidence" });
         } else if (body.accept === true) {
           if (!teamMemory.resolve(section, m[1], "accept", body.expectedRevision).claimed) return json(res, 404, { error: "no such entry" });
         } else {

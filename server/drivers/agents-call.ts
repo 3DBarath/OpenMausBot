@@ -1064,7 +1064,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         fromBotId: BOT_ID,
         fromThreadId: THREAD_ID,
         kind,
-        key: typeof args.key === "string" ? args.key : undefined,
+        key: typeof args.key === "string" ? args.key : undefined, evidence: args.evidence,
         name: entryName,
         detail,
         aliases: Array.isArray(args.aliases) ? args.aliases.filter((alias) => typeof alias === "string") : undefined,

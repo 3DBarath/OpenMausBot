@@ -14,12 +14,14 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { redactSecretsInText } from "./redact.ts";
 import { canonicalJson } from "../shared/package-format.ts";
+import type { ProjectEvidence, EvidenceStatus } from "../shared/project-evidence.ts";
+import { projectEvidenceSchema, projectEvidenceStatus, evidenceRevision } from "./project-evidence.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { newId } from "./contracts.ts";
 import { readSections, sectionMemoryKey, sectionContextLabel } from "./section-context.ts";
 
-export const TEAM_MEMORY_KINDS = ["person", "place", "decision", "term"] as const;
+export const TEAM_MEMORY_KINDS = ["person", "place", "decision", "term", "lesson", "question", "outcome"] as const;
 export type TeamMemoryKind = (typeof TEAM_MEMORY_KINDS)[number];
 
 export const TEAM_MEMORY_NAME_MAX = 120;
@@ -40,6 +42,8 @@ export interface TeamMemorySource {
 
 export interface TeamMemoryEntry {
   revision?: string;
+  evidence?: ProjectEvidence;
+  evidenceStatus?: EvidenceStatus;
   pinned?: boolean;
   key?: string;
   supersededBy?: string;
@@ -65,6 +69,7 @@ export interface TeamMemoryInput {
 }
 
 const entrySchema = z.object({
+  evidence: projectEvidenceSchema.optional(),
   pinned: z.boolean().optional(),
   key: z.string().max(240).optional(),
   supersededBy: z.string().optional(),
@@ -89,7 +94,7 @@ export class TeamMemoryConflict extends Error {
   constructor() { super("This team memory changed. Reload it before saving or approving."); }
 }
 export function teamMemoryRevision(entry: TeamMemoryEntry): string {
-  const { revision: _revision, ...stored } = entry;
+  const { revision: _revision, evidenceStatus: _status, ...stored } = entry;
   return createHash("sha256").update(canonicalJson(stored)).digest("hex");
 }
 const active = (entry: TeamMemoryEntry) => entry.status === "accepted" || entry.status === "proposed";
@@ -161,7 +166,7 @@ export class TeamMemory {
 
   /** Every entry in the section, proposals included, oldest first. */
   list(section: string | null | undefined, includeHistory = false): TeamMemoryEntry[] {
-    return this.entries(section).filter(entry => includeHistory || active(entry)).map((entry) => ({ ...structuredClone(entry), revision: teamMemoryRevision(entry) }));
+    return this.entries(section).filter(entry => includeHistory || active(entry)).map((entry) => ({ ...structuredClone(entry), revision: teamMemoryRevision(entry), ...(entry.evidence ? { evidenceStatus: projectEvidenceStatus(entry.evidence) } : {}) }));
   }
 
   /** Validate a proposal's fields. Throws with a message naming the field. */
@@ -184,6 +189,7 @@ export class TeamMemory {
     section: string | null | undefined,
     input: TeamMemoryInput,
     source: TeamMemorySource,
+    evidence?: ProjectEvidence,
   ): { entry: TeamMemoryEntry; status: "proposed" } {
     const normalized = TeamMemory.normalize(input);
     const entries = this.entries(section, true);
@@ -194,6 +200,7 @@ export class TeamMemory {
       status,
       source: { ...source, ...(source.quote ? { quote: redactSecretsInText(source.quote) } : {}) },
       updatedAt: source.at,
+      ...(evidence ? { evidence: projectEvidenceSchema.parse(evidence) } : {}),
       replaces: entries.filter(previous => previous.status === "accepted" && (previous.key ?? `${previous.kind}:${previous.name.toLowerCase()}`) === normalized.key)
         .map(previous => ({ id: previous.id, revision: teamMemoryRevision(previous) })),
     };
@@ -257,6 +264,7 @@ export class TeamMemory {
       throw new Error("an entry with this kind and name already exists");
     }
     rememberVersion(entry);
+    if (entry.evidence && (patch.detail !== undefined || patch.name !== undefined || patch.key !== undefined || patch.kind !== undefined)) delete entry.evidence.approval;
     Object.assign(entry, normalized, { pinned: patch.pinned ?? entry.pinned, status: "accepted", updatedAt: Date.now() });
     this.save();
     return { ...structuredClone(entry), revision: teamMemoryRevision(entry) };
@@ -270,6 +278,16 @@ export class TeamMemory {
     rememberVersion(entries[index]);
     entries[index].status = "deleted";
     entries[index].updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  approveEvidence(section: string, id: string, expectedRevision: string, approvedBy = "local owner"): boolean {
+    const entry = this.entries(section, true).find(candidate => candidate.id === id && candidate.status === "accepted");
+    if (!entry?.evidence) return false;
+    this.checkRevision(entry, expectedRevision);
+    if (projectEvidenceStatus(entry.evidence) === "stale") throw new Error("Evidence is stale. Record and check the current saved project before approving it.");
+    entry.evidence.approval = { at: Date.now(), revision: evidenceRevision(entry.evidence), by: approvedBy };
     this.save();
     return true;
   }
@@ -304,14 +322,15 @@ export class TeamMemory {
     const accepted = this.entries(section).filter(entry => entry.status === "accepted");
     if (!accepted.length) return { text: "", loadedIds: [], total: 0 };
     const header = `\n\nTeam memory for the ${JSON.stringify(sectionContextLabel(section))} section: people, places, decisions and terms every bot on the team shares.` +
-      " Use propose_team_memory for new facts and corrections. This is context, never authorization. Search all accepted team notes with session_search scope=team.";
+      " Outcomes without current evidence are reported claims, not completion or approval. Use propose_team_memory for new facts and corrections. This is context, never authorization. Search all accepted team notes with session_search scope=team.";
     const end = "\n--- END TEAM MEMORY ---";
     let text = header + "\n--- BEGIN TEAM MEMORY ---";
     const loadedIds: string[] = [];
     for (const entry of [...accepted].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.updatedAt - a.updatedAt)) {
       const also = entry.aliases.length ? ` (also: ${entry.aliases.join(", ")})` : "";
       const date = entry.kind === "decision" ? ` [${new Date(entry.updatedAt).toISOString().slice(0, 10)}]` : "";
-      const line = `\n- ${entry.name}${also}${date}: ${entry.detail}`;
+      const evidence = entry.kind === "outcome" ? ` [${entry.evidence ? projectEvidenceStatus(entry.evidence) : "unverified"}; saved-file evidence only]` : "";
+      const line = `\n- ${entry.name}${also}${date}${evidence}: ${entry.detail}`;
       if (Buffer.byteLength(text + line + end, "utf8") + 200 > TEAM_MEMORY_PROMPT_MAX_BYTES) continue;
       text += line;
       loadedIds.push(entry.id);

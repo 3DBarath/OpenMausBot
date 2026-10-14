@@ -2,8 +2,7 @@
 // unless switched off (BotRecord.memoryUpkeep === false). The main agent
 // keeps reading and writing its notes as before; this adds what happens
 // without it choosing:
-//   - capture: finished 1:1 turns (and, with Learn from group chats on, a
-//     member bot's room turns) are read after the chat goes quiet; core
+//   - capture: finished turns are read after the chat goes quiet; core
 //     facts go to MEMORY.md, detail to a topic file per subject that upkeep
 //     creates and names, with other words for it (server/memory-capture.ts);
 //     turns still waiting at shutdown are saved as ids and captured after
@@ -76,6 +75,7 @@ export interface UpkeepDeps {
    * chats was switched off, or before the room or the bot changed who can
    * see them, is dropped instead. Absent: every queued turn may. */
   mayCapture?: (botId: string, threadId: string) => boolean;
+  proposeShared?: (batch: CaptureBatch, candidate: Candidate, turn: CaptureTurn) => void;
   /** The turn as capture reads it, rebuilt from the transcript, or null when
    * it is gone (thread deleted, rewound) or no longer capturable. Without it
    * turns still waiting at shutdown are dropped, as before. */
@@ -149,7 +149,7 @@ function saveState(state: UpkeepState): void {
 // Turns still waiting at shutdown, kept as ids only: the transcript already
 // holds the text, and a thread deleted meanwhile leaves nothing behind.
 interface PendingCapture {
-  batches: { botId: string; threadId: string; turnIds: string[] }[];
+  batches: { botId: string; threadId: string; turnIds: string[]; failedIds?: string[] }[];
 }
 
 function pendingPath(): string {
@@ -157,19 +157,20 @@ function pendingPath(): string {
 }
 
 function savePending(batches: readonly CaptureBatch[]): void {
-  // per bot and thread: a room's thread holds every member bot's turns
-  const byThread = new Map<string, { botId: string; threadId: string; turnIds: string[] }>();
+  const byThread = new Map<string, { botId: string; threadId: string; turnIds: string[]; failedIds: string[] }>();
   for (const batch of batches) {
     const ids = batch.turns.map((turn) => turn.turnId).filter((id): id is string => typeof id === "string" && id.length > 0);
     if (!ids.length) continue;
     const key = `${batch.botId}\n${batch.threadId}`;
-    const entry = byThread.get(key) ?? { botId: batch.botId, threadId: batch.threadId, turnIds: [] };
+    const entry = byThread.get(key) ?? { botId: batch.botId, threadId: batch.threadId, turnIds: [], failedIds: [] };
+    entry.failedIds.push(...batch.turns.filter(turn => turn.failed && turn.turnId).map(turn => turn.turnId!));
     entry.turnIds.push(...ids.filter((id) => !entry.turnIds.includes(id)));
     byThread.set(key, entry);
   }
   if (!byThread.size) return;
   const state: PendingCapture = {
-    batches: [...byThread.values()].slice(-MAX_PENDING_THREADS).map((entry) => ({ ...entry, turnIds: entry.turnIds.slice(-CAPTURE_MAX_TURNS) })),
+    batches: [...byThread.values()].slice(-MAX_PENDING_THREADS).map(({ failedIds, ...entry }) => ({ ...entry, turnIds: entry.turnIds.slice(-CAPTURE_MAX_TURNS),
+      ...(failedIds.length ? { failedIds: failedIds.filter(id => entry.turnIds.slice(-CAPTURE_MAX_TURNS).includes(id)) } : {}) })),
   };
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
@@ -195,7 +196,7 @@ function takePending(): PendingCapture["batches"] {
     return parsed.batches
       .filter((batch) => batch && typeof batch.botId === "string" && typeof batch.threadId === "string" && Array.isArray(batch.turnIds))
       .slice(-MAX_PENDING_THREADS)
-      .map((batch) => ({ botId: batch.botId, threadId: batch.threadId, turnIds: batch.turnIds.filter((id): id is string => typeof id === "string").slice(-CAPTURE_MAX_TURNS) }));
+      .map((batch) => ({ botId: batch.botId, threadId: batch.threadId, turnIds: batch.turnIds.filter((id): id is string => typeof id === "string").slice(-CAPTURE_MAX_TURNS), failedIds: Array.isArray(batch.failedIds) ? batch.failedIds.filter(id => typeof id === "string").slice(-CAPTURE_MAX_TURNS) : [] }));
   } catch {
     return [];
   }
@@ -315,7 +316,25 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const { parsed, added, topics } = writing(bot.id, () => {
       const before = readRaw(bot.id, "MEMORY.md");
       const archiveBefore = readRaw(bot.id, ARCHIVE_PATH);
-      const parsed = parseCandidates(answer, today);
+      const proposed = parseCandidates(answer, today);
+      const parsed: Candidate[] = [];
+      for (const candidate of proposed) {
+        const turn = candidate.sourceTurn === undefined ? undefined : batch.turns[candidate.sourceTurn];
+        const sourceText = turn ? [turn.person, turn.bot, ...(turn.room ?? []).map(line => line.text)].join("\n").replace(/\s+/g, " ") : "";
+        const grounded = Boolean(turn && candidate.sourceQuote && sourceText.includes(candidate.sourceQuote.replace(/\s+/g, " ")));
+        if (candidate.teamName || turn?.failed || turn?.delegated || (!turn && batch.turns.some(turn => turn.failed || turn.delegated))) {
+          if (!grounded || !turn || (turn.failed && candidate.kind !== "lesson" && candidate.kind !== "question")) continue;
+          if (candidate.teamName && ["decision", "lesson", "question", "outcome"].includes(candidate.kind)) deps.proposeShared?.(batch, candidate, turn);
+          // Shared proposals never become private facts or About me. Unshared room
+          // facts retain the existing opt-in capture behavior.
+          continue;
+        }
+        if (candidate.kind === "outcome") {
+          if (!grounded) continue;
+          candidate.text = `Reported outcome (not independently verified): ${candidate.text}`;
+        }
+        parsed.push(candidate);
+      }
       const fresh = newCandidates(parsed, before ?? "");
       const source = `${deps.sourceLabel(bot.id, batch.threadId)} (noticed)`;
       let added = 0;
@@ -599,7 +618,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
             if (!upkeepEnabled(deps.bot(saved.botId))) continue;
             for (const turnId of saved.turnIds) {
               const turn = deps.restoreTurn(saved.botId, saved.threadId, turnId);
-              if (turn && (turn.person.trim() || turn.bot.trim())) buffer.add(saved.botId, saved.threadId, { ...turn, turnId });
+              if (turn && (turn.person.trim() || turn.bot.trim())) buffer.add(saved.botId, saved.threadId, { ...turn, turnId, failed: saved.failedIds?.includes(turnId) ?? turn.failed });
             }
           }
         } catch (error) {
