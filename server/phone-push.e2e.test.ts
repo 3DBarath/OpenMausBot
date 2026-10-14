@@ -117,6 +117,7 @@ posixOnly("closed-app phone alerts through the relay", () => {
       name: "Scout",
       notifications: true,
       modelSelection: { instanceId: "asks", model: "fake-model" },
+      approvalMode: "ask",
     })).body.bot;
     const room = (await api("POST", "/api/groups", {
       name: "Launch",
