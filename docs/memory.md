@@ -176,8 +176,10 @@ off. It keeps the notes in shape without the bot having to decide to:
   ("lives in Pune and prefers short replies"), that part is kept as its own
   entry `from tidy-up`. At most a fifth of the entries can be struck in one
   pass in core memory, and none in a core file of fewer than five. Topic files
-  may reconcile one pair even when they contain only two entries. Every pass
-  rechecks the file after the model call; concurrent edits are preserved. The archive is written before
+  may reconcile one pair even with two entries; writes recheck for concurrent edits.
+  Topic model checks have a shared 60-second budget and a four-topic limit per pass;
+  deferred topics rotate into the next pass. Expiry and duplicate cleanup still runs.
+  The archive is written before
   the file it came from, so undoing the newest change never loses a line.
 
 "Exactly the same fact" is narrow on purpose: spacing, a bullet and a final
