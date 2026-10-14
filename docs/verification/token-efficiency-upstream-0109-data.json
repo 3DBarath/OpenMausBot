@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-14",
+  "method": "Identical five scripted synthetic turns; serialized UTF-8 bytes, no fresh tokens or inference",
+  "rows": [
+    {
+      "label": "upstream-0109",
+      "source": "a44ccb10c2c2bcd7ca48417668d3545c7ef7e1af",
+      "sourceDirty": false,
+      "requests": 7,
+      "tools": 108,
+      "firstRequestUtf8Bytes": 193783,
+      "totalRequestUtf8Bytes": 1386402,
+      "syntheticInboxReads": 2,
+      "catalogHash": "ea82be4d6006308275623eeacebe7f179486623c6512b9c331544e1903613f59"
+    },
+    {
+      "label": "independent-pr1-0109",
+      "source": "c7750545a83c69b71aa75568a88442df5901e6b4",
+      "sourceDirty": false,
+      "requests": 9,
+      "tools": 15,
+      "firstRequestUtf8Bytes": 28970,
+      "totalRequestUtf8Bytes": 346834,
+      "syntheticInboxReads": 2,
+      "catalogHash": "ea82be4d6006308275623eeacebe7f179486623c6512b9c331544e1903613f59"
+    }
+  ],
+  "nativeTokenization": "Existing Splash endpoint18981 offline; not started or modified"
+}
