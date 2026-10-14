@@ -40,7 +40,7 @@ describe("fix hint table", () => {
     expect(fixHintFor({ tool: "Bash", text: "Exit code 1\nls: x: No such file or directory" })).toBeUndefined();
   });
 
-  it("classifies tools like Sentinel does", () => {
+  it("classifies tools by who owns them", () => {
     expect(hintOrigin("Bash")).toBe("shell");
     expect(hintOrigin("exec_command")).toBe("shell");
     expect(hintOrigin("mcp__agents__coordinate_bots")).toBe("harness");
@@ -48,8 +48,7 @@ describe("fix hint table", () => {
     expect(hintOrigin("Read")).toBe("external");
   });
 
-  it("also matches the normalized form Sentinel keeps as an issue title", () => {
-    // what normalizeSignatureText leaves: numbers, paths and quotes replaced
+  it("matches with numbers, paths and quoted names replaced", () => {
     expect(fixHintFor({ tool: "Bash", text: "Exit code <n> Command timed out after <n>m <n>s" })?.id).toBe("shell-timeout");
     expect(fixHintFor({ tool: "Read", text: "File does not exist. Note: your current working directory is <path>." })?.id).toBe("read-missing-file");
     expect(fixHintFor({ tool: "coordinate_bots", origin: "harness", text: "No bot with id or name <q> — call list_bots" })?.id).toBe("unknown-bot");

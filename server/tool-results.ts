@@ -1,8 +1,9 @@
-// Short-lived overflow for built-in agents tools, not another history store.
-// Authorize the live turn before using this cache; ownership is BOTH the bot
-// and conversation, so room speakers and sibling threads cannot share IDs.
-import { randomUUID } from "node:crypto";
+// Short-lived overflow for agents tool results: authorize the live turn first; ownership is both bot and conversation.
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { redactSecretsInText } from "../shared/redact.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 export const TOOL_RESULT_PREVIEW_CHARS = 16_000;
 export const TOOL_RESULT_MAX_CHARS = 128 * 1024;
@@ -21,9 +22,6 @@ export function toolResultPrefix(text: string, chars: number): string {
 type Owner = { botId: string; threadId: string };
 type SavedResult = Owner & { text: string; bytes: number; expiresAt: number; truncated: boolean };
 
-/** Bounded in memory; lost on restart, expired after an hour, or evicted
- * oldest-first under pressure. Reads do not extend retention. The transcript
- * remains the durable record; this cache is only a way to page a large answer. */
 export class ToolResults {
   private readonly results = new Map<string, SavedResult>();
   private readonly now: () => number;
@@ -46,8 +44,6 @@ export class ToolResults {
       expiresAt: this.now() + TOOL_RESULT_TTL_MS, truncated: truncated || bounded.length < redacted.length };
     const id = `r-${randomUUID()}`;
     this.results.set(id, result);
-    // At most 129 entries are inspected here. Enforce the owner's limit
-    // before the global one so one noisy thread does not evict its neighbours.
     for (const ownOnly of [true, false]) {
       const entries = [...this.results].filter(([, entry]) => !ownOnly ||
         (entry.botId === owner.botId && entry.threadId === owner.threadId));
@@ -75,4 +71,15 @@ export class ToolResults {
     return { id, text, offset: start, nextOffset: start + text.length, length: result.text.length,
       truncated: result.truncated, expiresAt: result.expiresAt };
   }
+}
+
+const SPILL_MAX = 512 * 1024;
+
+/** Writes the redacted result to a private file named by the key's hash; false when it had to be cut. */
+export function spillToolResult(dir: string, key: string, text: string): boolean {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const redacted = redactSecretsInText(text);
+  const bounded = redacted.length > SPILL_MAX ? `${redacted.slice(0, SPILL_MAX)}\n[… ${redacted.length - SPILL_MAX} more characters omitted]` : redacted;
+  writeFileAtomic(join(dir, `${createHash("sha256").update(key).digest("hex")}.txt`), bounded, { mode: 0o600 });
+  return redacted.length <= SPILL_MAX;
 }

@@ -1,38 +1,15 @@
-// Fix hints: when a tool call fails in a way we have seen many times, one
-// short "Hint:" line goes after the error the bot reads, so its next call
-// changes approach instead of repeating the same one. A hint only adds text
-// to a result that already failed: it never turns a failure into a success
-// or the reverse, and a successful result is never annotated.
-//
-// Where hints are applied:
-//   - OpenMausBot's own tools (the "agents" MCP server, every engine):
-//     server/drivers/agents-proxy.ts, on each error result.
-//   - Claude Code's native tools (Bash, Read, …): the PostToolUseFailure hook
-//     (server/hooks/omb-hook.ts → ingestEngineHook in server/index.ts), which
-//     hands the hint back as additionalContext beside the error.
-//   - Other engines' native tools have no hook that can add to a result yet;
-//     those failures still reach Sentinel, just without a hint on the spot.
-//
-// Adding an entry: copy a real error into `example`, keep `match` free of
-// the values that vary between occurrences (numbers, paths, quoted names),
-// and keep `hint` to one sentence. The fields line up with a Sentinel issue
-// (server/sentinel/normalize.ts): `origin` and `tool` are its origin and tool,
-// and `example` can be the issue's normalized title — `match` must match that
-// form too, which is why it avoids the values normalization replaces. That is
-// how Sentinel can later propose new entries from its most frequent issues.
+// A hint only appends a line to a result that already failed: it never changes ok/error status.
+// An entry's `match` avoids numbers, paths and quoted names, so it also matches errors with those replaced.
 
-/** Who owns a tool. Same values and rules as Sentinel's `toolOrigin`. */
 export type HintOrigin = "harness" | "external" | "shell";
 
 export interface FixHint {
-  /** stable kebab-case name, for tests and telemetry */
   id: string;
   origin: HintOrigin;
   /** limit to these tool names (case-insensitive, without any mcp__ prefix) */
   tools?: readonly string[];
   match: RegExp;
   hint: string;
-  /** a real failure this entry is for; the test suite checks it matches */
   example: string;
 }
 
@@ -43,7 +20,7 @@ export const FIX_HINTS: readonly FixHint[] = [
     id: "shell-timeout",
     origin: "shell",
     match: /\bcommand timed out after\b/i,
-    hint: "Run long jobs (media encoding, transcription, big searches) in the background or with a longer timeout, and scope searches: use mdfind or a specific folder instead of `find /`.",
+    hint: "Run long jobs (media encoding, transcription, big searches) in the background or with a longer timeout, and scope searches to a specific folder (or mdfind on macOS) instead of `find /`.",
     example: "Exit code 143\nCommand timed out after 2m 0s",
   },
   {
@@ -84,14 +61,12 @@ export const FIX_HINTS: readonly FixHint[] = [
   },
 ];
 
-// The MCP servers OpenMausBot itself provides, as in Sentinel's toolOrigin.
 const HARNESS_SERVERS = new Set([
   "ogb", "computer", "agents", "composio", "data", "browser", "phone", "dweb",
   "openmausbot", "openmausbot_connectors", "openmausbot_phone",
 ]);
 const SHELL_TOOLS = new Set(["bash", "shell", "exec", "exec_command", "local_shell", "run_command", "terminal"]);
 
-/** Who owns a tool, by its engine-side name. */
 export function hintOrigin(tool: string): HintOrigin {
   const mcp = /^mcp__(.+?)__/.exec(tool);
   if (mcp) return HARNESS_SERVERS.has(mcp[1]!) ? "harness" : "external";
@@ -112,10 +87,18 @@ export function fixHintFor(failure: { tool: string; text: string; origin?: HintO
 
 export const HINT_PREFIX = "Hint: ";
 
-/** `text` with the hint line appended; unchanged when no entry fits or the
- * text already carries that hint. */
 export function withFixHint(failure: { tool: string; text: string; origin?: HintOrigin }): string {
   const entry = fixHintFor(failure);
   if (!entry || failure.text.includes(entry.hint)) return failure.text;
   return `${failure.text}\n\n${HINT_PREFIX}${entry.hint}`;
+}
+
+/** The hook answer for a failed native tool; the harness's own tools already carry their hint in the error. */
+export function toolFailureHookAnswer(payload: Record<string, unknown>): { ok: true; ignored?: string; hookSpecificOutput?: unknown } {
+  const tool = typeof payload.tool_name === "string" ? payload.tool_name : "";
+  const error = typeof payload.error === "string" ? payload.error : "";
+  if (!tool || !error || payload.is_interrupt === true) return { ok: true, ignored: "failure without a tool error" };
+  const hint = fixHintFor({ tool, text: error });
+  if (!hint || error.includes(hint.hint)) return { ok: true };
+  return { ok: true, hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: `${HINT_PREFIX}${hint.hint}` } };
 }
