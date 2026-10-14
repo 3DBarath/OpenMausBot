@@ -5,8 +5,6 @@ import { t } from "@/lib/i18n";
 import { replySnippet } from "@/lib/replies";
 import { splitTranscriptCitations } from "@/lib/citations";
 
-// A queued message with a picture or file carries its <attached-…> tag
-// (path included) in its text; the row names the attachment instead.
 const ATTACHMENT_TAG = /<attached-(?:image|file)\s/;
 
 function queuedMessageLabel(text: string): string {
@@ -22,15 +20,6 @@ export function composerCanSteerQueuedMessages(
   return busy && !locked && !approvalPending && pendingCount > 0;
 }
 
-/** Messages held by the harness until the running turn settles.
- *
- * The queue sits directly above the composer rather than pretending these
- * words are already part of the transcript. Only its head owns Steer: room
- * queues drain one item at a time, while bot queues coalesce all waiting
- * items into one follow-up. Edit and Delete remain available on every exact
- * queue id: Edit takes the message out of the queue and hands its words back
- * to the composer, so nothing unsent is ever changed behind the harness.
- */
 export function QueuedComposerMessages({
   items,
   onSteer,
@@ -44,11 +33,8 @@ export function QueuedComposerMessages({
   onSteer?: () => void;
   steerMode?: "all" | "next";
   steering?: boolean;
-  /** True when Steer is backed by an interrupt (engine without live steer):
-   * the hint must say what the click really does. */
   steerInterrupts?: boolean;
   onCancel: (queueId: string) => void;
-  /** Pull this queued message back into the composer to tweak or extend it. */
   onEdit?: (queueId: string) => void;
 }) {
   if (!items.length) return null;
