@@ -5930,13 +5930,13 @@ const memoryUpkeep = createMemoryUpkeep({
   sourceLabel: (botId, threadId) => memorySourceLabel({ room: store.groupByThread(threadId), task: store.taskByThread(botId, threadId), threadId }),
   mayCapture: teamMemoryActions.mayCapture,
   proposeShared: teamMemoryActions.capture,
-  restoreTurn: (botId, threadId, turnId) => {
+  restoreTurn: (botId, threadId, turnId, flags) => {
     if (routines?.runForThread(threadId)) return null;
     const room = store.groupByThread(threadId);
     if (room) return roomCaptureAllowed(room, store.bot(botId)) ? captureRoomTurnFor(threadId, botId, turnId) : null;
     if (store.botByThread(threadId)?.id !== botId) return null;
     if (CLOUD_HOME && !cloudOwnerOnlyThread(threadId)) return null;
-    return captureTurnFor(threadId, turnId);
+    return captureTurnFor(threadId, turnId, botId, flags?.failed, flags?.delegated);
   },
   ...(lendingMemory ? { writing: <T>(botId: string, write: () => T): T => lendingMemory.trustedWrite(botId, write) } : {}),
   quietMs: () => captureQuietMs(cfg),
@@ -5960,9 +5960,9 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
-function captureTurnFor(threadId: string, turnId: string, botId?: string, failed = false): CaptureTurn | null {
+function captureTurnFor(threadId: string, turnId: string, botId?: string, failed = false, delegated = isInternalTurn(threadId)): CaptureTurn | null {
   const bot = botId ? store.bot(botId) : store.botByThread(threadId);
-  return bot ? memoryTurn(store.activePath(threadId), bot.id, turnId, Boolean(store.groupByThread(threadId)), failed) : null;
+  return bot ? memoryTurn(store.activePath(threadId), bot.id, turnId, Boolean(store.groupByThread(threadId)), failed, delegated) : null;
 }
 
 // Prompt-cache keep-warm (server/cache-keepwarm.ts; design from Cache Tax,

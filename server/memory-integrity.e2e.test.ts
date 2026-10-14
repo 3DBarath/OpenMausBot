@@ -13,7 +13,8 @@ it("preserves team identity, rejects stale writes, searches shared notes and pin
   const scratch = mkdtempSync(join(tmpdir(), "omb-memory-integrity-"));
   const routes = join(scratch, "routes.json");
   writeFileSync(routes, JSON.stringify({ [CAPTURE_MARKER]: JSON.stringify([{ kind: "decision", text: "Use amber for the fixture", teamName: "Fixture treatment", key: "fixture/treatment", sourceTurn: 0, sourceQuote: "Use amber for the fixture", confidence: 0.9 }]) }));
-  const fixture = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes });
+  const fake = { FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_REPLIES: JSON.stringify(["Fixture check: missing font found"]) };
+  const fixture = await launchVerificationServer({ ...process.env, ...fake });
   let child: ChildProcess | undefined;
   const capabilityKey = "memory-integrity-fixture";
   const api = async (path: string, method = "GET", body?: unknown, token?: string, status = 200): Promise<any> => {
@@ -28,7 +29,7 @@ it("preserves team identity, rejects stale writes, searches shared notes and pin
     const log = openSync(fixture.info.logPath, "a", 0o600);
     child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
       cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: ["ignore", log, log],
-      env: { ...verificationServerEnvironment({ FAKE_CLAUDE_TEXT_ROUTES: routes }, fixture.info.dataDir, Number(new URL(fixture.info.url).port)), OMB_TEST_INTERNAL_CAPABILITY_KEY: capabilityKey },
+      env: { ...verificationServerEnvironment(fake, fixture.info.dataDir, Number(new URL(fixture.info.url).port)), OMB_TEST_INTERNAL_CAPABILITY_KEY: capabilityKey },
     });
     closeSync(log);
     await expect.poll(async () => { try { return (await fetch(fixture.info.url + "/api/health")).ok; } catch { return false; } }, { timeout: 30_000 }).toBe(true);
@@ -81,6 +82,18 @@ it("preserves team identity, rejects stale writes, searches shared notes and pin
     expect(JSON.stringify(await api(`/api/bots/${helper.id}/system-prompt`))).not.toContain("Use amber for the fixture");
     await api(`/api/team-memory/${captured.id}?section=Postproduction`, "PATCH", { accept: true, expectedRevision: captured.revision });
     expect(JSON.stringify(await api(`/api/bots/${helper.id}/system-prompt`))).toContain("Use amber for the fixture");
+    writeFileSync(routes, JSON.stringify({ [CAPTURE_MARKER]: JSON.stringify([{ kind: "lesson", text: "Check project fonts before rendering", teamName: "Font check", key: "fixture/fonts", sourceTurn: 0, sourceQuote: "missing font found", confidence: 0.9 }]) }));
+    const handoff = await api("/api/internal/coordinate-bots", "POST", { botIds: [helper.id], thread: "new", reply: "none", message: "Check the project fonts" }, token);
+    const delegatedThread = handoff.receipts[0].threadId;
+    expect(delegatedThread).not.toBe(helper.threadId);
+    await expect.poll(async () => (await api("/api/team-memory?section=Postproduction")).entries.some((entry: TeamMemoryEntry) => entry.key === "fixture/fonts"), { timeout: 30_000 }).toBe(true);
+    const lesson = (await api("/api/team-memory?section=Postproduction")).entries.find((entry: TeamMemoryEntry) => entry.key === "fixture/fonts");
+    expect(lesson.source.threadId).toBe(delegatedThread);
+    expect(lesson.source.messageId).toBeTruthy();
+    expect(lesson.status).toBe("proposed");
+    const delegatedMessages = (await api(`/api/threads/${delegatedThread}/messages`)).messages;
+    expect(delegatedMessages.filter((message: { role: string }) => message.role === "user")).toEqual([]);
+
   } finally {
     if (child) await waitForExit(child, { signal: "SIGTERM" });
     await fixture.close();

@@ -13,6 +13,7 @@ import { appendMemoryArchive, ARCHIVE_TOPIC, ensureWorkspace, listMemoryTopics, 
 
 export const CAPTURE_MAX_TURNS = 6;
 export const MODEL_TIMEOUT_MS = 60_000;
+export const MAX_TOPIC_CHECKS = 4;
 export const TIDY_CHECK_MS = 10 * 60_000;
 export const MIN_ENTRIES_FOR_CONTRADICTIONS = 5;
 const ARCHIVE_PATH = `memory/${ARCHIVE_TOPIC}`;
@@ -44,7 +45,7 @@ export interface UpkeepDeps {
   /** Asked again at capture, so a turn queued before a visibility change is dropped. */
   mayCapture?: (botId: string, threadId: string) => boolean;
   proposeShared?: (batch: CaptureBatch, candidate: Candidate, turn: CaptureTurn) => void;
-  restoreTurn?: (botId: string, threadId: string, turnId: string) => CaptureTurn | null;
+  restoreTurn?: (botId: string, threadId: string, turnId: string, flags?: { failed?: boolean; delegated?: boolean }) => CaptureTurn | null;
   quietMs: () => number;
   tidyHour: () => number;
   writing?: <T>(botId: string, write: () => T) => T;
@@ -60,6 +61,8 @@ export interface TidyReport {
   deferred: number;
   organized?: number;
   contradictionsChecked: boolean;
+  topicChecks?: number;
+  topicsDeferred?: number;
   note?: string;
 }
 
@@ -73,7 +76,7 @@ export interface CaptureReport {
 }
 
 interface UpkeepState {
-  bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[] }>;
+  bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[]; topicCursor?: string }>;
 }
 
 const MAX_CORE = 500;
@@ -100,7 +103,7 @@ function saveState(state: UpkeepState): void {
 }
 
 interface PendingCapture {
-  batches: { botId: string; threadId: string; turnIds: string[]; failedIds?: string[] }[];
+  batches: { botId: string; threadId: string; turnIds: string[]; failedIds?: string[]; delegatedIds?: string[] }[];
 }
 
 function pendingPath(): string {
@@ -108,19 +111,21 @@ function pendingPath(): string {
 }
 
 function savePending(batches: readonly CaptureBatch[]): void {
-  const byThread = new Map<string, { botId: string; threadId: string; turnIds: string[]; failedIds: string[] }>();
+  const byThread = new Map<string, { botId: string; threadId: string; turnIds: string[]; failedIds: string[]; delegatedIds: string[] }>();
   for (const batch of batches) {
     const ids = batch.turns.map((turn) => turn.turnId).filter((id): id is string => typeof id === "string" && id.length > 0);
     if (!ids.length) continue;
     const key = `${batch.botId}\n${batch.threadId}`;
-    const entry = byThread.get(key) ?? { botId: batch.botId, threadId: batch.threadId, turnIds: [], failedIds: [] };
+    const entry = byThread.get(key) ?? { botId: batch.botId, threadId: batch.threadId, turnIds: [], failedIds: [], delegatedIds: [] };
+    entry.delegatedIds.push(...batch.turns.filter(turn => turn.delegated && turn.turnId).map(turn => turn.turnId!));
     entry.failedIds.push(...batch.turns.filter(turn => turn.failed && turn.turnId).map(turn => turn.turnId!));
     entry.turnIds.push(...ids.filter((id) => !entry.turnIds.includes(id)));
     byThread.set(key, entry);
   }
   if (!byThread.size) return;
   const state: PendingCapture = {
-    batches: [...byThread.values()].slice(-MAX_PENDING_THREADS).map(({ failedIds, ...entry }) => ({ ...entry, turnIds: entry.turnIds.slice(-CAPTURE_MAX_TURNS),
+    batches: [...byThread.values()].slice(-MAX_PENDING_THREADS).map(({ failedIds, delegatedIds, ...entry }) => ({ ...entry, turnIds: entry.turnIds.slice(-CAPTURE_MAX_TURNS),
+      ...(delegatedIds.length ? { delegatedIds: delegatedIds.filter(id => entry.turnIds.slice(-CAPTURE_MAX_TURNS).includes(id)) } : {}),
       ...(failedIds.length ? { failedIds: failedIds.filter(id => entry.turnIds.slice(-CAPTURE_MAX_TURNS).includes(id)) } : {}) })),
   };
   try {
@@ -145,7 +150,7 @@ function takePending(): PendingCapture["batches"] {
     return parsed.batches
       .filter((batch) => batch && typeof batch.botId === "string" && typeof batch.threadId === "string" && Array.isArray(batch.turnIds))
       .slice(-MAX_PENDING_THREADS)
-      .map((batch) => ({ botId: batch.botId, threadId: batch.threadId, turnIds: batch.turnIds.filter((id): id is string => typeof id === "string").slice(-CAPTURE_MAX_TURNS), failedIds: Array.isArray(batch.failedIds) ? batch.failedIds.filter(id => typeof id === "string").slice(-CAPTURE_MAX_TURNS) : [] }));
+      .map((batch) => ({ botId: batch.botId, threadId: batch.threadId, turnIds: batch.turnIds.filter((id): id is string => typeof id === "string").slice(-CAPTURE_MAX_TURNS), delegatedIds: Array.isArray(batch.delegatedIds) ? batch.delegatedIds.filter(id => typeof id === "string").slice(-CAPTURE_MAX_TURNS) : [], failedIds: Array.isArray(batch.failedIds) ? batch.failedIds.filter(id => typeof id === "string").slice(-CAPTURE_MAX_TURNS) : [] }));
   } catch {
     return [];
   }
@@ -159,9 +164,9 @@ function readRaw(botId: string, relative: string): string | null {
   }
 }
 
-async function askModel(engine: UpkeepEngine, prompt: string): Promise<string | null> {
+async function askModel(engine: UpkeepEngine, prompt: string, timeoutMs = MODEL_TIMEOUT_MS): Promise<string | null> {
   if (!engine.generateText) return null;
-  const expiry = AbortSignal.timeout(MODEL_TIMEOUT_MS);
+  const expiry = AbortSignal.timeout(timeoutMs);
   try {
     const answer = await Promise.race([
       engine.generateText(prompt, { signal: expiry }),
@@ -199,7 +204,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   let paused = false;
   const deferred: CaptureBatch[] = [];
 
-  const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+  const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport; topicCursor?: string }) => {
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -437,20 +442,35 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     let topicDuplicates = 0;
     let topicSuperseded = 0;
     let topicDeferred = 0;
-    for (const topic of listMemoryTopics(botId)) {
-      if (topic.name === ARCHIVE_TOPIC) continue;
+    let topicChecks = 0;
+    let topicsDeferred = 0;
+    let topicCursor = loadState().bots[botId]?.topicCursor;
+    const deadline = Date.now() + MODEL_TIMEOUT_MS;
+    const topics = listMemoryTopics(botId).filter(topic => topic.name !== ARCHIVE_TOPIC).sort((a, b) => a.name.localeCompare(b.name));
+    const cursorAt = topics.findIndex(topic => topic.name === topicCursor) + 1;
+    for (const topic of [...topics.slice(cursorAt), ...topics.slice(0, cursorAt)]) {
       const path = `memory/${topic.name}`;
       const topicBefore = readRaw(botId, path);
       if (topicBefore === null) continue;
       const topicCandidates = contradictionCandidates(topicBefore, today);
       let topicContradictions: Contradiction[] = [];
       if (engine?.generateText && topicCandidates.length >= 2) {
-        const answer = await askModel(engine, contradictionPrompt(topicCandidates));
-        if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
-        if (readRaw(botId, path) !== topicBefore) continue;
-        if (answer !== null) {
-          topicContradictions = parseContradictions(answer, topicCandidates.length);
-          contradictionsChecked = true;
+        const remaining = deadline - Date.now();
+        if (topicChecks >= MAX_TOPIC_CHECKS || remaining <= 0) topicsDeferred++;
+        else {
+          topicChecks++;
+          topicCursor = topic.name;
+          const answer = await askModel(engine, contradictionPrompt(topicCandidates), remaining);
+          if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+          if (readRaw(botId, path) !== topicBefore) {
+            topicsDeferred++;
+            continue;
+          }
+          if (answer !== null) {
+            topicContradictions = parseContradictions(answer, topicCandidates.length);
+            contradictionsChecked = true;
+            if (note?.startsWith("Contradictions are checked from")) note = undefined;
+          } else topicsDeferred++;
         }
       }
       const topicPlan = planTidy(topicBefore, today, topicContradictions, 1);
@@ -466,6 +486,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       topicExpired += topicPlan.expired.length;
       topicDuplicates += topicPlan.duplicates.length;
     }
+    if (topicsDeferred) note = [note, `${topicsDeferred} topic checks deferred because of the budget, a timeout or concurrent edits.`].filter(Boolean).join(" ");
     const report: TidyReport = {
       at,
       expired: plan.expired.length + topicExpired,
@@ -474,9 +495,11 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       deferred: plan.deferred + topicDeferred,
       ...(organized ? { organized } : {}),
       contradictionsChecked,
+      topicChecks,
+      topicsDeferred,
       ...(note ? { note } : {}),
     };
-    record(botId, { lastTidy: report });
+    record(botId, { lastTidy: report, topicCursor });
     if (report.expired || report.duplicates || report.superseded || organized) log(`memory upkeep: tidied ${bot?.name ?? botId} — ${report.expired} expired, ${report.duplicates} duplicate(s), ${report.superseded} contradicted`);
     return report;
   }
@@ -531,8 +554,8 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
           for (const saved of takePending()) {
             if (!upkeepEnabled(deps.bot(saved.botId))) continue;
             for (const turnId of saved.turnIds) {
-              const turn = deps.restoreTurn(saved.botId, saved.threadId, turnId);
-              if (turn && (turn.person.trim() || turn.bot.trim())) buffer.add(saved.botId, saved.threadId, { ...turn, turnId, failed: saved.failedIds?.includes(turnId) ?? turn.failed });
+              const turn = deps.restoreTurn(saved.botId, saved.threadId, turnId, { failed: saved.failedIds?.includes(turnId), delegated: saved.delegatedIds?.includes(turnId) });
+              if (turn && (turn.person.trim() || turn.bot.trim())) buffer.add(saved.botId, saved.threadId, { ...turn, turnId, failed: saved.failedIds?.includes(turnId) || turn.failed, delegated: saved.delegatedIds?.includes(turnId) || turn.delegated });
             }
           }
         } catch (error) {

@@ -1415,6 +1415,8 @@ describe("agents-proxy MCP surface", () => {
     expect(shared.result.content[0].text).toContain("Accepted team memory");
     expect(shared.result.content[0].text).toContain("source thread shared-room message decision");
     expect(shared.result.content[0].text).toContain("Use amber");
+    expect(shared.result.content[0].text).toContain("include shared team memory");
+    expect(shared.result.content[0].text).not.toContain("These are your own notes");
     await callTool("session_search", { query: "railway", scope: "everything" });
     expect(lastSessionSearchUrl).not.toContain("scope=");
     sessionSearchResponse = { hits: [] };

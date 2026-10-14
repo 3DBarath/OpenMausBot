@@ -22,3 +22,12 @@ it("never labels a delegated ask as the owner's words or accepts a missing reply
   expect(turn).toMatchObject({ person: "", owner: false, delegated: true, failed: true });
   expect(memoryTurn(path, "b", "abandoned-turn", false)).toBeNull();
 });
+
+
+it("captures a fresh delegated bot-only thread without inventing an owner request", () => {
+  const reply = message("reply", "bot", "Saved the project", { turnId: "turn" });
+  expect(memoryTurn([message("ask", "bot", "Check the project"), reply], "b", "turn", false, false, true))
+    .toMatchObject({ person: "", owner: false, delegated: true, bot: "Saved the project", sourceMessageId: "reply" });
+  expect(memoryTurn([message("old-user", "user", "Unrelated old request"), reply], "b", "turn", false, false, true))
+    .toMatchObject({ person: "", owner: false, delegated: true });
+});
