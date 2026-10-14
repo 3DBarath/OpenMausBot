@@ -59,7 +59,7 @@ mention a preference in passing, wait two minutes, and read the Memory panel.
 Run the isolated regression checks:
 
 ```sh
-pnpm exec vitest run server/team-memory.test.ts server/recall.test.ts server/memory-learning.test.ts server/project-evidence.test.ts
+pnpm exec vitest run server/team-memory.test.ts server/recall.test.ts server/memory-learning.test.ts server/memory-topic-corrections.test.ts server/project-evidence.test.ts
 pnpm exec vitest run server/memory-integrity.e2e.test.ts server/trust-controls.e2e.test.ts server/team-lifecycle.e2e.test.ts server/cloud-lending-memory.e2e.test.ts
 pnpm exec vitest run src/components/TeamMemoryDialog.test.ts server/drivers/agents-catalog-wire.test.ts
 pnpm run typecheck

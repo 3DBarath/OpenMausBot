@@ -69,7 +69,6 @@ export function projectEvidenceStatus(evidence: ProjectEvidence): EvidenceStatus
   return evidence.stage === "checked" ? "agent-checked" : "recorded";
 }
 
-/** Rehash all files before an owner approves the saved revision. */
 export async function verifyProjectEvidence(evidence: ProjectEvidence): Promise<boolean> {
   if (projectEvidenceStatus(evidence) === "stale") return false;
   try {

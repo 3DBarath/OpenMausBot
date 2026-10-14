@@ -43,7 +43,7 @@ it("refuses paths and symlinks outside the project", async () => {
   const outside = mkdtempSync(join(tmpdir(), "omb-outside-"));
   try {
     writeFileSync(join(outside, "private.aep"), "outside");
-    symlinkSync(join(outside, "private.aep"), join(root, "link.aep"));
-    await expect(recordProjectEvidence(root, { ...input, project: "link.aep" })).rejects.toThrow(/inside/);
+    symlinkSync(outside, join(root, "link"), process.platform === "win32" ? "junction" : "dir");
+    await expect(recordProjectEvidence(root, { ...input, project: "link/private.aep" })).rejects.toThrow(/inside/);
   } finally { rmSync(outside, { recursive: true, force: true }); }
 });
