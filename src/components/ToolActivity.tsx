@@ -11,8 +11,6 @@ import { WorkingDots } from "./WorkingIndicator";
 
 export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message["tool"]>; place?: Place | null }) {
   const [expanded, setExpanded] = useState(false);
-  // A shell call that exited non-zero but printed real output reads as a
-  // warning ("exit 1"), not a failure; stopped and empty runs stay failed.
   const exitCode = softExitCode(tool);
   const warned = exitCode !== null;
   const failed = tool.ok === false && !warned;
