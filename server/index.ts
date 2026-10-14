@@ -4426,12 +4426,12 @@ function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined 
       else store.patchTask(bot.id, node.threadId, { unread: true });
       notify(buildNotification("delegation-settled", bot, node.threadId, question, { avatarUrl: bot.avatarUrl }));
     },
-    levelOf: (target, source) => {
+    levelOf: (target, source, origin) => {
       const bot = store.bot(target.botId);
       if (!bot) return { level: "ask" };
       const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
       const driverKind = registry.cliTarget(running.modelSelection.instanceId)?.driverKind;
-      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source), driverKind };
+      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source, origin), driverKind };
       return { level: approvalModeForTurn(running, true, target.threadId), driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
@@ -14943,7 +14943,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!task) throw new Error("The recipient no longer exists");
               target.threadId = task.threadId;
               if (!continued) createdThread = task.threadId;
-              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
+              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId, turnOrigin(internalCapability).kind === "user" ? "person" : "outside");
             }
             const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
             const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {

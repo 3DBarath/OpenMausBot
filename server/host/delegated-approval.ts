@@ -1,5 +1,5 @@
 import { delegatedApprovalMode } from "../auto-approve.ts";
-import type { ApprovalMode } from "../../shared/approval-mode.ts";
+import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode.ts";
 import type { BotRecord, Store } from "../store.ts";
 import type { Coordinator, HandoffView } from "../coordinator.ts";
 import type { ModelSelection } from "../contracts.ts";
@@ -21,7 +21,8 @@ export function createDelegatedApprovals(deps: {
  * capped at what its engine implements). Only a Chief passes its level on —
  * an ordinary bot's delegation still uses the recipient's setting. Returns
  * null to keep the recipient's own level. */
-function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, recipientMode: ApprovalMode): ApprovalMode | null {
+function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, recipientMode: ApprovalMode, origin: "person" | "routine" | "outside" = "person"): ApprovalMode | null {
+  if (origin === "outside" || approvalModeFor(target) === "custom") return null;
   return delegatedApprovalMode({
     senderIsChief: Boolean(from.chiefOfStaff),
     senderMode: deps.sourceApprovalMode(from.id, fromThreadId),
@@ -37,8 +38,8 @@ function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord
 
 const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "Auto-accept edits", auto: "Approve for me", full: "Full access" };
 
- function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string): void {
-  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId));
+ function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string, origin: "person" | "outside"): void {
+  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId), origin);
   if (!level || deps.store().taskByThread(target.id, threadId)?.approvalMode === level) return;
   deps.store().patchTask(target.id, threadId, { approvalMode: level, autoApprove: false, alwaysAllow: [] });
   const name = DELEGATED_LEVEL_NAMES[level] ?? level;
@@ -52,14 +53,15 @@ const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "A
  function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: { roomHandoffId?: string }): ApprovalMode {
   const handoff = orchestration?.roomHandoffId ? deps.coordinator().node(orchestration.roomHandoffId) : undefined;
   const source = handoff?.parentId ? deps.coordinator().node(handoff.parentId) : undefined;
-  return roomTurnLevel(bot, threadId, source);
+  const origin = handoff ? deps.coordinator().node(handoff.rootId)?.origin?.kind : undefined;
+  return roomTurnLevel(bot, threadId, source, origin === "user" ? "person" : "outside");
 }
 
- function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined): ApprovalMode {
+ function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined, origin: "person" | "routine" | "outside" = "outside"): ApprovalMode {
   if (deps.cloudGuestDriven(threadId)) return "ask";
   const from = source ? deps.store().bot(source.botId) : undefined;
   const own = deps.approvalModeForTurn(bot, source !== undefined, threadId);
-  return (from && source && delegatedLevel(from, source.threadId, bot, own)) || own;
+  return (from && source && delegatedLevel(from, source.threadId, bot, own, origin)) || own;
 }
 
 
