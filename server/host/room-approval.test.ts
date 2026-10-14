@@ -1,3 +1,5 @@
+import { view } from "../runtime-coordinator.ts";
+import type { Assignment } from "../runtime/types.ts";
 import { describe, expect, it, vi } from "vitest";
 import { approvalModeFor } from "../../shared/approval-mode.ts";
 import { approvalModeForOrigin } from "../auto-approve.ts";
@@ -37,6 +39,26 @@ describe("room approval lineage", () => {
     expect(f.roomTurnLevel(f.member, "room", f.root, "person")).toBe("full");
     expect(f.roomTurnLevel(f.member, "room", f.root, "routine")).toBe("full");
   });
+  it("inherits legitimate routine authority from the actual runtime projection without claiming a user request", () => {
+    const f = fixture();
+    const assignment: Assignment = {
+      id: f.root.id, rootId: f.root.id, depth: 0,
+      origin: { kind: "routine", source: "routine", ref: "routine-fixture" },
+      requester: { kind: "routine_run", runId: "run-fixture" },
+      assignee: { botId: f.chief.id, destination: { kind: "standing_thread", threadId: "source" } },
+      mode: "work", reply: "resume", brief: "Run scoped routine work", status: "running", level: "full", levelSource: "own",
+      executions: 1, restarts: 0, createdAt: 1, lastActivityAt: 1, result: "", rework: false, version: 1,
+    };
+    const projected = view(assignment);
+    expect(projected.origin).toEqual({ kind: "outside" });
+    expect(projected.originKind).toBe("routine");
+    Object.assign(f.root, projected);
+    expect(f.roomTurnApprovalMode(f.member, "room", { roomHandoffId: f.handoff.id })).toBe("full");
+    expect(f.delegatedLevel).toHaveBeenCalledWith(f.chief, "source", f.member, "ask", "routine");
+    const custom = { ...f.member, approvalMode: "custom" as const };
+    expect(f.roomTurnApprovalMode(custom, "room", { roomHandoffId: f.handoff.id })).toBe("auto");
+  });
+
   it("preserves a Custom recipient's peer Auto projection instead of inheriting Full", () => {
     const f = fixture({ kind: "user", request: "Do this scoped work." });
     const custom = { ...f.member, approvalMode: "custom" as const };

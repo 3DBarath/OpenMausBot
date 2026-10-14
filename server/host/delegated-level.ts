@@ -3,6 +3,8 @@ import { delegatedApprovalMode } from "../auto-approve.ts";
 import type { BotRecord } from "../store.ts";
 import type { OriginKind } from "../runtime/types.ts";
 
+export const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "Auto-accept edits", auto: "Approve for me", full: "Full access" };
+
 export function createDelegatedLevel(deps: {
   sourceApprovalMode(botId: string, threadId: string): ApprovalMode;
   driverKind(instanceId: string): string | undefined;

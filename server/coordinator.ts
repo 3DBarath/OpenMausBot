@@ -26,6 +26,8 @@ export interface HandoffView {
   lastProgressAt?: number;
   approvalGranted: boolean;
   kind: "work" | "assignment";
+  /** Immutable runtime lineage, distinct from evidence of a user request. */
+  originKind?: Origin["kind"];
   origin?: WorkOrigin;
   restarts: number;
   restart?: "rerun" | "cut" | "teammates";
