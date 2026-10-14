@@ -1,4 +1,5 @@
 import { isEffortLevel } from "../../shared/wire.ts";
+import { approvalReviewEffortLevels } from "../../shared/approval-review.ts";
 import { isModelVariant, type ModelSelection, type ProviderInstance } from "../contracts.ts";
 
 export function createModelSelectionCheck(deps: {
@@ -72,7 +73,7 @@ return function checkedModelSelection(
     }
   }
   const allowed: readonly string[] = (purpose === "approval-review"
-    ? target?.adapter.capabilities.approvalReviewEffortLevels ?? target?.adapter.capabilities.effortLevels
+    ? approvalReviewEffortLevels(target?.adapter.capabilities ?? {})
     : target?.adapter.capabilities.effortLevels) ?? [];
   if (target && selection.effort !== undefined && !allowed.includes(selection.effort)) {
     return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by this bot's engine` };

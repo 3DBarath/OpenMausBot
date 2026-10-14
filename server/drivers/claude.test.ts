@@ -34,6 +34,7 @@ import {
 import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { claudeLimitMessage } from "./claude-limits.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
+import { reviewApproval } from "../approval-review.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { BASH_MAX_TIMEOUT_MS } from "../system-prompt.ts";
 import { ephemeralWorkspaceTokenPath } from "../workspace-backup-policy.ts";
@@ -3597,7 +3598,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
-  it.each(["medium", "none"] as const)("keeps same-provider permission review isolated at %s effort", async (effort) => {
+  it.each(["medium", "low"] as const)("keeps same-provider permission review isolated at %s effort", async (effort) => {
     await create();
     const dump = join(scratch, "permission-review.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
@@ -3658,6 +3659,32 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(backgroundCallArgs({ ...base, supports: cli([1, 0, 100]), isolated: true })).toEqual([
       "-p", "--model", "claude-haiku-4-5", "--output-format", "text", "--strict-mcp-config",
     ]);
+  });
+
+  it("routes an unconfigured Claude reviewer through its supported minimum effort", async () => {
+    await create(undefined, { FAKE_CLAUDE_REVIEW_TEXT: JSON.stringify({ decision: "allow", reason: "Scoped fixture read" }) });
+    const dump = join(scratch, "default-review-effort.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const selected = { instanceId: instance.instanceId, model: instance.models.default };
+    const result = await reviewApproval({ action: { tool: "Read", arguments: { path: "/fixture/requested.txt" } },
+      session: { ...selected, effort: "high" }, settings: { model: selected },
+      messages: [{ id: "user", role: "user", kind: "text", text: "Read /fixture/requested.txt", at: 1 }],
+      getProvider: () => instance, isCurrent: () => true });
+    expect(result).toMatchObject({ decision: "allow", reviewer: { ...selected, effort: "low" } });
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv[seen.argv.indexOf("--effort") + 1]).toBe(result.reviewer?.effort);
+    expect(instance.adapter.capabilities.effortLevels).toContain(result.reviewer?.effort);
+    expect(seen.argv).not.toContain("none");
+    expect(seen.settings.disableAllHooks).toBe(true);
+    expect(seen.mcpConfig).toEqual({ mcpServers: {} });
+  });
+
+  it("rejects unsupported isolated reviewer effort before launching the CLI", async () => {
+    await create();
+    const dump = join(scratch, "unsupported-review-effort.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.reviewPermission!("review this request", { model: instance.models.default, effort: "none" })).rejects.toThrow(/effort/);
+    expect(existsSync(dump)).toBe(false);
   });
 
   it("never falls back to personal authentication for API-key-only helper calls", async () => {

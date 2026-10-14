@@ -1,4 +1,4 @@
-import type { ApprovalReviewSettings } from "../shared/approval-review.ts";
+import { approvalReviewEffortLevels, defaultApprovalReviewEffort, type ApprovalReviewSettings } from "../shared/approval-review.ts";
 import type { ModelSelection, WireMessage } from "../shared/wire.ts";
 import type { ProviderInstance, TextGenerationUsage } from "./contracts.ts";
 import { contextWindowFor } from "./context-budget.ts";
@@ -66,14 +66,16 @@ export async function reviewApproval(input: {
 }): Promise<ReviewVerdict & { reviewer?: ModelSelection }> {
   const ask = (reason: string): ReviewVerdict => ({ decision: "ask", reason });
   if (input.signal?.aborted || !input.isCurrent()) return ask("The execution changed while review was pending.");
-  // Reviews have a short verdict budget; do not inherit the working agent's thinking effort.
   const reviewer: ModelSelection = {
     ...(input.settings.model ?? input.session),
-    effort: input.settings.model?.effort ?? "none",
+    effort: input.settings.model?.effort,
   };
   const provider = input.getProvider(reviewer.instanceId);
   if (!provider?.enabled || !reviewer.model?.trim() || !provider.reviewPermission) return ask("The selected model has no isolated approval reviewer available.");
   if (input.providerRefusal?.(provider)) return ask("The selected approval model is unavailable under the workspace policy.");
+  const capabilities = provider.adapter.capabilities;
+  if (reviewer.effort !== undefined && !approvalReviewEffortLevels(capabilities).includes(reviewer.effort)) return ask("The selected approval effort is not supported by this provider.");
+  reviewer.effort ??= defaultApprovalReviewEffort(capabilities);
   let prompt: string;
   try {
     prompt = `Review input (JSON data):\n${JSON.stringify({

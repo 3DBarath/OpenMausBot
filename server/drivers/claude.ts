@@ -1,6 +1,6 @@
 import { CLAUDE_ACCOUNT_ENV_KEYS, resolveClaudeConfigDir, readClaudeAuthSettings } from "./claude-account-env.ts";
 export { CLAUDE_ACCOUNT_ENV_KEYS, resolveClaudeConfigDir, readClaudeAuthSettings } from "./claude-account-env.ts";
-import { createClaudeCheckpointHelper, autoCompactWindow } from "./claude-checkpoint.ts";
+import { createClaudeCheckpointHelper, autoCompactWindow, CLAUDE_ISOLATED_EFFORT_LEVELS } from "./claude-checkpoint.ts";
 export { autoCompactWindow, CLAUDE_CHECKPOINT_SYSTEM_PROMPT } from "./claude-checkpoint.ts";
            import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1961,7 +1961,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           dataMcp: true, highlevelMcp: true,
           images: true,
           nativeImageInput: true,
-          effortLevels: ["low", "medium", "high", "xhigh", "max"],
+          effortLevels: CLAUDE_ISOLATED_EFFORT_LEVELS,
           queueing: true,
           // stream-json takes image blocks on any user message, mid-turn too
           steerImages: true,

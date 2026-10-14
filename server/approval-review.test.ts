@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionReviewOptions, ProviderInstance } from "./contracts.ts";
-import type { WireMessage } from "../shared/wire.ts";
+import { EFFORT_LEVELS, type WireMessage } from "../shared/wire.ts";
 import { approvalEvidence, parseReviewVerdict, reviewApproval } from "./approval-review.ts";
 
 const user = (id: string, text: string, extra: Partial<WireMessage> = {}): WireMessage => ({ id, role: "user", kind: "text", text, at: 1, ...extra });
 const session = { instanceId: "local", model: "actual-session-model", effort: "high" as const };
 function setup() {
   const call = vi.fn(async (_prompt: string, _options: PermissionReviewOptions) => JSON.stringify({ decision: "allow", reason: "A scoped read the person requested." }));
-  const provider = { enabled: true, instanceId: "local", driverKind: "openai-compat", models: { default: "wrong-default", options: [{ id: session.model, contextWindow: 256_000 }] }, reviewPermission: call } as unknown as ProviderInstance;
+  const provider = { enabled: true, instanceId: "local", driverKind: "openai-compat", adapter: { capabilities: { approvalReviewEffortLevels: EFFORT_LEVELS } }, models: { default: "wrong-default", options: [{ id: session.model, contextWindow: 256_000 }] }, reviewPermission: call } as unknown as ProviderInstance;
   const input = { action: { tool: "GMAIL_FETCH_EMAILS", arguments: { query: "in:inbox", max_results: 5 } }, session, settings: {},
     messages: [user("early", "Read unread mail. Never send or trash messages.")], getProvider: () => provider, isCurrent: () => true };
   return { input, call, provider };
@@ -38,6 +38,20 @@ describe("isolated approval routing", () => {
     expect(f.call.mock.calls[0]?.[1]).toMatchObject({ model: workingSession.model, effort: "none" });
     expect(workingSession).toEqual({ ...session, effort });
   });
+  it.each([{}, { model: { instanceId: "local", model: session.model } }])("defaults to the lowest advertised effort when None is unsupported", async (settings) => {
+    const f = setup();
+    Object.assign(f.provider.adapter.capabilities, { approvalReviewEffortLevels: ["high", "low", "medium"] });
+    const result = await reviewApproval({ ...f.input, settings });
+    expect(result).toMatchObject({ decision: "allow", reviewer: { effort: "low" } });
+    expect(f.call.mock.calls[0]?.[1]).toMatchObject({ effort: "low" });
+    expect(f.input.session.effort).toBe("high");
+  });
+  it("refuses an explicitly configured unsupported effort without model execution", async () => {
+    const f = setup();
+    Object.assign(f.provider.adapter.capabilities, { approvalReviewEffortLevels: ["low", "medium"] });
+    expect(await reviewApproval({ ...f.input, settings: { model: { ...session, effort: "none" } } })).toMatchObject({ decision: "ask" });
+    expect(f.call).not.toHaveBeenCalled();
+  });
   it("preserves an explicitly configured reviewer effort", async () => {
     const f = setup();
     const selected = { ...session, effort: "low" as const };
@@ -47,10 +61,11 @@ describe("isolated approval routing", () => {
   it("routes only through the explicitly selected existing provider/model/variant", async () => {
     const f = setup();
     const selected = { instanceId: "selected", model: "specific-reviewer", variant: "native-thinking" };
+    f.provider.adapter.capabilities.modelVariants = true;
     const getProvider = vi.fn((_id: string) => f.provider);
     await reviewApproval({ ...f.input, getProvider, settings: { model: selected } });
     expect(getProvider.mock.calls.every(([id]) => id === selected.instanceId)).toBe(true);
-    expect(f.call.mock.calls[0]?.[1]).toMatchObject({ model: selected.model, variant: selected.variant, effort: "none" });
+    expect(f.call.mock.calls[0]?.[1]).toMatchObject({ model: selected.model, variant: selected.variant, effort: undefined });
   });
   it("does not silently fall back when a selected reviewer is missing", async () => {
     const f = setup();

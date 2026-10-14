@@ -21,7 +21,15 @@ The separate settings smoke mounts the real settings component in a disposable
 Electron profile. These checks establish synthetic behavior only; they make no
 live model, Splash, mailbox, or user-workspace calls.
 
-Reviewer reasoning defaults to None whether the configured reviewer omits effort
-or follows the session model. An explicit configured effort overrides that
-review default. The stable rubric and authorization evidence precede each exact
+Reviewer effort defaults to None when the provider advertises it, otherwise
+the lowest advertised effort (Low for Claude). Variant-only providers retain
+their exact variant without adding an effort. An explicit unsupported effort
+is refused rather than replaced. The working agent’s effort is unchanged.
+The stable rubric and authorization evidence precede each exact
 action, and oversized or incomplete evidence falls back to a human card.
+
+Claude Code 2.1.296 reports Low through Max, without None, in its read-only
+`--help` metadata. The native fixture rejects unsupported flags independently;
+review routing verifies Low reaches the CLI, while API review still sends None.
+The real settings fixture checks the supported default and API refusal of an
+explicit unsupported Claude effort.

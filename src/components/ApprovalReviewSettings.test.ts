@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConfigStatus, InstanceInfo } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { APPROVAL_REVIEW_RUBRIC } from "../../shared/approval-review-policy";
+import { defaultApprovalReviewEffort } from "../../shared/approval-review";
+import { effortLabel } from "./ModelPicker";
 import { ApprovalReviewSettings } from "./ApprovalReviewSettings";
 
 const fixture = vi.hoisted(() => ({
@@ -69,7 +71,7 @@ describe("ApprovalReviewSettings", () => {
     expect(render().effort.props.value).toBe("none");
   });
 
-  it("saves and reloads an omitted reviewer effort as the reasoning-off default", async () => {
+  it("saves and reloads an omitted reviewer effort with the advertised minimum default", async () => {
     choose(render().engine, "helper"); choose(render().model, "m");
     choose(render().effort, "high");
     choose(render().effort, "");
@@ -82,7 +84,7 @@ describe("ApprovalReviewSettings", () => {
     const reloaded = render();
     expect(reloaded.effort.props.value).toBe("");
     const defaultOption = nodes(reloaded.effort.props.children).find(node => node.props.value === "");
-    expect(defaultOption?.props.children).toBe(t("settings.approvalReview.defaultEffort"));
+    expect(defaultOption?.props.children).toBe(t("settings.approvalReview.defaultEffort", { effort: effortLabel(defaultApprovalReviewEffort(fixture.instances[0].capabilities!)!) }));
     choose(reloaded.engine, "");
     fixture.api.mockResolvedValue({ approvalReview: { instructions: "" } });
     click(render().save); await flush();
@@ -90,6 +92,17 @@ describe("ApprovalReviewSettings", () => {
     expect(render().html).toContain(t("settings.approvalReview.sessionStatus"));
   });
 
+  it("keeps unsupported saved effort visible and blocks saving until explicitly corrected", async () => {
+    fixture.config = { approvalReview: { model: { instanceId: "helper", model: "m", effort: "none" } } };
+    choose(render().instructions, "Keep the constraint");
+    expect(render().effort.props.value).toBe("none");
+    expect(render().save.props.disabled).toBe(true);
+    expect(render().html).toContain(t("settings.approvalReview.unsupportedEffort"));
+    choose(render().effort, "");
+    expect(render().save.props.disabled).toBe(false);
+    click(render().save); await flush();
+    expect(request().approvalReview.model.effort).toBeUndefined();
+  });
   it("shows the exact immutable model review rules in a collapsed disclosure beside editable additional constraints", async () => {
     const view = render();
     const disclosure = view.all.find((node) => node.type === "details")!;

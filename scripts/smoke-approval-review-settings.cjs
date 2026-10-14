@@ -83,6 +83,23 @@ if (process.versions.electron && process.argv.includes(childFlag)) {
       await until(() => evaluate("document.getElementById('approval-review-model')?.value === 'fixture-review-model'"), "reload restores default reasoning selection");
       await until(() => evaluate("document.getElementById('approval-review-effort')?.value === '' && !document.getElementById('approval-review-effort').disabled"), "reload finishes loading default reviewer effort");
       assert.equal(await evaluate("document.getElementById('approval-review-effort').value"), "");
+      await select("approval-review-engine", "claude");
+      await until(() => evaluate("document.querySelectorAll('#approval-review-model option[value]:not([value=\"\"])').length > 0"), "Claude review models appear");
+      const claudeModel = await evaluate("[...document.getElementById('approval-review-model').options].find(option => option.value && !option.disabled).value");
+      await select("approval-review-model", claudeModel);
+      await until(() => evaluate("document.querySelector('#approval-review-effort option[value=low]') !== null"), "Claude effort catalog appears");
+      assert.equal(await evaluate("document.querySelector('#approval-review-effort option[value=none]') === null"), true);
+      assert.equal(await evaluate("document.querySelector('#approval-review-effort option[value=\"\"]').textContent"),
+        require("../src/locales/en.json")["settings.approvalReview.defaultEffort"].replace("{effort}", await evaluate("document.querySelector('#approval-review-effort option[value=low]').textContent")));
+      await save();
+      await until(async () => (await config()).approvalReview?.model?.instanceId === "claude", "save Claude default reviewer");
+      const priorReview = (await config()).approvalReview;
+      const unsupported = await fetch(serverUrl + "/api/config", { method: "PUT", headers: { origin: serverUrl, "content-type": "application/json" },
+        body: JSON.stringify({ approvalReview: { model: { instanceId: "claude", model: claudeModel, effort: "none" } } }) });
+      assert.equal(unsupported.status, 400);
+      assert.deepEqual((await config()).approvalReview, priorReview);
+      await window.loadURL(previewUrl);
+      await until(() => evaluate("document.getElementById('approval-review-effort')?.value === '' && !document.getElementById('approval-review-effort').disabled"), "reload restores Claude supported default");
       window.setSize(390, 844);
       await until(() => evaluate("innerWidth === 390"), "narrow viewport");
       assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
@@ -98,7 +115,7 @@ if (process.versions.electron && process.argv.includes(childFlag)) {
       assert.equal(await evaluate("document.getElementById('approval-review-model').disabled"), true);
       assert.equal(await evaluate("document.getElementById('approval-review-instructions').value"), instructions);
       writeFileSync(join(evidence, "approval-review-settings-session.png"), (await window.webContents.capturePage()).toPNG());
-      const result = { selectedReviewerSaved: true, defaultReasoningOffSaved: true, instructionsSaved: true, reloadPersisted: true, missingModelCannotSave: true, sessionFallbackSaved: true, narrowLayout: true };
+      const result = { selectedReviewerSaved: true, defaultReasoningOffSaved: true, claudeDefaultLowSaved: true, claudeNoneRejected: true, instructionsSaved: true, reloadPersisted: true, missingModelCannotSave: true, sessionFallbackSaved: true, narrowLayout: true };
       writeFileSync(join(evidence, "approval-review-settings-ui.json"), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result));
       app.exit(0);

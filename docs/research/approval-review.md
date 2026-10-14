@@ -5,8 +5,10 @@ an isolated reviewer; Claude can use it only after confirming its own reviewer
 is inactive. Native Muse remains separate from the Meta Model API chat runtime.
 
 A configured registered provider/model is used exactly. Otherwise review follows
-the session model and variant. Review reasoning defaults to `none`, independently
-of the working agent. Explicit reviewer effort is respected. A missing model,
+the session model and variant. Review uses `none` when advertised, otherwise
+the lowest supported effort (Low for Claude), independently of the working agent.
+Variant-only providers retain their variant without an extra effort. An explicit
+unsupported reviewer effort is refused. A missing model,
 unsupported variant, unavailable provider, invalid verdict, changed settings,
 changed execution, incomplete authority, or exhausted context budget requires a
 human decision.

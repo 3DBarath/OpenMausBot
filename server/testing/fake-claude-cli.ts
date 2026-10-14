@@ -147,6 +147,12 @@ const nextScriptedReply = (): string[] => {
 };
 
 const argv = process.argv.slice(2);
+const acceptedEfforts = ["low", "medium", "high", "xhigh", "max"];
+const effortIndex = argv.indexOf("--effort");
+if (effortIndex !== -1 && !acceptedEfforts.includes(argv[effortIndex + 1] ?? "")) {
+  process.stderr.write("error: invalid effort level\n");
+  process.exit(1);
+}
 const settingsHooks: Record<string, Array<{ hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>> = (() => {
   if (process.env.FAKE_CLAUDE_HOOKS !== "1") return {};
   const i = argv.indexOf("--settings");
@@ -201,7 +207,7 @@ if (argv[0] === "--help") {
   const [maj = 0, min = 0, pat = 0] = (process.env.FAKE_CLAUDE_VERSION ?? "2.1.232").split(".").map(Number);
   const has = process.env.FAKE_CLAUDE_AUTOCOMPACT !== "0" && (maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 122))));
   process.stdout.write(
-    `Usage: claude [options]\n\nOptions:\n  --model <model>  Model\n${has ? "  --autocompact <tokens>  Compaction window\n" : ""}  -h, --help  Display help\n`,
+    `Usage: claude [options]\n\nOptions:\n  --model <model>  Model\n  --effort <level>  Effort (${acceptedEfforts.join(", ")})\n${has ? "  --autocompact <tokens>  Compaction window\n" : ""}  -h, --help  Display help\n`,
   );
   process.exit(0);
 }
@@ -358,7 +364,7 @@ if (argAfter("--output-format") === "stream-json" && !argAfter("--input-format")
     settings: JSON.parse(readFileSync(argAfter("--settings")!, "utf8")),
     systemPrompt: argAfter("--system-prompt"),
   }, null, 2));
-  const text = "fake generated text";
+  const text = process.env.FAKE_CLAUDE_REVIEW_TEXT ?? "fake generated text";
   out({ type: "system", subtype: "init", tools: [] });
   out({ type: "assistant", message: { content: [{ type: "text", text }], stop_reason: "end_turn" } });
   out({ type: "result", subtype: "success", result: text, usage: { input_tokens: 1, output_tokens: 3 } });

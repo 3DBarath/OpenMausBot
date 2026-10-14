@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { api, useStore, type ConfigStatus, type ModelSelection } from "@/state/store";
 import { t } from "@/lib/i18n";
-import { DEFAULT_APPROVAL_REVIEW_SETTINGS, MAX_APPROVAL_REVIEW_INSTRUCTIONS_LENGTH, type ApprovalReviewSettings as ReviewSettings } from "../../shared/approval-review";
+import { approvalReviewEffortLevels, defaultApprovalReviewEffort, DEFAULT_APPROVAL_REVIEW_SETTINGS, MAX_APPROVAL_REVIEW_INSTRUCTIONS_LENGTH, type ApprovalReviewSettings as ReviewSettings } from "../../shared/approval-review";
 import { APPROVAL_REVIEW_RUBRIC } from "../../shared/approval-review-policy";
 import { Card } from "./SettingsPrimitives";
 import { effortLabel } from "./ModelPicker";
@@ -20,8 +20,10 @@ export function ApprovalReviewSettings() {
   const models = engine?.models.options.filter((model) => engine.snapshot.authenticated !== false || model.custom) ?? [];
   const model = models.find((model) => model.id === value.model?.model);
   const variants = engine?.capabilities?.modelVariants ? model?.variants ?? [] : [];
-  const levels = engine?.capabilities?.modelVariants ? [] : engine?.capabilities?.approvalReviewEffortLevels ?? engine?.capabilities?.effortLevels ?? [];
-  const ready = !value.model || Boolean(model);
+  const levels = approvalReviewEffortLevels(engine?.capabilities ?? {});
+  const defaultEffort = defaultApprovalReviewEffort(engine?.capabilities ?? {});
+  const effortReady = value.model?.effort === undefined || levels.includes(value.model.effort);
+  const ready = !value.model || Boolean(model && effortReady);
   const change = (next: ReviewSettings) => { setDraft(next); setError(""); };
   const chooseModel = (selection?: ModelSelection) => change({ ...value, model: selection });
   const save = async () => {
@@ -72,7 +74,7 @@ export function ApprovalReviewSettings() {
         <label htmlFor="approval-review-effort" className="text-[13px] font-medium text-ink">{t("settings.approvalReview.effort")}</label>
         <select id="approval-review-effort" value={value.model.effort ?? ""} disabled={saving || !model} className={SELECT_CLASS}
           onChange={(event) => { const { effort: _effort, variant: _variant, ...selection } = value.model!; chooseModel({ ...selection, ...(event.target.value ? { effort: event.target.value as ModelSelection["effort"] } : {}) }); }}>
-          <option value="">{t("settings.approvalReview.defaultEffort")}</option>
+          <option value="">{defaultEffort ? t("settings.approvalReview.defaultEffort", { effort: effortLabel(defaultEffort) }) : t("settings.approvalReview.providerDefault")}</option>
           {value.model.effort && !levels.includes(value.model.effort) && <option value={value.model.effort} disabled>{value.model.effort}</option>}
           {levels.map((level) => <option key={level} value={level}>{effortLabel(level)}</option>)}
         </select>
@@ -86,7 +88,7 @@ export function ApprovalReviewSettings() {
           {variants.map((variant) => <option key={variant.id} value={variant.id}>{variant.label}</option>)}
         </select>
       </div>}
-      <p role="status" className="mt-2 text-[12px] text-ink-secondary">{!ready ? t("settings.approvalReview.required") : value.model ? t("settings.approvalReview.selectedStatus") : t("settings.approvalReview.sessionStatus")}</p>
+      <p role="status" className="mt-2 text-[12px] text-ink-secondary">{value.model && !model ? t("settings.approvalReview.required") : !effortReady ? t("settings.approvalReview.unsupportedEffort") : value.model ? t("settings.approvalReview.selectedStatus") : t("settings.approvalReview.sessionStatus")}</p>
       <button type="button" onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "engines" })}
         className="mt-2 text-[12px] text-accent underline underline-offset-2">{t("settings.approvalReview.manageModels")}</button>
       <details className="mt-4 rounded-lg border border-hairline/40 bg-inset">
