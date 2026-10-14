@@ -67,10 +67,12 @@ pnpm run typecheck
 
 The integrity fixture uses the shared launcher and fake engine with its own data,
 project and preview files. It checks rename/name reuse, revision conflicts,
-shared search, reviewed room capture reaching another bot, and separate output
+shared search, reviewed room capture reaching another bot, source-backed lessons
+from a fresh bot-only delegated thread, and separate output
 approval becoming stale when the saved project changes. Unit checks cover late
 matching passages, pinned prompt budgets, keyed corrections/history, rejected
-source quotes, failure lessons, topic contradictions, and path/symlink containment.
+source quotes, private-chat sharing exclusion, failure lessons, bounded topic
+contradiction checks, legacy ownership, and path/symlink containment.
 The renderer tests exercise the actual dialog's stale-edit draft retention and
 revision-bearing pin action. Model answers remain scripted: these checks do not
 measure real-model extraction accuracy or certify editing/render fidelity.

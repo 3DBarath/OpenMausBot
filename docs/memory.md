@@ -333,8 +333,11 @@ All of them need the owner (admin) session, like the other bot-settings routes.
 
 Team memory is separate from a bot's private notebook. Accepted people, places,
 decisions, terms, lessons, open questions and project outcomes are shared with
-that team. Automated additions remain proposals until reviewed. Each captured
-proposal retains its source thread, turn, message and exact supporting quote.
+that team. Automatic shared capture is limited to eligible rooms and delegated work; ordinary
+private chats keep their learning private. Automated additions remain proposals
+until reviewed. Each captured
+proposal retains its source thread, turn, message and an exact supporting quote
+from that single message. Grounded failure lessons can also remain private.
 Review the quote and the claim: matching a quote is not a guarantee that the
 model interpreted it correctly. A rejected background proposal is not repeatedly
 suggested verbatim.
@@ -352,7 +355,7 @@ includes accepted team notes. Proposals, superseded entries and deleted entries
 are excluded. A stable `key`, such as `tapa/sequence-02/colour`, lets a reviewed
 correction replace the same fact even when its title changes. The previous
 accepted entry remains in history. Recent text versions (up to 50) can be
-restored from the panel; restoring text is a new revision.
+restored from the panel with their names; restoration is a new revision.
 
 Every panel edit, delete or acceptance carries the revision it was based on.
 Stale writes return 409; writes without a revision return 428. Reloading after a
@@ -386,7 +389,8 @@ symlinks are refused. The status distinguishes:
 - **stale:** a project or evidence file changed, moved or disappeared.
 
 Accepting a memory proposal does not approve its output. The panel provides
-artifact downloads and a separate **Approve this revision** action; approval
+artifact downloads (unchanged previews remain downloadable after the project changes)
+and a separate **Approve this revision** action; approval
 rehashes the files and checks the entry revision again. Later edits to the
 claim clear approval. Prompts and search label outcomes with their current
 status; an outcome without artifacts is explicitly unverified.
