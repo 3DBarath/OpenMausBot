@@ -9,11 +9,6 @@ import { nameIsCommand } from "@/lib/verify-steps";
 import { PlaceIcon } from "./PlaceIcon";
 import { WorkingDots } from "./WorkingIndicator";
 
-/** A quiet disclosure, not a second inspector. Old messages and providers
- * without output keep their status and never invent a successful result. */
-/** `place` names where a screen or page tool ran, so a transcript shows the
- * place of every step, not just the current one. Absent for tools that touch
- * no screen. */
 export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message["tool"]>; place?: Place | null }) {
   const [expanded, setExpanded] = useState(false);
   // A shell call that exited non-zero but printed real output reads as a
