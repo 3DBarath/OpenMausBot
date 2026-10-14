@@ -38,6 +38,8 @@ export interface HandoffView {
   question?: string;
   cards?: string[];
   continuation?: { note: string; handoffPath?: string; count: number };
+  /** Runtime lineage keeps routines distinct from quoted-user authorization evidence. */
+  originKind?: Origin["kind"];
   goalRunId?: string;
 }
 

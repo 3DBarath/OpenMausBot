@@ -1,3 +1,4 @@
+import { delegationOriginKind } from "./delegation-origin.ts";
 import { delegatedApprovalMode } from "../auto-approve.ts";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode.ts";
 import type { BotRecord, Store } from "../store.ts";
@@ -30,7 +31,7 @@ function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord
 
 const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "Auto-accept edits", auto: "Approve for me", full: "Full access" };
 
- function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string, origin: "person" | "outside"): void {
+ function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string, origin: "person" | "routine" | "outside"): void {
   const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId), origin);
   if (!level || deps.store().taskByThread(target.id, threadId)?.approvalMode === level) return;
   deps.store().patchTask(target.id, threadId, { approvalMode: level, autoApprove: false, alwaysAllow: [] });
@@ -45,8 +46,8 @@ const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "A
  function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: { roomHandoffId?: string }): ApprovalMode {
   const handoff = orchestration?.roomHandoffId ? deps.coordinator().node(orchestration.roomHandoffId) : undefined;
   const source = handoff?.parentId ? deps.coordinator().node(handoff.parentId) : undefined;
-  const origin = handoff ? deps.coordinator().node(handoff.rootId)?.origin?.kind : undefined;
-  return roomTurnLevel(bot, threadId, source, origin === "user" ? "person" : "outside");
+  const origin = delegationOriginKind(handoff ? deps.coordinator().node(handoff.rootId) : undefined);
+  return roomTurnLevel(bot, threadId, source, origin);
 }
 
  function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined, origin: "person" | "routine" | "outside" = "outside"): ApprovalMode {

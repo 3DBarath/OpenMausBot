@@ -2,7 +2,7 @@
 // these need confirmation or an optional daily allowance per bot. Full
 // access supplies standing approval; connector scopes and tool grants
 // still apply.
-   
+
 export type OutboundPolicy = {
   /** ask: every outbound call waits for a tap. allow: up to dailyCap a day. */
   policy: "ask" | "allow";

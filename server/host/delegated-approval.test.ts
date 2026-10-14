@@ -18,13 +18,20 @@ const fixture = (custom = false, outside = false) => {
   const coordinator = { node: (id: string) => nodes.get(id) } as unknown as Coordinator;
   const levels = createDelegatedApprovals({ store: () => store, coordinator: () => coordinator, driverKind: () => "codex", cloudGuestDriven: () => false,
     sourceApprovalMode: () => "full", approvalModeForTurn: (bot, peerInitiated) => approvalModeForOrigin(approvalModeFor(bot), { peerInitiated: Boolean(peerInitiated) }) });
-  return { levels, chief, member, patchTask, source: { botId: chief.id, threadId: "source" } };
+  return { nodes, levels, chief, member, patchTask, source: { botId: chief.id, threadId: "source" } };
 };
 
 describe("delegated connector authority", () => {
   it.each(["person", "routine"] as const)("inherits a Chief grant for an authorized %s lineage", origin => {
     const f = fixture();
     expect(f.levels.roomTurnLevel(f.member, "destination", f.source, origin)).toBe("full");
+  });
+  it("retains routine authority despite the legacy outside evidence view", () => {
+    const f = fixture();
+    Object.assign(f.nodes.get("root")!, { origin: { kind: "outside" }, originKind: "routine" });
+    expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("full");
+    f.levels.applyDelegatedLevel(f.chief, "source", f.member, "destination", "routine");
+    expect(f.patchTask).toHaveBeenCalledWith(f.member.id, "destination", { approvalMode: "full", autoApprove: false, alwaysAllow: [] });
   });
   it("does not borrow a Chief grant for outside work or an unknown lineage", () => {
     const f = fixture(false, true);
