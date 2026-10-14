@@ -1,3 +1,4 @@
+import { createDelegatedLevel } from "./host/delegated-level.ts";
 import { createRoomApprovalModes } from "./host/room-approval.ts";
 import { createSourceApprovalMode, effectiveRoomApprovalModeFor } from "./host/live-approval.ts";
      import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
@@ -56,7 +57,7 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
-import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode, undeliveredApprovalTool } from "./auto-approve.ts";
+import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, undeliveredApprovalTool } from "./auto-approve.ts";
 import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor, safetyFloorOn } from "./safety-floor-gate.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
@@ -3365,15 +3366,10 @@ function peerReviewRequired(bot: BotRecord, threadId: string): boolean {
   return Boolean(bot.approvePeerComms && !fullAccessForSource(bot.id, threadId));
 }
 
- function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, recipientMode: ApprovalMode): ApprovalMode | null {
-  return delegatedApprovalMode({
-    senderIsChief: Boolean(from.chiefOfStaff),
-    senderMode: sourceApprovalMode(from.id, fromThreadId),
-    sameBot: from.id === target.id,
-    recipientMode,
-    recipientDriverKind: registry.cliTarget(target.modelSelection.instanceId)?.driverKind,
-  });
-}
+const delegatedLevel = createDelegatedLevel({
+  sourceApprovalMode,
+  driverKind: instanceId => registry.cliTarget(instanceId)?.driverKind,
+});
 
  function ownThreadLevel(target: BotRecord, threadId: string): ApprovalMode {
   return approvalModeForTurn(store.projectBotForTask(target.id, threadId) ?? target, false, threadId);
@@ -3381,8 +3377,8 @@ function peerReviewRequired(bot: BotRecord, threadId: string): boolean {
 
 const DELEGATED_LEVEL_NAMES: Partial<Record<ApprovalMode, string>> = { edits: "Auto-accept edits", auto: "Approve for me", full: "Full access" };
 
- function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string): void {
-  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId));
+ function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string, origin: "person" | "routine" | "outside" = "person"): void {
+  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId), origin);
   if (!level || store.taskByThread(target.id, threadId)?.approvalMode === level) return;
   store.patchTask(target.id, threadId, { approvalMode: level, autoApprove: false, alwaysAllow: [] });
   const name = DELEGATED_LEVEL_NAMES[level] ?? level;
@@ -4433,12 +4429,12 @@ function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined 
       else store.patchTask(bot.id, node.threadId, { unread: true });
       notify(buildNotification("delegation-settled", bot, node.threadId, question, { avatarUrl: bot.avatarUrl }));
     },
-    levelOf: (target, source) => {
+    levelOf: (target, source, origin) => {
       const bot = store.bot(target.botId);
       if (!bot) return { level: "ask" };
       const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
       const driverKind = registry.cliTarget(running.modelSelection.instanceId)?.driverKind;
-      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source), driverKind };
+      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source, origin), driverKind };
       return { level: approvalModeForTurn(running, true, target.threadId), driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
@@ -14959,7 +14955,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!task) throw new Error("The recipient no longer exists");
               target.threadId = task.threadId;
               if (!continued) createdThread = task.threadId;
-              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
+              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId, turnOrigin(internalCapability).kind === "user" ? "person" : "outside");
             }
             const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
             const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {
