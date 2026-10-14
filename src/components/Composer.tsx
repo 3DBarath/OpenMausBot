@@ -89,7 +89,7 @@ interface ComposerDraftSnapshot extends ComposerSendSnapshot {
   reply: Message | null;
 }
 
-export function Composer({
+ export function Composer({
   bot: profile,
   group,
   members,
@@ -131,7 +131,6 @@ export function Composer({
   const canSteer =
     state.instances.find((i) => i.instanceId === steerInstanceId)?.capabilities?.queueing === true;
   const composerTask = profile?.tasks?.find((task) => task.threadId === threadId);
-  // Visible branch only: an approval left on an abandoned branch must not block the composer.
   const approvals = pendingApprovals(group ? group.messages : bot ? visibleMessages(bot) : []);
   const approval = approvals[0];
   const approvalBot = group
@@ -206,7 +205,7 @@ export function Composer({
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
-  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);  
   const [dismissedSlashAt, setDismissedSlashAt] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const draftIdRef = useRef(draftId);
@@ -222,7 +221,6 @@ export function Composer({
       input.setSelectionRange(at, at);
     });
   }, []);
-  // Touch screens are skipped: focusing there pops the on-screen keyboard over the conversation.
   useEffect(() => {
     if (window.matchMedia?.("(hover: none) and (pointer: coarse)").matches) return;
     const frame = requestAnimationFrame(() => {
@@ -411,7 +409,6 @@ export function Composer({
     }
   };
   useEffect(() => setSteering(false), [threadId, queueHeadId]);
-  // Only a confirmed removal hands the words back, so a message that already drained into a turn is never resent.
   const editQueued = (queueId: string) => {
     const queued = queuedMessages.find((item) => item.queueId === queueId);
     if (!queued) return;
@@ -504,7 +501,7 @@ export function Composer({
     refocusInput();
   };
   const setApprovalMode = (mode: ApprovalMode) => {
-    if (!modeBot || modeBot.busy || mode === approvalModeFor(modeBot)) return;
+    if (!modeBot || mode === approvalModeFor(modeBot)) return;
     if (mode === "custom" && !trustedThreadAccess) return;
     if (mode === "auto" && modeBot.computer === "local") {
       setApprovalWarning({ mode: "auto", botId: modeBot.id, threadId: modeBot.threadId });
@@ -709,6 +706,8 @@ export function Composer({
 
   return (
     <div className="pointer-events-none relative px-5 pb-3">
+      {/* No fill or hairline on this wrapper — those were the black frame
+          in the pill's top corners. The dock overlays the transcript. */}
       {speechError && (
         <div className="pointer-events-auto mb-2 w-full rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}
@@ -832,6 +831,8 @@ export function Composer({
             })}
           </div>
         )}
+        {/* An approval takes over the composer: you answer it before you
+            can type again, so a waiting bot is impossible to miss. */}
         {approval && (
           <div className="mb-2 overflow-hidden rounded-3xl bg-composer ring-1 ring-composer-ring">
             <PendingApprovalPanel
@@ -871,11 +872,23 @@ export function Composer({
           onEdit={locked ? undefined : editQueued}
         />
         <div className="relative">
+          {/* App-ground from the pill midline down, full-bleed. Bubbles may
+              tuck into the top half of the radius; they must not show below
+              center. End at the dock's pb-3 padding: a viewport-height
+              backdrop extends the document and lets focus scroll the header
+              away. Only the decoration is bounded; upward menus stay free. */}
           <div
             aria-hidden
             data-composer-backdrop
             className="pointer-events-none absolute -left-5 -right-5 -bottom-3 top-1/2 bg-app"
           />
+        {/* One row while it fits: chips, editor, mic. The editor is the only
+            child that can shrink, so in a narrow column (a bot's settings open
+            beside the chat, a small window) it collapsed to a few pixels and
+            its placeholder stacked one letter per line, while the auto-grow
+            made the box tall to fit them. Below the container width where the
+            chips and the placeholder cannot share a line, the editor takes a
+            full line of its own above the chips instead. */}
         <div data-tour="composer" className="@container/composer relative z-[1] rounded-3xl bg-composer px-2 py-1.5 ring-1 ring-composer-ring">
         {replyTo && <ComposerReplyStrip message={replyTo} fallbackName={bot?.name} onClear={onClearReply} />}
         <div data-composer-row className="flex items-end gap-1 @max-[30rem]/composer:flex-wrap">
@@ -886,7 +899,6 @@ export function Composer({
             className="hidden"
             onChange={(e) => {
               void pickFiles(e.target.files);
-              // Reset so picking the same file again still fires onChange.
               e.target.value = "";
             }}
           />
@@ -940,7 +952,7 @@ export function Composer({
                   providerName={approvalEngine.displayName}
                   driverKind={approvalEngine.driverKind}
                   onSelect={setApprovalMode}
-                  disabled={Boolean(modeBot.busy)}
+                  busy={Boolean(modeBot.busy)}
                   trustedModesAvailable={trustedThreadAccess}
                   onManageCommandAllowlist={ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: modeBot.id, botName: modeBot.name, threadId: modeBot.threadId }) : undefined}
                 />
@@ -974,7 +986,6 @@ export function Composer({
           onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
-            // An input method's confirming Enter and arrows pick its own candidates, not a mention or command.
             if (imeComposing(e.nativeEvent)) return;
             if (commandPickerOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -1038,8 +1049,6 @@ export function Composer({
             }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
-          // Not disabled during an upload: a disabled element drops keyboard focus for good. send() refuses while one
-          // is pending.
           disabled={Boolean(approval) || locked}
           aria-busy={bot?.awaitingThreadSnapshot || undefined}
           placeholder={
@@ -1074,6 +1083,8 @@ export function Composer({
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div data-composer-actions className="flex items-center gap-1 @max-[30rem]/composer:ml-auto">
+          {/* Stop stays a stop. Stop-then-steer is named beside the queued
+              message above, where its effect is visible before activation. */}
           {busy && !locked && (
           <button
             onClick={interruptTurn}
@@ -1099,6 +1110,9 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
+        {/* Calling the bot lives here, beside dictation, rather than in the
+            chat header: it is another way to talk to it. Rooms keep their
+            group call button in the room header. */}
         {bot && !group && <CallButton bot={bot} placement="composer" />}
         {hasContent && !locked && (
           <button
