@@ -12,15 +12,7 @@ export function createDelegatedApprovals(deps: {
   sourceApprovalMode(botId: string, threadId: string): ApprovalMode;
   approvalModeForTurn(bot: BotRecord, peerInitiated?: boolean, threadId?: string): ApprovalMode;
 }) {
-/** A Chief of Staff's level flows down its delegation. The person set the
- * Chief's level so its work runs that way; a teammate the Chief brings in
- * starting at "Ask for approval" meant switching every such thread by hand,
- * all day, for the whole team. So a teammate a Chief delegates to starts at
- * the Chief's level for that work: Auto-accept edits, Approve for me or Full
- * access (delegatedApprovalMode: never lower than the teammate's own level,
- * capped at what its engine implements). Only a Chief passes its level on —
- * an ordinary bot's delegation still uses the recipient's setting. Returns
- * null to keep the recipient's own level. */
+// Only authorized Chief work can inherit a grant; outside work and Custom recipients keep their own policy.
 function delegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, recipientMode: ApprovalMode, origin: "person" | "routine" | "outside" = "person"): ApprovalMode | null {
   if (origin === "outside" || approvalModeFor(target) === "custom") return null;
   return delegatedApprovalMode({

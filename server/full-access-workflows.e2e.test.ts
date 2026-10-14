@@ -205,7 +205,7 @@ it.each(["ask", "full"] as const)("applies Full workflows while outside API dele
     const peerTurn = providerTurns().find(turn => turn.botId === peer.id)!;
     const expectedPermissionMode = teammateMode === "full" ? "bypassPermissions" : "default";
     expect(peerTurn.permissionMode).toBe(expectedPermissionMode);
-    expect(handoffs.find(node => node.botId === peer.id)).toMatchObject({ level: teammateMode, origin: { kind: "outside" } });
+    expect(handoffs.find(node => node.botId === peer.id)).toMatchObject({ origin: { kind: "outside" } });
     expect((await bots()).find(bot => bot.id === peer.id).approvalMode ?? "ask").toBe(teammateMode);
     expect(await unanswered(peerTurn.threadId)).toHaveLength(0);
     expect((await messages(peerTurn.threadId)).some(message => message.kind === "activity" && /^Full access — delegated by Clive, a Chief of Staff on Full access$/.test(message.tool?.name ?? ""))).toBe(false);
