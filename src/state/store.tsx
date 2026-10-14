@@ -348,7 +348,7 @@ export interface Bot {
   outbound?: { policy: "ask" | "allow"; dailyCap: number };
   fallback?: Array<{ instanceId: string; model: string }>;
   browser?: boolean;
-  recordBrowserSteps?: boolean;  
+  recordBrowserSteps?: boolean;
   memoryUpkeep?: boolean;
   cacheKeepWarm?: boolean | null;
   helperModel?: boolean;
@@ -443,7 +443,7 @@ function openedUnreadDivider(state: AppState, threadId: string, unread: boolean,
 import type { BrowserEngineSummary, BrowserProfile, ConfigStatus, ManagedPolicySummary } from "./config-status";
 export type { BrowserEngineSummary, BrowserProfile, ConfigStatus, ManagedPolicySummary };
 
-    
+
 
  export interface EngineInstall {
   platform?: "darwin" | "win32" | "linux";
@@ -1197,7 +1197,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (action.groupId) return patchGroupCard(state, action.groupId, action.messageId, { dismissed: true });
       return patchCard(state, action.botId, action.messageId, { dismissed: true });
     case "decideRequest":
-      return state;  
+      return state;
     case "botAdded":
       return withMascotMotion({
         ...state,
@@ -2048,7 +2048,7 @@ export const initialState: AppState = {
   const call: unknown = Reflect.get(frame, "call");
   if (call === null) return { call: null };
   if (!call || typeof call !== "object") return null;
-  const record = call as Record<string, unknown>;  
+  const record = call as Record<string, unknown>;
   if (typeof record.callId !== "string" || typeof record.botId !== "string" || typeof record.threadId !== "string" || typeof record.status !== "string") {
     return null;
   }
@@ -2396,7 +2396,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return persistTaskApproval(botId, threadId, patch, desktopApprovalBridge());
         });
       const execution = Promise.all([previous?.execution, promise]);
-      void execution.catch(() => {});  
+      void execution.catch(() => {});
       const pending = { botId, updatesDefault: Boolean(patch.updateBotDefault || previous?.updatesDefault), patch: { ...previous?.patch, ...patch }, promise, execution };
       taskWrites.set(threadId, pending);
       void pending.promise.then((bot) => {

@@ -28,6 +28,8 @@ export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resum
   /** Recorded grant ceiling, refreshed before dispatch. */
   level: Level;
   kind: "work" | "assignment";
+  /** Immutable runtime lineage, distinct from evidence of a user request. */
+  originKind?: Origin["kind"];
   origin?: WorkOrigin;
   restarts: number;
   restart?: "rerun" | "cut" | "teammates";

@@ -1,3 +1,4 @@
+import { delegationOriginKind } from "./delegation-origin.ts";
 import type { OriginKind } from "../runtime/types.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import type { BotRecord } from "../store.ts";
@@ -13,8 +14,8 @@ export function createRoomApprovalModes(deps: {
  function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: { roomHandoffId?: string }): ApprovalMode {
   const handoff = orchestration?.roomHandoffId ? deps.node(orchestration.roomHandoffId) : undefined;
   const source = handoff?.parentId ? deps.node(handoff.parentId) : undefined;
-  const origin = handoff ? deps.node(handoff.rootId)?.origin?.kind : undefined;
-  return roomTurnLevel(bot, threadId, source, origin === "user" ? "person" : "outside");
+  const origin = delegationOriginKind(handoff ? deps.node(handoff.rootId) : undefined);
+  return roomTurnLevel(bot, threadId, source, origin);
 }
 
  function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined, origin: OriginKind = "outside"): ApprovalMode {

@@ -446,7 +446,7 @@ beforeAll(async () => {
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
     JSON.stringify({
-      features: { llmThreadTitles: true, browser: false },  
+      features: { llmThreadTitles: true, browser: false },
       instances: {
         ghost: { driver: "not-a-real-driver", displayName: "Ghost" },
         claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
@@ -5946,7 +5946,7 @@ describe("harness HTTP API", () => {
     expect(legacy.status).toBe(201);
     expect(legacy.body.bots[0].name).toBe("Mira 3");
     const groupsAfter = (await api("GET", "/api/bots")).body.groups;
-    expect(groupsAfter).toHaveLength(groupsBefore + 1);  
+    expect(groupsAfter).toHaveLength(groupsBefore + 1);
     expect(groupsAfter.find((group: { id: string }) => group.id === room.id)).toMatchObject({
       name: "War Room",
       bulletin: "",

@@ -730,7 +730,7 @@ export interface RoomHeldMessage {
   messageId: string;
 }
 
-     
+
 /** Why a steer-queue entry waits: a shared thread slot, or the bot's room
  * turn (which runs one at a time per bot). */
 export type SteerQueueReason = "capacity" | "group-turn";

@@ -76,7 +76,7 @@ const sameSpeaker = (a: Assignment, source: RoomAddress): boolean =>
     id: a.id, rootId: a.rootId, threadId: a.assignee.destination.threadId, botId: a.assignee.botId, key: a.assignee.botId,
     text: a.brief, createdAt: a.createdAt, status, result: a.result, reported: a.reportedAt !== undefined, executions: a.executions,
     lastProgressAt: a.lastActivityAt, approvalGranted: a.approved ?? false, level: a.level, kind: kindOf(groupId, parent), restarts: a.restarts,
-    mode: a.mode, reply: a.reply,
+    mode: a.mode, reply: a.reply, originKind: a.origin.kind,
   };
   if (a.outcome !== undefined) node.outcome = a.outcome;
   if (a.outcomeDetail !== undefined) node.outcomeDetail = a.outcomeDetail;

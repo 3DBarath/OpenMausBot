@@ -1,5 +1,5 @@
 import { APPROVAL_REVIEW_RUBRIC } from "../shared/approval-review-policy.ts";
-      
+
 import type { ApprovalMode } from "../shared/approval-mode.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
 import type { EffortLevel } from "../shared/wire.ts";
@@ -52,7 +52,7 @@ export function isModelVariant(value: unknown): value is string {
     value.trim() === value && !/\p{Cc}/u.test(value);
 }
 
-   
+
  export interface TurnImageInput {
   path: string;
   mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp";

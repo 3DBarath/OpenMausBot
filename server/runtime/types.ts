@@ -1,6 +1,6 @@
           import type { ApprovalMode } from "../../shared/approval-mode.ts";
 
- 
+
 /** Where the work ultimately started. Immutable down the whole tree. */
 export type OriginKind = "person" | "routine" | "outside";
  export type OriginSource = "chat" | "routine" | "webhook" | "relay" | "external_runtime" | "guest" | "peer" | "api";
@@ -35,7 +35,7 @@ export interface Assignee {
   destination: { kind: DestinationKind; threadId: string; groupId?: string };
 }
 
- 
+
 /** work: do it with your own tools. consult: answer from what you know, act
  * on nothing. notify: one-way, nothing comes back. */
 export type Mode = "work" | "consult" | "notify";
@@ -175,7 +175,7 @@ export interface InboxItem {
   deliveredAt?: number;
 }
 
- 
+
 export interface EnqueueRequest {
   parentId?: string;
   origin: Origin;
@@ -198,7 +198,7 @@ export type EnqueueResult =
   | { ok: true; assignment: Assignment; duplicate: boolean }
   | { ok: false; reason: string; outcome: "refused" | "budget" | "duplicate" };
 
- 
+
 export interface RunInput {
   turn: "first" | "resume" | "rerun" | "answered" | "continued";
   /** Not the node's first turn (any `turn` but "first"). */
@@ -316,7 +316,7 @@ export const DEFAULT_LIMITS: Limits = {
   inputWaitMs: 30 * 60_000,
 };
 
- 
+
 export interface LiveEdge {
   sourceBotId: string;
   targetBotId: string;
