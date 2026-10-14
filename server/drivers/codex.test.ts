@@ -20,6 +20,7 @@ import {
   codexUpdateCommand,
   codexUserError,
 } from "./codex.ts";
+import { codexWindowsSandboxOverride } from "./codex-sandbox.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
@@ -71,6 +72,20 @@ describe("CodexDriver.decodeConfig", () => {
       .toMatchObject({ managed: { url: "http://localhost:1/v1" } });
     expect(() => CodexDriver.decodeConfig({ managed: { url: "http://company.example/v1", models: ["m"] } }))
       .toThrow("Invalid Company Codex endpoint.");
+  });
+});
+
+describe("codexWindowsSandboxOverride", () => {
+  it.each([
+    [{ windows: { sandbox: "elevated" } }, true],
+    [{ windows: { sandbox: null }, features: { elevated_windows_sandbox: true } }, true],
+    [{ windows: { sandbox: "unelevated" }, features: { elevated_windows_sandbox: true } }, false],
+    [{ windows: { sandbox: "mxc" } }, false],
+    [{ windows: { sandbox: null }, features: {} }, false],
+    [null, false],
+  ])("moves %j to the unelevated sandbox on Windows only: %s", (config, moved) => {
+    expect(codexWindowsSandboxOverride(config, "win32")).toEqual(moved ? { "windows.sandbox": "unelevated" } : null);
+    expect(codexWindowsSandboxOverride(config, "darwin")).toBeNull();
   });
 });
 
@@ -155,6 +170,15 @@ describe("CodexDriver turns (fake app-server)", () => {
   beforeEach(() => {
     chmodSync(FAKE_CLI, 0o755);
     scratch = mkdtempSync(join(tmpdir(), "omb-codex-test-"));
+  });
+
+  it("starts a thread in the unelevated Windows sandbox where Codex is set to the elevated one", async () => {
+    const dump = join(scratch, "windows-sandbox.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_WINDOWS_SANDBOX: "elevated" } });
+    await instance.adapter.sendTurn({ threadId: "windows-sandbox", text: "Fixture" });
+    await recorder.until((event) => event.type === "turn.completed");
+    const config = JSON.parse(readFileSync(dump, "utf8")).calls.find((call: { method: string }) => call.method === "thread/start").params.config;
+    expect(config?.["windows.sandbox"]).toBe(process.platform === "win32" ? "unelevated" : undefined);
   });
 
   it("refuses native selection before a Codex prompt, including resumed Full-access turns", async () => {

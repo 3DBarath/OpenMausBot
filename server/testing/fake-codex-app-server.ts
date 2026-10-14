@@ -16,6 +16,7 @@
 //   FAKE_CODEX_DUMP  path for {pid, argv, env, calls, decision}
 //   FAKE_CODEX_IGNORE_FEATURES  "1": config/read reports no `-c features.*` override
 //   FAKE_CODEX_SHELL_ENVIRONMENT_POLICY  JSON config/read reports, every field present and null unless set (codex-cli 0.160)
+//   FAKE_CODEX_WINDOWS_SANDBOX  config/read reports this `windows.sandbox` (elevated | unelevated | mxc)
 //   FAKE_CODEX_APPROVAL_REQUEST  JSON {method, params} override in approval mode
 //   FAKE_CODEX_ACCOUNT_EMAIL  synthetic ChatGPT identity (default ada@example.test)
 //   FAKE_CODEX_ACCOUNT_MODE  chatgpt (default) | api-key | none | unsupported | error | hang
@@ -465,6 +466,7 @@ process.stdin.on("data", (chunk) => {
                 }),
               developer_instructions: process.env.FAKE_CODEX_INSTRUCTIONS ?? null,
               shell_environment_policy: shellEnvironmentPolicy(),
+              ...(process.env.FAKE_CODEX_WINDOWS_SANDBOX ? { windows: { sandbox: process.env.FAKE_CODEX_WINDOWS_SANDBOX } } : {}),
               features: Object.fromEntries(process.argv.flatMap((arg, index) => {
                 const match = process.argv[index - 1] === "-c" ? /^features\.(\w+)=(true|false)$/.exec(arg) : null;
                 return match && process.env.FAKE_CODEX_IGNORE_FEATURES !== "1" ? [[match[1], match[2] === "true"]] : [];

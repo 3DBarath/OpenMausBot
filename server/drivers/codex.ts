@@ -1,4 +1,5 @@
 import { codexToolSurfaceArgs } from "./codex-tool-surface.ts";
+import { codexShellDisabled, codexWindowsSandboxOverride, GUEST_CONFINED_CODEX_ARGS } from "./codex-sandbox.ts";
 // The `codex` CLI headless over its app-server JSON-RPC (NDJSON on stdio): completion is
 // `turn/completed`, approvals arrive as server→client requests, resumeCursor is the codex thread id.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -317,17 +318,6 @@ function mcpAppApprovalForm(params: unknown): McpApprovalForm | null {
 
   const tool = boundedLabel(appName) ?? boundedLabel(request.serverName) ?? "app_access";
   return { tool, summary: message, allowResult: { action: "accept", content } };
-}
-
-/** A guest-driven turn's app-server: shell, unified exec and image reads (codex-cli 0.159.0
- * `features`) off, web search too. */
-export const GUEST_CONFINED_CODEX_ARGS = [
-  "-c", "features.shell_tool=false", "-c", "features.unified_exec=false", "-c", "features.view_image=false", "-c", 'web_search="disabled"',
-] as const;
-
-export function codexShellDisabled(config: unknown): boolean {
-  const features = plainRecord(plainRecord(config)?.features);
-  return features?.shell_tool === false && features?.unified_exec === false && features?.view_image === false;
 }
 
 /** Thread-config overrides adding `patterns` to the person's shell exclusions. Codex keeps two
@@ -1545,6 +1535,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           selectionConfig.config = { ...selectionConfig.config,
             ...extendShellExclusions((rawPolicy ?? {}) as Record<string, unknown>, [...(plan ? ["OPENMAUSBOT_CHATGPT_TOKEN"] : []), ...privateEnv]) };
         }
+        const windowsSandbox = codexWindowsSandboxOverride(effectiveConfig);
+        if (windowsSandbox) selectionConfig.config = { ...selectionConfig.config, ...windowsSandbox };
         if (turn.toolScope !== undefined) {
           const catalog = (effectiveConfig as { mcp_servers?: unknown } | null)?.mcp_servers;
           if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) throw new Error("Codex could not confirm its selected MCP configuration. No prompt was sent.");
