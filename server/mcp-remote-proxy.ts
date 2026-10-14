@@ -121,7 +121,7 @@ const directory = directorySettings(settings.OMB_REMOTE_MCP_DIRECTORY);
 }
 const allowed = (name: string) => !directory?.scope || allowsTool(directory.scope, { kind: "mcp", server: directory.server, name });
 
- 
+
  interface Catalog { tools: ToolDirectory; searched: boolean }
 const CATALOG_PAGES = 100;
 const CATALOG_MS = 120_000;

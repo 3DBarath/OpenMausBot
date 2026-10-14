@@ -1,4 +1,4 @@
-                                
+
 type Json = Record<string, unknown>;
 
  export interface CatalogTool {
@@ -66,7 +66,7 @@ function isRecord(value: unknown): value is Json {
   return typeof text === "string" ? bounded(text.replace(/\s+/g, " ").trim(), maxChars) : "";
 }
 
-    
+
  function resolveRef(root: unknown, ref: string): unknown {
   if (ref === "#") return root;
   if (!ref.startsWith("#/")) return undefined;
@@ -98,7 +98,7 @@ function isRecord(value: unknown): value is Json {
   return current;
 }
 
- 
+
  const STOP_WORDS = new Set([
   "a", "about", "all", "am", "an", "and", "any", "are", "as", "at", "be", "been", "being", "but", "by",
   "can", "could", "did", "do", "does", "doing", "for", "from", "had", "has", "have", "having", "he", "her",
@@ -274,7 +274,7 @@ function byName(a: CatalogTool, b: CatalogTool): number {
   return scored.slice(0, limit).map((entry) => entry.tool);
 };
 
- 
+
 function literal(value: unknown): string {
   const text = JSON.stringify(value) ?? "unknown";
   return text.length <= 30 ? text : `${cut(text, 29)}…`;
@@ -339,7 +339,7 @@ function union(parts: string[]): string {
   return `{ ${cut(fields[0], maxChars - 3 - tail.length)}…${tail}`;
 }
 
- 
+
  export function areaSummary(tools: readonly CatalogTool[], maxChars = AREAS_CHARS): string {
   const counts = new Map<string, number>();
   for (const tool of tools) {

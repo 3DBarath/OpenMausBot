@@ -312,5 +312,3 @@ export function completionError(json: CompletionJson, label: string): ChatProtoc
     : "Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model.";
   return `The model ${what}. ${next} Provider: ${words.slice(0, 200)}`;
 }
-
- 

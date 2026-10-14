@@ -4706,7 +4706,7 @@ function groupMemberBotAvailability(botId: string, operation: GroupTurnOperation
   });
 }
 
-  
+
  const heldInterrupts = new Set<string>();
  const summaryReasks = new Set<string>();
 
@@ -5230,8 +5230,8 @@ const replayBuffer: Array<{ seq: number; kind: string; frame: string | null; cli
 }
 onSteeredQueueChange(() => broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() }));
 
-      const toolMessageByItem = new Map<string, string>();  
-const askMessageByRequest = new Map<string, string>();  
+      const toolMessageByItem = new Map<string, string>();
+const askMessageByRequest = new Map<string, string>();
  const unansweredApprovals = new UnansweredApprovals();
   const pendingCommandRules = new Map<string, { botId: string; candidate: CommandAllowlistCandidate }>();
 
@@ -6452,7 +6452,7 @@ async function computerPreviewSurface(bot: BotRecord, threadId?: string) {
   }
   if (!CLOUD_HOME && shouldMountLocalComputer({ requested: undefined, hostPlatform: process.platform,
     providerSupportsLocal: instance?.adapter.capabilities.localComputerMcp === true }) && readCuaConnection()) return "local";
-  if (bot.cloudBackend === "vps") return "cloud";  
+  if (bot.cloudBackend === "vps") return "cloud";
   return plan.browser ? "browser" : "off";
 }
 
@@ -6518,7 +6518,7 @@ function continueComputerSelection(threadId: string, generation: string | undefi
   if (!selection || selection.generation !== generation) return false;
   if (!succeeded || !selection.selected || hasQueuedSteeredMessages(selection.botId, threadId)) {
     computerSelectionTurns.delete(threadId);
-    return false;  
+    return false;
   }
   const surface = selection.selected;
   setImmediate(() => {
@@ -12023,7 +12023,7 @@ async function attachmentVmForTurn(capability: InternalCapability): Promise<Loca
 function connectorThread(botId: string, threadId: string) {
   const bot = store.bot(botId);
   if (!bot) return null;
-  if (bot.threadId === threadId) return { bot, group: undefined };  
+  if (bot.threadId === threadId) return { bot, group: undefined };
   if (store.taskByThread(botId, threadId)) return { bot, group: undefined };
   const group = store.groupByThread(threadId);
   if (group?.memberIds.includes(botId)) return { bot, group };
@@ -12554,7 +12554,7 @@ async function provideSecretFromPhone(
   return settled;
 }
 
-      
+
 function recordTurnPlace(botId: string, threadId: string, place: Surface | null): void {
   if (place) turnPlaces.set(threadId, { botId, place });
   else turnPlaces.delete(threadId);
@@ -13197,7 +13197,7 @@ let mcpConfigBusy = false;
   }
 }
 
-    
+
 const workspaceBackupAccess = {
   authorized: (req: IncomingMessage, original: RequestAuth) => {
     const current = resolveRequestAuth(req, {
