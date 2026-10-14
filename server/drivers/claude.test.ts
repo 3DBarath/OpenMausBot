@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+
 import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import {
   createPermissionBroker,
   hookTokenFile,
   parseClaudeCliVersion,
+  PERMISSION_BROKER_TIMEOUT_MS,
   permissionSocketPath,
   readClaudeAuthSettings,
   claudeCostSnapshot,
@@ -39,12 +41,11 @@ import * as procs from "../procs.ts";
 import * as localInject from "./local-inject.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
-const dumpedPid = (dump: string): number => JSON.parse(readFileSync(dump, "utf8")).pid;
+ const dumpedPid = (dump: string): number => JSON.parse(readFileSync(dump, "utf8")).pid;
 
-/** Each must truncate to a unique 8-char tag so no two tests share a broker socket. */
-const COLLISION_THREAD_IDS = ["t-dup-1", "t-dup-2", "t-dup-3", "t-dup-4"];
+ const COLLISION_THREAD_IDS = ["t-dup-1", "t-dup-2", "t-dup-3", "t-dup-4"];
 
-function connectSocket(path: string): Promise<Socket> {
+ function connectSocket(path: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
     let retriesLeft = 20;
     const tryConnect = () => {
@@ -56,7 +57,6 @@ function connectSocket(path: string): Promise<Socket> {
       const onError = (error: NodeJS.ErrnoException) => {
         conn.removeListener("connect", onConnect);
         conn.destroy();
-        // A Windows named pipe can briefly disappear while the server creates its next instance.
         if (process.platform === "win32" && error.code === "ENOENT" && retriesLeft-- > 0) {
           setTimeout(tryConnect, 25);
           return;
@@ -70,7 +70,7 @@ function connectSocket(path: string): Promise<Socket> {
   });
 }
 
-function answerQueue(conn: ReturnType<typeof connect>) {
+ function answerQueue(conn: ReturnType<typeof connect>) {
   const waiters: Array<(msg: any) => void> = [];
   let buf = "";
   conn.on("data", (chunk) => {
@@ -143,7 +143,6 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 
   it("finds the running cost the CLI restored for a resumed session", () => {
-    // Real 2.1.282 frames: modelUsage is [input, cache read, cache write, output] per model for the session.
     const opus = (total: number, tokens: [number, number, number, number]) => claudeCostSnapshot(total, {
       "claude-opus-5-5": { inputTokens: tokens[0], cacheReadInputTokens: tokens[1], cacheCreationInputTokens: tokens[2], outputTokens: tokens[3], costUSD: total },
     })!;
@@ -215,7 +214,6 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 
   it("keeps threads whose ids share a prefix on distinct sockets", () => {
-    // Only the digest separates them; Windows pipes would otherwise collide.
     expect(permissionSocketPath("t-perm-dup-1")).not.toBe(permissionSocketPath("t-perm-dup-2"));
   });
 
@@ -310,13 +308,11 @@ describe("ClaudeDriver.decodeConfig", () => {
     }
   });
 
-  // Windows cannot listen on filesystem socket paths (EACCES); the fake-CLI e2e covers its pipe fallback.
   it.skipIf(process.platform === "win32")(
     "binds the next candidate when the first is unbindable, and asks round-trip on it",
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "omb-broker-fallback-"));
       const held = join(dir, "held.sock");
-      // A directory squats the path the way a hung child holds a pipe.
       mkdirSync(held);
       const free = join(dir, "free.sock");
       const asks: Array<{ id: string }> = [];
@@ -364,7 +360,6 @@ describe("ClaudeDriver.decodeConfig", () => {
         onResolve: () => {},
       });
       try {
-        // One line spans many reads, and most read boundaries fall inside a three-byte character.
         const content = "中文ok€".repeat(150_000);
         const conn = connect(socketPath);
         await new Promise<void>((resolve, reject) => {
@@ -478,6 +473,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_MODE;
     delete process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS;
+    delete process.env.FAKE_CLAUDE_OMIT_PERMISSION_MODE;
     delete process.env.FAKE_CLAUDE_DUMP;
     delete process.env.FAKE_CLAUDE_PROMPTS;
     delete process.env.FAKE_CLAUDE_TRANSIENTS;
@@ -546,10 +542,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       "turn.started",
       "session.started",
       "content.delta",
-      "item.completed",
-      "item.started",
+      "item.completed",  
+      "item.started",  
       "thread.token-usage.updated",
-      "item.completed",
+      "item.completed",  
       "turn.completed",
     ]);
     expect(recorder.events.every((e) => e.turnId === turnId && e.provider === "claudeAgent")).toBe(true);
@@ -558,7 +554,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.find((e) => e.type === "item.completed" && e.itemType === "tool")).toMatchObject({ output: expect.stringContaining('"text": "hi"') });
 
     const usage = recorder.events.find((e) => e.type === "thread.token-usage.updated")!;
-    expect(usage).toMatchObject({ input: 12, output: 5, cachedInput: 2 });
+    expect(usage).toMatchObject({ input: 12, output: 5, cachedInput: 2 });  
     const done = recorder.events.at(-1)!;
     expect(done).toMatchObject({ type: "turn.completed", ok: true, cost: 0.01, usage: { input: 12, output: 5, cachedInput: 2 } });
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
@@ -693,7 +689,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       .resolves.toMatchObject({ ok: false, stopReason: "update_required" });
     const outdatedPid = JSON.parse(readFileSync(outdatedDump, "utf8")).pid;
 
-    // Only a new child sees this replacement runtime; a pooled child keeps its loaded code.
     process.env.FAKE_CLAUDE_MODE = "happy";
     const retryDump = join(scratch, "updated-session.json");
     process.env.FAKE_CLAUDE_DUMP = retryDump;
@@ -854,7 +849,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("flattens ask_user choices a model sends as {label, description} rows", async () => {
-    // MiniMax M3 (through the Anthropic-compatible endpoint) answers ask_user with AskUserQuestion-shaped rows.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-object-choices", text: "go" });
     const conn = await connectSocket(permissionSocketPath("t-object-choices"));
@@ -881,7 +875,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("draws a multiSelect ask_user as a checkbox question card", async () => {
-    // In Full access the CLI has no permission prompt tool, so ask_user is the only way to ask.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-multi-ask", text: "go", approvalMode: "full" });
     const conn = await connectSocket(permissionSocketPath("t-multi-ask"));
@@ -901,7 +894,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("turns Claude's own AskUserQuestion into a question card, not an approval", async () => {
-    // The CLI routes AskUserQuestion through --permission-prompt-tool like any other tool use.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-structured-ask", text: "go" });
     const conn = await connectSocket(permissionSocketPath("t-structured-ask"));
@@ -947,7 +939,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "session.started");
 
     const conn = await connectSocket(permissionSocketPath("t-perm-lbl"));
-    // The companion maps every label but "Allow" to a denial, so model-authored labels would all deny.
     conn.write(
       JSON.stringify({
         t: "ask",
@@ -1549,10 +1540,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("withholds a flag from a CLI that predates it, instead of failing every turn", async () => {
-    // 2.1.100 knows --strict-mcp-config and --setting-sources but not --autocompact (2.1.122).
     const dump = join(scratch, "old-cli.json");
     await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: "2.1.100" });
-    // The harness snapshots every instance before any turn; that is where the driver learns the version.
     await instance.snapshot();
     await instance.adapter.sendTurn({ threadId: "t-old-cli", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
@@ -1582,7 +1571,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps only the isolation flag a very old CLI accepts", async () => {
-    // 1.0.100: --strict-mcp-config exists (1.0.60), --setting-sources not yet (1.0.122).
     const dump = join(scratch, "very-old-cli.json");
     await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: "1.0.100" });
     await instance.snapshot();
@@ -2119,8 +2107,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const sessionId = argv[argv.indexOf("--session-id") + 1];
     await expect.poll(() => existsSync(`${gone}.closed`)).toBe(true);
     const { turnId } = await instance.adapter.sendTurn({ threadId, text: "second", resumeCursor: sessionId });
-    // POSIX only: with fd 0 closed the pipe has no reader. On Windows Node's stdin keeps a duplicate
-    // handle, so the write can land and only the exit ends the process.
     if (process.platform !== "win32") {
       expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).toContain('"close":"stdin write failed"');
     }
@@ -2171,7 +2157,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const running = await instance.adapter.sendTurn({ threadId, text: "stop this turn" });
     await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool" && e.turnId === running.turnId);
     const stoppedPid = JSON.parse(readFileSync(dump, "utf8")).pid;
-    // Holds the interrupt-before-exit window open: the pipe stays writable until the kill is released.
     const conn = await connectSocket(permissionSocketPath(threadId));
     const nextAnswer = answerQueue(conn);
     const kill = procs.killCliTree;
@@ -2256,7 +2241,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
     expect(instance.adapter.capabilities.queueing).toBe(true);
     await expect(instance.adapter.steer!("t-steer", "and also this")).resolves.toBe("steered");
-    // An 800ms timer can finish before a loaded CI runner resumes this test's continuation.
     await expect.poll(() => existsSync(received)).toBe(true);
     writeFileSync(finishGate, "finish");
     await recorder.until((e) => e.type === "turn.completed");
@@ -2316,8 +2300,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps the turn open while a steered message the CLI could not fold runs as its next native turn", async () => {
-    // The CLI folds a mid-turn message only before a model call that has not started; words landing during
-    // the last call run as its next turn. This fake sends no queued_turn_count, like an older CLI.
     const finishGate = join(scratch, "late-steer-first.gate");
     const continuationGate = join(scratch, "late-steer-continuation.gate");
     const received = join(scratch, "late-steer-received");
@@ -2345,7 +2327,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("books a steered continuation on a retained process's second turn at that turn's share", async () => {
-    // Process totals 0.01, 0.02 (held for the steer), then 0.03: the second logical turn cost 0.02.
     const finishGate = join(scratch, "retained-steer-finish.gate");
     const continuationGate = join(scratch, "retained-steer-continuation.gate");
     const received = join(scratch, "retained-steer-received");
@@ -2538,7 +2519,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps a Stop in the held window an interrupt when the grace lapses before the CLI exits", async () => {
-    // taskkill is asynchronous on Windows: the lapsing grace must leave the turn to the Stop.
     process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.5";
     const finishGate = join(scratch, "held-slow-stop-first.gate");
     const continuationGate = join(scratch, "held-slow-stop-continuation.gate");
@@ -2566,7 +2546,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("gives a steer that lands while a result is held the whole grace", async () => {
-    // Grace 3 s, the second steer 2 s in, the continuations let out 3.8 s in.
     process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "1.5";
     const finishGate = join(scratch, "regrace-first.gate");
     const continuationGate = join(scratch, "regrace-continuation.gate");
@@ -2602,8 +2581,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("closes a steered continuation that announces itself and then stays silent", async () => {
-    // Only the silence bound is scaled down (30 s → 600 ms); the 2 s grace before `init` stays, so a slow
-    // worker cannot lapse the hold before the driver reads the init frame.
     process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE = "0.02";
     const finishGate = join(scratch, "silent-first.gate");
     const continuationGate = join(scratch, "silent-continuation.gate");
@@ -2713,7 +2690,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("measures a resumed process from the restored cost even when its first result has none", async () => {
-    // An overloaded API answers the first turn after --resume with an error result carrying no total_cost_usd.
     const costState = join(scratch, "cost-state-error");
     mkdirSync(costState);
     const dump = join(scratch, "resumed-error-dump.json");
@@ -2803,7 +2779,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("closes an idle session after the configured window", async () => {
-    // Ten seconds is the floor; poll the native log for the close instead of sleeping past it.
     process.env.OMB_CLAUDE_SESSION_IDLE_MIN_MS = "10000";
     process.env.OMB_CLAUDE_SESSION_IDLE_MS = "10000";
     await create();
@@ -2991,7 +2966,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   }, 30_000);
 
   it("an interrupt during the relaunch window (after backoff, before the new process) still stops the turn", async () => {
-    // A custom model routes through the local-model probe; holding it open keeps the relaunch window deterministic.
     const probe = vi.spyOn(localInject, "probeLocalInjects").mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       return [];
@@ -3023,6 +2997,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     }
   }, 30_000);
 
+
   it("skips malformed protocol lines without losing the turn", async () => {
     await create("malformed");
     await instance.adapter.sendTurn({ threadId: "t-noise", text: "go" });
@@ -3048,8 +3023,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("tags each ask with whether the CLI's own reviewer is running, read from init", async () => {
-    // The CLI accepts `--permission-mode auto` for every model and silently runs Manual where auto is
-    // unavailable (Haiku 4.5, Sonnet 4.5 on 2.1.266); only init's permissionMode says so.
     process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = "claude-haiku-4-5";
     await create("hang", {}, { permissionMode: "bypassPermissions" });
     const raise = async (threadId: string, id: string) => {
@@ -3075,6 +3048,156 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await instance.adapter.sendTurn({ threadId: "t-review-ask", text: "go", approvalMode: "ask", model: "claude-haiku-4-5" });
     await recorder.until((e) => e.type === "session.started" && e.threadId === "t-review-ask");
     expect(await raise("t-review-ask", "ask-ask")).toHaveProperty("nativeReview", undefined);
+  });
+
+  it.each(["allow", "ask", "deny", "error"] as const)("uses fallback %s only after native Claude reports Auto inactive", async decision => {
+    const model = "claude-haiku-4-5";
+    process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = model;
+    await create("hang");
+    const threadId = `native-fallback-${decision}`;
+    const input = { command: "x".repeat(20_000) + " full command tail", description: "Complete fixture action" };
+    const reviewTool = vi.fn(async () => {
+      if (decision === "error") throw new Error("Synthetic review transport failure");
+      return { decision, reason: "Fixture reviewer reason." };
+    });
+    const cardExpected = decision === "ask" || decision === "error";
+    await instance.adapter.sendTurn({ threadId, text: "go", approvalMode: "auto", model, reviewTool });
+    await recorder.until(event => event.type === "session.started" && event.threadId === threadId);
+    const conn = await connectSocket(permissionSocketPath(threadId));
+    const answered = answerQueue(conn)();
+    const id = `fallback-${decision}`;
+    try {
+      conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input }) + "\n");
+      await vi.waitFor(() => expect(reviewTool).toHaveBeenCalledOnce());
+      expect(reviewTool).toHaveBeenCalledWith({ tool: "Bash", arguments: input }, expect.any(AbortSignal));
+      if (cardExpected) {
+        const opened = await recorder.until(event => event.type === "request.opened" && event.requestId === id);
+        expect(opened).toMatchObject({ nativeReview: "inactive" });
+        if (decision === "ask" && opened.type === "request.opened") expect(opened.summary).toContain("Fixture reviewer reason.");
+        await instance.adapter.respondToRequest(threadId, id, { behavior: "allow" });
+      }
+      const answer = await answered;
+      expect(answer).toMatchObject({ behavior: decision === "deny" ? "deny" : "allow", source: cardExpected ? "user" : "auto" });
+      expect(answer).not.toHaveProperty("always");
+      if (decision === "deny") {
+        expect(answer.message).toContain("Fixture reviewer reason.");
+      }
+      if (!cardExpected) expect(recorder.events.some(event => event.type === "request.opened" && event.requestId === id)).toBe(false);
+      const resolved = await recorder.until(event => event.type === "request.resolved" && event.requestId === id);
+      expect(resolved).toMatchObject({ source: cardExpected ? "user" : "auto" });
+    } finally { conn.destroy(); }
+  });
+
+  it.each(["active", "unknown", "question", "explicit"] as const)("keeps %s native permission handling with no second reviewer", async kind => {
+    const model = kind === "active" ? "claude-sonnet-5" : "claude-haiku-4-5";
+    process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = "claude-haiku-4-5";
+    if (kind === "unknown") process.env.FAKE_CLAUDE_OMIT_PERMISSION_MODE = "1";
+    await create("hang");
+    const threadId = `native-priority-${kind}`;
+    const reviewTool = vi.fn(async () => ({ decision: "allow" as const, reason: "Must not be called." }));
+    await instance.adapter.sendTurn({ threadId, text: "go", approvalMode: "auto", model, reviewTool });
+    await recorder.until(event => event.type === "session.started" && event.threadId === threadId);
+    const conn = await connectSocket(permissionSocketPath(threadId));
+    const answered = answerQueue(conn)();
+    const id = `native-priority-${kind}`;
+    try {
+      conn.write(JSON.stringify({ t: "ask", id, kind: kind === "question" ? "question" : "permission",
+        tool: kind === "question" ? "AskUserQuestion" : "Bash",
+        input: kind === "question" ? { questions: [{ question: "Which fixture?", options: [{ label: "One" }, { label: "Two" }] }] }
+          : { command: "fixture command", ...(kind === "explicit" ? { dangerouslyDisableSandbox: true } : {}) } }) + "\n");
+      const opened = await recorder.until(event => event.type === "request.opened" && event.requestId === id);
+      expect(reviewTool).not.toHaveBeenCalled();
+      expect(opened).toMatchObject({ nativeReview: kind === "active" ? "active" : kind === "unknown" ? undefined : "inactive" });
+      if (kind === "explicit") expect(opened).toMatchObject({ requiresExplicitApproval: true });
+      await instance.adapter.respondToRequest(threadId, id, { behavior: kind === "question" ? "answer" : "deny", message: "Fixture response" });
+      expect(await answered).toMatchObject({ source: "user" });
+    } finally { conn.destroy(); }
+  });
+
+  it.each(["stop", "pause", "timeout"] as const)("cancels pending native fallback review on %s without opening a late card", async ending => {
+    const model = "claude-haiku-4-5";
+    process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = model;
+    const release = join(scratch, "release-native-review");
+    await create("hang", { FAKE_CLAUDE_RELEASE: release });
+    const threadId = `native-fallback-end-${ending}`;
+    let resolveReview!: (value: { decision: "ask"; reason: string }) => void;
+    const reviewTool = vi.fn((_action: unknown, _signal: AbortSignal) => new Promise<{ decision: "ask"; reason: string }>(resolve => { resolveReview = resolve; }));
+    await instance.adapter.sendTurn({ threadId, text: "go", approvalMode: "auto", model, reviewTool });
+    await recorder.until(event => event.type === "session.started" && event.threadId === threadId);
+    const conn = await connectSocket(permissionSocketPath(threadId));
+    const answered = answerQueue(conn)();
+    const id = `native-fallback-end-${ending}`;
+    const realSetTimeout = globalThis.setTimeout;
+    if (ending === "timeout") vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, ms?: number, ...args: any[]) =>
+      realSetTimeout(callback, ms === PERMISSION_BROKER_TIMEOUT_MS ? 100 : ms, ...args)) as typeof setTimeout);
+    try {
+      conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command: "fixture action" } }) + "\n");
+      await vi.waitFor(() => expect(reviewTool).toHaveBeenCalledOnce());
+      if (ending === "stop") await instance.adapter.interruptTurn(threadId);
+      if (ending === "pause") { writeFileSync(release, "finish"); await recorder.until(event => event.type === "turn.completed" && event.threadId === threadId); }
+      expect(await answered).toMatchObject({ behavior: "deny", source: ending === "timeout" ? "timeout" : "system" });
+      expect(reviewTool.mock.calls[0][1].aborted).toBe(true);
+      resolveReview({ decision: "ask", reason: "Late fixture result must not open a card." });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(recorder.events.some(event => event.type === "request.opened" && event.requestId === id)).toBe(false);
+    } finally { vi.restoreAllMocks(); conn.destroy(); }
+  });
+
+  it("uses the current fallback callback when a native session is retained for a later turn", async () => {
+    const model = "claude-haiku-4-5";
+    process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = model;
+    const release = join(scratch, "release-retained-review");
+    const dump = join(scratch, "retained-review.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await create("hang", { FAKE_CLAUDE_RELEASE: release });
+    const threadId = "native-retained-review";
+    const oldReview = vi.fn(async () => ({ decision: "allow" as const, reason: "Old callback must not answer." }));
+    await instance.adapter.sendTurn({ threadId, text: "first", approvalMode: "auto", model, reviewTool: oldReview });
+    await recorder.until(event => event.type === "session.started" && event.threadId === threadId);
+    const pid = JSON.parse(readFileSync(dump, "utf8")).pid;
+    writeFileSync(release, "finish");
+    await recorder.until(event => event.type === "turn.completed" && event.threadId === threadId);
+    rmSync(release);
+    const reviewTool = vi.fn(async () => ({ decision: "deny" as const, reason: "Current callback reason." }));
+    const sent = await instance.adapter.sendTurn({ threadId, text: "second", approvalMode: "auto", model, reviewTool });
+    await recorder.until(event => event.type === "session.started" && event.turnId === sent.turnId);
+    expect(JSON.parse(readFileSync(dump, "utf8")).pid).toBe(pid);
+    const conn = await connectSocket(permissionSocketPath(threadId));
+    const answered = answerQueue(conn)();
+    try {
+      conn.write(JSON.stringify({ t: "ask", id: "retained-review-ask", tool: "Bash", input: { command: "fixture" } }) + "\n");
+      expect(await answered).toMatchObject({ behavior: "deny", source: "auto", message: expect.stringContaining("Current callback reason.") });
+      expect(reviewTool).toHaveBeenCalledOnce();
+      expect(oldReview).not.toHaveBeenCalled();
+    } finally { conn.destroy(); }
+  });
+
+  it("binds broker review verdicts to request identity and aborts each request signal on resolution", async () => {
+    const asks: Array<Parameters<Parameters<typeof createPermissionBroker>[0]["onAsk"]>[0]> = [];
+    const signals: AbortSignal[] = [];
+    const broker = await createPermissionBroker({ socketPaths: [permissionSocketPath("native-review-identity")],
+      onAsk: (ask, signal) => { asks.push(ask); signals.push(signal); }, onResolve: () => {} });
+    const conn = await connectSocket(broker.socketPath);
+    const nextAnswer = answerQueue(conn);
+    try {
+      let answered = nextAnswer();
+      conn.write(JSON.stringify({ t: "ask", id: "reused-review-id", tool: "Bash", input: { command: "first" } }) + "\n");
+      await vi.waitFor(() => expect(asks).toHaveLength(1));
+      expect(broker.resolveReview(asks[0], "allow", "First reviewer verdict.")).toBe(true);
+      expect(await answered).toMatchObject({ behavior: "allow", source: "auto" });
+      expect(signals[0].aborted).toBe(true);
+      answered = nextAnswer();
+      conn.write(JSON.stringify({ t: "ask", id: "reused-review-id", tool: "Bash", input: { command: "second" } }) + "\n");
+      await vi.waitFor(() => expect(asks).toHaveLength(2));
+      expect(broker.isPending(asks[0])).toBe(false);
+      expect(broker.isPending(asks[1])).toBe(true);
+      expect(broker.resolveReview(asks[0], "allow", "Late old verdict.")).toBe(false);
+      expect(signals[1].aborted).toBe(false);
+      broker.pause();
+      expect(await answered).toMatchObject({ behavior: "deny", source: "system" });
+      expect(signals[1].aborted).toBe(true);
+      expect(broker.resolveReview(asks[1], "allow", "Late paused verdict.")).toBe(false);
+    } finally { conn.destroy(); broker.close(); }
   });
 
   it("attaches exact native Bash command input with the launch directory only to shell permissions", async () => {
@@ -3186,7 +3309,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
     const basePath = permissionSocketPath("t-perm-squat");
-    // Squat the deterministic path like a hung child: POSIX steals the socket file, Windows must bind a fallback.
     const squatter = createNetServer(() => {});
     await new Promise<void>((resolve, reject) => {
       squatter.once("listening", () => resolve());
@@ -3408,7 +3530,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const nextAnswer = answerQueue(conn);
     const initialReply = nextAnswer();
     conn.write(JSON.stringify({ t: "ask", kind: "question", id: "q-ready", tool: "ask_user", input: { question: "ready?" } }) + "\n");
-    // Windows can signal a named-pipe connect before the server accepts it.
     await recorder.until((e) => e.type === "request.opened" && e.requestId === "q-ready");
 
     await instance.adapter.interruptTurn("t-question-late");
@@ -3480,9 +3601,13 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await create();
     const dump = join(scratch, "permission-review.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
-    await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
+    await expect(instance.reviewPermission?.("review this request", { model: "claude-review-fixture", effort: "medium" })).resolves.toBe("fake generated text");
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("text");
+    expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("stream-json");
+    expect(seen.argv[seen.argv.indexOf("--model") + 1]).toBe("claude-review-fixture");
+    expect(seen.argv[seen.argv.indexOf("--effort") + 1]).toBe("medium");
+    expect(seen.argv).toContain("--no-session-persistence");
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
   });
 
   it("runs helper calls tool-free and isolated, in an empty folder it then removes", async () => {
@@ -3537,7 +3662,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     process.env.FAKE_CLAUDE_DUMP = dump;
 
     await expect(instance.generateText!("summarize")).rejects.toThrow("No Anthropic API key");
-    await expect(instance.reviewPermission!("review request")).rejects.toThrow("No Anthropic API key");
+    await expect(instance.reviewPermission!("review request", { model: instance.models.default })).rejects.toThrow("No Anthropic API key");
     await expect(instance.adapter.sendTurn({ threadId: "t-api-no-key", text: "hello" })).rejects.toThrow("No Anthropic API key");
     expect(existsSync(dump)).toBe(false);
   });
@@ -3549,7 +3674,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
     await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
     expect(JSON.parse(readFileSync(dump, "utf8")).env.ANTHROPIC_API_KEY).toBe("selected-api-key");
-    await expect(instance.reviewPermission!("review request")).resolves.toBe("fake generated text");
+    await expect(instance.reviewPermission!("review request", { model: instance.models.default })).resolves.toBe("fake generated text");
     expect(JSON.parse(readFileSync(dump, "utf8")).env.ANTHROPIC_API_KEY).toBe("selected-api-key");
   });
 
@@ -3633,7 +3758,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await create();
     const controller = new AbortController();
     controller.abort();
-    await expect(instance.reviewPermission?.("review this request", controller.signal)).rejects.toThrow(/aborted/);
+    await expect(instance.reviewPermission?.("review this request", { model: instance.models.default, signal: controller.signal })).rejects.toThrow(/aborted/);
   });
 
   it("declares the effort levels the CLI accepts", async () => {
@@ -3644,7 +3769,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 });
 
-describe("ClaudeDriver resume recovery (fake CLI)", () => {
+    describe("ClaudeDriver resume recovery (fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -3724,7 +3849,6 @@ describe("ClaudeDriver resume recovery (fake CLI)", () => {
   });
 
   it("recovers only once, then fails visibly", async () => {
-    // exit-early refuses every launch, resumed or fresh.
     process.env.FAKE_CLAUDE_MODE = "exit-early";
     const prompts = join(scratch, "prompts.jsonl");
     process.env.FAKE_CLAUDE_PROMPTS = prompts;
@@ -3859,7 +3983,6 @@ describe("ClaudeDriver snapshot auth (fake CLI)", () => {
     process.env.FAKE_CLAUDE_AUTH = "malformed";
     expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
 
-    // The turn strips inherited API keys, so the auth probe must too.
     process.env.FAKE_CLAUDE_AUTH = "inherited-api-key";
     process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
     expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });

@@ -2109,7 +2109,7 @@ describe("messageAdded leaf adoption", () => {
       threadId: "thread-1",
       message: { id: "shot", at: 3, parentId: "m1", role: "bot", kind: "screen", png: "x" } as never as Message,
     });
-    expect(next.bots[0].activeLeafId).toBe("m2");
+    expect(next.bots[0].activeLeafId).toBe("m2");  
     expect(next.bots[0].messages.map((m) => m.id)).toContain("shot");
   });
 });
@@ -2474,6 +2474,12 @@ describe("live config frames", () => {
     localVm: { mode: "shared", maxInstances: 1 },
   };
 
+  it("keeps exact review model settings and instructions through live refreshes and clears them from newer frames", () => {
+    const approvalReview = { model: { instanceId: "fixture", model: "reviewer", variant: "deep" }, instructions: "Ask before purchases." };
+    expect(configStatusFromFrame({ ...baseFrame, approvalReview }).approvalReview).toEqual(approvalReview);
+    expect(configStatusFromFrame({ ...baseFrame, approvalReview: {} }).approvalReview).toEqual({});
+  });
+
   it("keeps automatic recovery and its backup through live config refreshes", () => {
     const automaticRecovery = { enabled: true, backup: { instanceId: "backup", model: "fixture-model" } };
     expect(configStatusFromFrame({ ...baseFrame, automaticRecovery }).automaticRecovery).toEqual(automaticRecovery);
@@ -2740,7 +2746,6 @@ describe("restoring the open conversation", () => {
   });
 
   describe("the provider's own effect", () => {
-    // The provider opens the one stream and pulls the snapshot itself, so the fixture answers both.
     class FixtureEventSource {
       static opened: FixtureEventSource[] = [];
       onopen: (() => void) | null = null;
