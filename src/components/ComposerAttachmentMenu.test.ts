@@ -3,8 +3,13 @@ import { act, createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi, type Mock } from "vitest";
-import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
+import { ComposerAttachButton, ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { getDraftAttachments, isDraftAttachmentPending, restoreComposerDraft } from "@/lib/drafts";
+
+vi.mock("@/state/store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/state/store")>(),
+  useStore: () => ({ state: { bots: [], groups: [] }, dispatch: vi.fn() }),
+}));
 
 const source = { botId: "source-bot", botName: "Research", threadId: "source-thread", title: "Source conversation" };
 const draftId = "bot:recipient:recipient-thread";
@@ -103,4 +108,14 @@ it("shows revoked access without attaching anything and allows another choice", 
   click(source.title);
   await settle();
   expect(getDraftAttachments(localStorage, draftId)).toHaveLength(1);
+});
+
+it("opens the menu from the paperclip and closes it when the draft changes", async () => {
+  flushSync(() => root.render(null));
+  const button = (id: string) => createElement(ComposerAttachButton, { threads: [source], threadId: "recipient-thread", draftId: id, onFiles });
+  flushSync(() => root.render(button(draftId)));
+  flushSync(() => (container.querySelector("button[aria-label='Attach context']") as HTMLButtonElement).click());
+  expect(document.querySelector("[role=dialog]")).not.toBeNull();
+  await act(async () => root.render(button(otherDraftId)));
+  expect(document.querySelector("[role=dialog]")).toBeNull();
 });

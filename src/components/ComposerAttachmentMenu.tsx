@@ -1,14 +1,42 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, FilePlus, LoaderCircle, MessagesSquare, Search, X } from "lucide-react";
+import { ArrowLeft, FilePlus, LoaderCircle, MessagesSquare, Paperclip, Search, X } from "lucide-react";
 import { useModalDialog } from "@/hooks/use-modal-dialog";
 import { t } from "@/lib/i18n";
 import { loadConversationAttachment, recentConversations } from "@/lib/conversation-context";
 import { appendDraftAttachments, changeDraftAttachmentPending } from "@/lib/drafts";
 import type { ThreadRefCandidate } from "@/lib/thread-refs";
+import { useStore } from "@/state/store";
 
-/** Fetch only after an explicit choice. A cancelled/stale request cannot
- * populate another conversation's draft or send anything to an engine. */
+export function ComposerAttachButton({ threads, threadId, draftId, onFiles }: {
+  threads: readonly ThreadRefCandidate[];
+  threadId: string;
+  draftId: string;
+  onFiles: () => void;
+}) {
+  const { state } = useStore();
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [draftId]);
+  const conversations = useMemo(() => {
+    const activity = new Map([...state.bots, ...state.groups].flatMap((owner) =>
+      (owner.tasks ?? []).map((task) => [task.threadId, task.updatedAt ?? task.createdAt] as const)));
+    return threads.map((thread) => ({ ...thread, activeAt: activity.get(thread.threadId) ?? thread.activeAt }));
+  }, [threads, state.bots, state.groups]);
+  return <>
+    <button
+      type="button"
+      onClick={() => setOpen(true)}
+      aria-label={t("composer.attachMenu")}
+      title={t("composer.attachMenu")}
+      className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink"
+    >
+      <Paperclip size={17} />
+    </button>
+    {open && <ComposerAttachmentMenu threads={conversations} threadId={threadId} draftId={draftId} onFiles={onFiles} onClose={() => setOpen(false)} />}
+  </>;
+}
+
+/** Fetches only after an explicit choice; a cancelled or stale request never fills another draft. */
 export function ComposerAttachmentMenu({ threads, threadId, draftId, onFiles, onClose }: {
   threads: readonly ThreadRefCandidate[];
   threadId: string;
