@@ -85,7 +85,7 @@ it.each(["branch", "reset", "policy"])("does not lend delivered notes across a %
   try {
     expect(await f.send({ text: "Original clock\n\nfirst", transcript: [], approvalMode: "ask",
       sourceMessage: { id: "u1", role: "user", text: "first" } })).toMatchObject({ ok: true });
-    expect(await f.send({ text: "second", approvalMode: invalidation === "policy" ? "full" : "ask",
+    expect(await f.send({ text: "second", approvalMode: "ask", toolScope: invalidation === "policy" ? { deny: ["native:unused"] } : undefined,
       replayReset: invalidation === "reset", sourceMessage: { id: "u2", role: "user", text: "second" },
       transcript: [{ id: invalidation === "branch" ? "other-user" : "u1", role: "user", text: "first" },
         { id: "a1", role: "assistant", text: "answer 1" }] })).toMatchObject({ ok: true });

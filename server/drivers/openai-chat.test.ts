@@ -279,10 +279,10 @@ describe("OpenAI-compatible wire history", () => {
     const completed: RuntimeEvent[] = [];
     instance.adapter.onEvent((event) => { if (event.type === "turn.completed") completed.push(event); });
     try {
-      await instance.adapter.sendTurn({ threadId: "image", text: "first", systemStable: "Stable.", systemVolatile: "",
+      await instance.adapter.sendTurn({ threadId: "image", text: "first", systemStable: "Stable.", systemVolatile: "", approvalMode: "full",
         sourceMessage: { id: "u1", role: "user", text: "first" }, transcript: [], images: [{ path, mime: "image/png", bytes: readFileSync(path).byteLength }] });
       await vi.waitFor(() => expect(completed).toHaveLength(1));
-      await instance.adapter.sendTurn({ threadId: "image", text: "second", systemStable: "Stable.", systemVolatile: "",
+      await instance.adapter.sendTurn({ threadId: "image", text: "second", systemStable: "Stable.", systemVolatile: "", approvalMode: "ask",
         sourceMessage: { id: "u2", role: "user", text: "second" }, transcript: [
           { id: "u1", role: "user", text: "first" }, { id: "a1", role: "assistant", text: "answer 1" },
         ] });
@@ -325,7 +325,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     return { command: script, args: [], env: receipt ? { RECEIPT: receipt } : {} };
   };
 
-  it("replays a completed tool chain and final reasoning as the next request prefix", async () => {
+  it("replays a completed tool chain and final reasoning across an approval-mode change", async () => {
     const bodies: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
       if (!String(url).endsWith("/chat/completions")) return new Response(JSON.stringify({ data: [] }));
@@ -362,7 +362,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       await instance.adapter.sendTurn({ threadId: "tools", text: "second", systemStable: "Stable rules.", systemVolatile: "Memory.",
         sourceMessage: { id: "u2", role: "user", text: "second" }, transcript: [
           { id: "u1", role: "user", text: "first" }, { id: "a1", role: "assistant", text: "Completed." },
-        ], approvalMode: "full", integrations: integration });
+        ], approvalMode: "ask", integrations: integration });
       await vi.waitFor(() => expect(completed).toHaveLength(2));
       expect(bodies[2].messages.slice(0, bodies[1].messages.length)).toEqual(bodies[1].messages);
       expect(bodies[2].messages.at(-2)).toMatchObject({ role: "assistant", content: "Completed.", reasoning_content: "The call returned successfully." });

@@ -289,7 +289,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     return system + (options.tools === false || !hasMcp || system.endsWith(CHAT_TOOL_DISCOVERY_PROMPT) ? "" : CHAT_TOOL_DISCOVERY_PROMPT);
   };
   const policyFor = (turn: SendTurnInput) => JSON.stringify([
-    turn.approvalMode, turn.toolScope, turn.guestConfined, turn.confinedWhy,
+    turn.toolScope, turn.guestConfined, turn.confinedWhy,
     turn.cwd, turn.effort, turn.variant,
   ]);
   const messagesFor = (
