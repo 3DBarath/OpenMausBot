@@ -342,12 +342,12 @@ const COLORS: MausColor[] = [
   const found: T[] = [];
   let at = -1;
   while ((at = lower.indexOf("@", at + 1)) !== -1) {
-    if (!isMentionBoundary(text, at)) continue;  
+    if (!isMentionBoundary(text, at)) continue;
     const rest = lower.slice(at + 1);
     const hit = candidates.find((p) => {
       const name = p.name.toLowerCase();
       if (!rest.startsWith(name)) return false;
-      const after = rest.slice(name.length);  
+      const after = rest.slice(name.length);
       return !isMentionNameContinuation(after);
     });
     if (hit && !found.includes(hit)) found.push(hit);
@@ -1344,7 +1344,7 @@ export class Store {
     const full: Message = { id: newId(), at: Date.now(), ...redactBotAuthored(message), parentId: anchorId };
     const children = t.messages.filter((m) => m.parentId === anchorId);
     t.messages.push(full);
-    mdb.insertMessage(threadId, full);  
+    mdb.insertMessage(threadId, full);
     if (full.kind === "screen") {
       for (const pruned of this.pruneScreenFrames(t)) {
         mdb.updateMessage(threadId, pruned);

@@ -1306,7 +1306,7 @@ const API_KEY_FLEET: InstanceConfigMap = {
   return map;
 }
 
-       
+
 export type CustomMcpServer = McpServerSpec;
 
 const reportedMcpSkips = new Set<string>();

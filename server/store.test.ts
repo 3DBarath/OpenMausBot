@@ -832,8 +832,8 @@ describe("Store", () => {
     const bot = store.createBot();
     const turnEnd = store.appendMessage(bot.threadId, { role: "bot", kind: "text", text: "done" });
     const artifact = store.insertMessageAfter(bot.threadId, turnEnd.id, { role: "bot", kind: "screen", png: "abc" });
-    expect(store.activePath(bot.threadId).at(-1)?.id).toBe(artifact.id);  
-    expect(new Store(selection).activePath(bot.threadId).at(-1)?.id).toBe(artifact.id);  
+    expect(store.activePath(bot.threadId).at(-1)?.id).toBe(artifact.id);
+    expect(new Store(selection).activePath(bot.threadId).at(-1)?.id).toBe(artifact.id);
 
     const orphan = store.insertMessageAfter(bot.threadId, "no-such-message", { role: "bot", kind: "text", text: "x" });
     expect(store.activePath(bot.threadId).at(-1)?.id).toBe(orphan.id);
@@ -1533,7 +1533,7 @@ describe("Store", () => {
     const user = store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi" });
 
     const messages = store.messagesFor(bot.threadId);
-    expect(user.parentId).toBe(messages[0].id);  
+    expect(user.parentId).toBe(messages[0].id);
     expect(store.activeLeaf(bot.threadId)).toBe(user.id);
     expect(store.activePath(bot.threadId).map((m) => m.id)).toEqual(messages.map((m) => m.id));
   });
@@ -1547,7 +1547,7 @@ describe("Store", () => {
     store.onChange((e) => events.push(e as unknown as Record<string, unknown>));
 
     const edited = store.branchMessage(bot.threadId, original.id, "v2")!;
-    expect(edited.parentId).toBe(original.parentId);  
+    expect(edited.parentId).toBe(original.parentId);
     expect(store.activeLeaf(bot.threadId)).toBe(edited.id);
     expect(events.filter((e) => e.type === "message" || e.type === "thread")).toEqual([
       { type: "message", threadId: bot.threadId, message: edited },

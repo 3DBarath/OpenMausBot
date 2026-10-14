@@ -1,4 +1,4 @@
-           
+
 import type { RuntimeEvent } from "./contracts.ts";
 import type { Message } from "./store.ts";
 

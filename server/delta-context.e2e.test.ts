@@ -628,7 +628,7 @@ it("keeps resuming a stored conversation with a handoff record when a result arr
     for await (const chunk of req) body += chunk;
     const content = JSON.parse(body).messages.filter((m: any) => m.role === "user").at(-1)?.content;
     chats.push(typeof content === "string" ? content : JSON.stringify(content));
-    if (chats.length === 1) return;  
+    if (chats.length === 1) return;
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "OPS_RESUMED_RESULT" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
   });
@@ -789,7 +789,7 @@ it("keeps resuming a stored conversation with a handoff record when a result arr
   expect((await f.messages()).some((m: any) => m.text === "NEVER_SENT")).toBe(false);
 }), hostTimeout(90_000));
 
- 
+
 // Running, and its engine launched: a per-launch mode set afterwards cannot reach the teammate.
 const leadRunning = async (f: any, launches = 1) => {
   await expect.poll(() => f.nodes().find((node: any) => node.botId === f.lead.id)?.status, { timeout: 15_000 }).toBe("running");
@@ -958,7 +958,7 @@ it("gives an engine switched in while a teammate works the full assignment when 
   expect(f.prompt(returned)).toContain(`[OpenMausBot report from @${f.lead.name} on assignment ${lead.id}: done]`);
 }, { codex: {} }), hostTimeout(90_000));
 
- 
+
 it("does not offer a message or steer the person stopped before any reply again", () => fixture(async (f) => {
   f.plan[f.chief.id] = { turns: [{ reply: "Noted." }, { readyFile: f.gate("slow-ready"), reply: "never shown", gateFile: f.gate("slow") }, { reply: "Listed" }] };
   await f.send("Warm up.");
@@ -1096,7 +1096,7 @@ it("does not hand the model a queued follow-up that a restart recovered with an 
   expect(f.prompt(next)).not.toContain("RECOVERED_FOLLOWUP");
 }), hostTimeout(90_000));
 
- 
+
 it("gives a delegated return the fresh session and replay it always had when the bot's soul changed while teammates worked", () => fixture(async (f) => {
   await warmUp(f);
   f.plan[f.lead.id] = { reply: "SOUL_CHANGE_RESULT", gateFile: f.gate("lead") };
@@ -1131,7 +1131,7 @@ it("keeps resuming an ordinary turn after a soul change, as before", () => fixtu
   expect(withoutTurnClock(f.prompt(f.turns().at(-1)))).toBe("Second message.");
 }), hostTimeout(60_000));
 
- 
+
 it("offers a steer written into a resume the provider then rejected on the next turn", () => fixture(async (f) => {
   await warmUp(f);
   await f.setMode("resume=dead-session,holdresume=1");
@@ -1170,7 +1170,7 @@ it("offers a steered message again when only output of the model call already ru
   expect(count(f.prompt(f.turns().at(-1)), "BUFFERED_STEER")).toBe(1);
 }), hostTimeout(60_000));
 
- 
+
 it("rebuilds a delegated return whose Codex thread is gone into a new thread with today's replay", () => fixture(async (f) => {
   await f.useModel("codex");
   await warmUp(f);
@@ -1272,7 +1272,7 @@ it("replays a result that reaches an engine switched in before it arrived with t
   expect(count(f.prompt(f.turns().at(-1)), "SETUP_SOUL_RESULT")).toBe(0);
 }), hostTimeout(90_000));
 
- 
+
 it("gives a Codex return the model chosen while its teammate worked", () => fixture(async (f) => {
   await f.useModel("codex");
   await warmUp(f);
