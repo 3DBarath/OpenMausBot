@@ -1,4 +1,4 @@
-    import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Archive, CircleUser, Coins, FlaskConical, KeyRound, LockKeyhole, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
@@ -61,9 +61,11 @@ import { parseSendKey, SEND_KEYS, sendKeyLabel, setSendKey, useSendKey } from "@
 import { effectiveLanguage, setLanguageChoice, useLanguageChoice } from "@/lib/language-preference";
 import { Select } from "./Select";
 
-    export type SettingsGroup = "you" | "ai" | "computers" | "account";
+// labelKey, not a label: t() reads the active pack when called, so a label resolved at module scope would freeze the
+// boot language.
+export type SettingsGroup = "you" | "ai" | "computers" | "account";
 
- export const SETTINGS_GROUPS: Array<{ id: SettingsGroup; labelKey: LocaleKey }> = [
+export const SETTINGS_GROUPS: Array<{ id: SettingsGroup; labelKey: LocaleKey }> = [
   { id: "you", labelKey: "settings.group.you" },
   { id: "ai", labelKey: "settings.group.ai" },
   { id: "computers", labelKey: "settings.group.computers" },
@@ -97,14 +99,14 @@ export const SECTIONS: Array<{
   { id: "experimental", group: "account", labelKey: "settings.section.experimental", icon: FlaskConical, keywords: ["early", "preview", "learn", "skill", "authoring"] },
 ];
 
- export type SimpleSettingsPage = {
+export type SimpleSettingsPage = {
   id: string;
   labelKey: LocaleKey;
   icon: typeof User;
   sections: AppSettingsSection[];
 };
 
- export const SIMPLE_PAGES: SimpleSettingsPage[] = [
+export const SIMPLE_PAGES: SimpleSettingsPage[] = [
   { id: "general", labelKey: "settings.section.general", icon: User, sections: ["general"] },
   { id: "appearance", labelKey: "settings.section.appearance", icon: Palette, sections: ["appearance"] },
   { id: "ai", labelKey: "settings.group.ai", icon: Sparkles, sections: ["engines", "connections", "decisionModel"] },
@@ -112,9 +114,9 @@ export const SECTIONS: Array<{
   { id: "account", labelKey: "settings.group.account", icon: CircleUser, sections: ["cloudAccount", "organization", "people", "activity"] },
 ];
 
- export const SIMPLE_HIDDEN_SECTIONS: readonly AppSettingsSection[] = ["usage", "backups", "experimental", "workspaces", "skills"];
+export const SIMPLE_HIDDEN_SECTIONS: readonly AppSettingsSection[] = ["usage", "backups", "experimental", "workspaces", "skills"];
 
- export function simpleSettingsPages(
+export function simpleSettingsPages(
   available: ReadonlyArray<(typeof SECTIONS)[number]>,
   open: AppSettingsSection,
 ): SimpleSettingsPage[] {
@@ -127,7 +129,7 @@ export const SECTIONS: Array<{
   return pages;
 }
 
- export function revealSettingsBlock(
+export function revealSettingsBlock(
   scroller: { scrollTop: number; querySelector: (selector: string) => { scrollIntoView?: (options: ScrollIntoViewOptions) => void } | null },
   section: AppSettingsSection,
   indexInPage: number,
@@ -153,7 +155,7 @@ export function sectionMatches(section: (typeof SECTIONS)[number], query: string
   return [t(section.labelKey), ...section.keywords].some((part) => part.toLowerCase().includes(query));
 }
 
- function ProfileFields() {
+function ProfileFields() {
   const { state, dispatch } = useStore();
   const [name, setName] = useState(state.config?.profile?.name ?? "");
   const [email, setEmail] = useState(state.config?.profile?.email ?? "");
@@ -194,7 +196,7 @@ export function sectionMatches(section: (typeof SECTIONS)[number], query: string
   );
 }
 
- export function UpdatesRow() {
+export function UpdatesRow() {
   const s = useUpdaterState();
   const updater = window.ogb?.updater;
   if (!s || !updater) return null;
@@ -252,7 +254,7 @@ export function sectionMatches(section: (typeof SECTIONS)[number], query: string
   );
 }
 
-  function NewBotEffortRow() {
+function NewBotEffortRow() {
   const { state, dispatch } = useStore();
   const current = state.config?.newBots?.effort ?? "";
   const [saving, setSaving] = useState(false);
@@ -631,7 +633,8 @@ function BrowserProfilesRow() {
   );
 }
 
- function DiagnosticsRow() {
+/** Security: the report never holds credential values; the desktop shell does not read secret fields. */
+function DiagnosticsRow() {
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 
@@ -819,7 +822,6 @@ export function SettingsModal() {
             <Card title={t("settings.skin.title")} subtitle={t("settings.skin.subtitle")}>
               <SkinPicker />
             </Card>
-            {/* A paired remote client has no General page; keep the switch reachable. */}
             {remoteActive && <AdvancedModeRow />}
             <FontRow />
             <ChatWidthRow />
@@ -865,11 +867,8 @@ export function SettingsModal() {
               <ApiKeyRow section="box" />
               <VpsConnection />
               <ApiKeyRow section="opencodeGo" />
-              {/* A Cloud owner has no terminal there: the keys for other
-                  providers, just below, are the way on. */}
               {state.config?.cloudHome !== true && (
                 <p className="-mt-2 text-[11.5px] leading-relaxed text-ink-secondary">
-                  {/* {command} marks where the code chip goes, so a translator can move it */}
                   {t("keys.opencode.providersHint").split("{command}").flatMap((part, index) =>
                     index === 0 ? [part] : [<code key={index} className="font-mono">opencode auth login</code>, part])}
                 </p>
@@ -897,12 +896,7 @@ export function SettingsModal() {
           <>
             <RemoteComputerSection />
             {!remoteActive && <CustomDomainSettings />}
-            {/* mints an admin/client session token for anything that isn't the phone companion
-                flow (MCP clients, `openmausbot pair`, a second desktop app), and pairs phones to a
-                hosted server. Shown for the desktop app's own server (#950) AND when this desktop is
-                a remote client of a hosted workspace: its requests carry that server's session, and
-                Settings there is the only place that server's phones can be paired from (MOCA-84).
-                The server decides who may act — an owner or an admin session — not this gate. */}
+            {/* Security: the server decides who may pair (an owner or admin session), not this gate. */}
             <ServerPairingCard cloudHome={state.config?.cloudHome === true} focusRequest={computerPairs ? 0 : phoneFocus} />
             {!remoteActive && <CompanionSection profileEmail={state.config?.profile?.email} focusRequest={computerPairs ? phoneFocus : 0} />}
           </>
@@ -939,8 +933,7 @@ export function SettingsModal() {
       style={glassPopupFrameStyle()}
       onMouseDown={(e) => e.target === e.currentTarget && dispatch({ type: "toggleAppSettings", open: false })}
     >
-      {/* A sibling, not the parent: a backdrop-filter on an ancestor would
-          stop the pop-up's own glass from seeing the app behind it. */}
+      {/* A sibling, not the parent: a backdrop-filter on an ancestor would stop the pop-up's own glass from seeing the app behind it. */}
       <div aria-hidden="true" className="glass-scrim pointer-events-none absolute inset-0" />
       <div
         ref={dialogRef}
@@ -950,7 +943,6 @@ export function SettingsModal() {
         tabIndex={-1}
         className="glass-surface glass-popup animate-pop-in relative flex overflow-hidden rounded-[24px] outline-none"
       >
-        {/* section nav */}
         <span id="app-settings-title" className="sr-only">{t("settings.title")}</span>
         <nav className="glass-rail hidden min-h-0 w-[200px] shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/30 p-3 sm:flex">
           <div className="shrink-0 px-2 py-3 text-[15px] font-semibold text-ink">
@@ -1090,7 +1082,6 @@ export function SettingsModal() {
                   <section key={id} data-settings-block={id} className="flex scroll-mt-2 flex-col gap-4">
                     {stacked && labelKey ? blockHeading(labelKey) : null}
                     {renderSection(id)}
-                    {/* Simple: the built-in browser is its own block after Local VM. */}
                     {id === "computer" && (
                       <div data-settings-block="browser" className="flex flex-col gap-4 pt-2">
                         {blockHeading("settings.experimental.browser")}
