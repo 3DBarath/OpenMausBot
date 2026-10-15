@@ -209,7 +209,7 @@ Evidence covers:
   and credits the replacement session before it resumes. Final coordination reports
   still intentionally include all settled rounds.
 - Stop aborts a hanging helper without a late record; a new send still works.
-- With the `helper` setting naming an instance, a bot on an engine with no tool-free one-shot for the summary (the fake Pi and the fake Codex) gets a model-written summary from that instance, booked as a helper call; without the setting, or with the bot switched to never use the helper, the Pi bot keeps the excerpt summary.
+- With or without a configured generic helper, Pi and Codex reject unsupported manual checkpoints, retain the original transcript and native cursor, and can continue the conversation. Memory capture and skill-review helpers retain their separate behavior.
 - Malformed output and an exhausted continuation allowance retain the original transcript and native session; a later send still works.
 - Private session bookkeeping stays off the task wire shape; stored summaries redact secrets.
 
@@ -305,15 +305,14 @@ summary quality. Initial extraction of previously unknown instructions and
 semantic reconciliation still depend on the model; deterministic validation proves
 structure and provenance, not interpretation.
 
-An engine with no tool-free helper for the summary (Pi and Muse Code, which have
-none at all, and Codex and the ACP engines, whose one-shot starts a whole agent
-process and is kept for background work) keeps the source-labelled fallback
-unless a helper model is set ([the memory guide](../memory.md), "The helper
-model"). That instance then writes the summary under the same 20-second timeout
-and fallback, and its call is one usage row with the trigger `helper`. A bot
-switched to never use the helper (`helperModel: false`) keeps the fallback.
-`server/helper-model.e2e.test.ts` boots its own server in a throwaway home with
-the fake Claude, Codex and Pi engines, once with the setting and once without.
+Conversation checkpoints require the selected engine's tool-free streaming
+checkpoint capability. An unsupported engine retains its complete history;
+manual compaction reports that limitation and automatic compaction leaves its
+native policy in control. A generic helper model never substitutes a freeform
+or excerpt summary for a validated checkpoint. The helper model remains
+available for memory upkeep and skill review under its existing opt-in and
+per-bot settings. `server/helper-model.e2e.test.ts` verifies these boundaries
+with fake Pi, Codex and Claude engines in temporary homes.
 
 This slice covers direct threads. It does not add channel compaction, change
 provider-native compaction, prove live-model summary quality, or ship native
