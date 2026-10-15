@@ -381,6 +381,7 @@ describe("steer-queue module", () => {
     try {
       expect(holdSteeredQueue("other-bot", bot.threadId, queued.id)).toBeNull();
       expect(holdSteeredQueue(bot.id, bot.threadId, "not-a-queue-id")).toBeNull();
+      expect(holdSteeredQueue(bot.id, bot.threadId, "")).toBeNull();
       expect(holdSteeredQueue(bot.id, "thread-elsewhere", queued.id)).toBeNull();
       expect(_queuedCount(bot.threadId)).toBe(2);
 
