@@ -198,8 +198,11 @@ it("sends in Full without a card, and still refuses an app outside the bot's sco
 });
 
 it("honors Full for direct sends, batches and opaque code without cards or daily caps", async () => {
-  await api("PATCH", `/api/bots/${fullBot.id}`, { outbound: { policy: "allow", dailyCap: 1 } });
+  await api("PATCH", `/api/bots/${fullBot.id}`, { connectorScopes: null, outbound: { policy: "allow", dailyCap: 1 } });
   const token = await mint(fullBot.id, fullBot.threadId);
+  const fullDecisions = async () => ((await api("GET", "/api/decisions?limit=100")).body.decisions as any[])
+    .filter(row => row.botId === fullBot.id && row.threadId === fullBot.threadId && row.source === "full-access" && row.decision === "auto-approved").length;
+  const decisionsBefore = await fullDecisions();
   const operations = [
     ["COMPOSIO_REMOTE_WORKBENCH", { code_to_execute: "print('synthetic fixture')" }],
     ["GMAIL_SEND_EMAIL", { to: "fixture@example.invalid" }],
@@ -223,11 +226,7 @@ it("honors Full for direct sends, batches and opaque code without cards or daily
     expect((relayed.at(-1) as any).params).toEqual({ name, arguments: args });
   }
   expect((await api("GET", `/api/bots/${fullBot.id}/outbound`)).body.today).toBe(0);
-  await expect.poll(async () => {
-    const { decisions } = (await api("GET", "/api/decisions?limit=100")).body;
-    return decisions.filter((row: any) => row.botId === fullBot.id && row.threadId === fullBot.threadId &&
-      row.source === "full-access" && row.decision === "auto-approved").length;
-  }).toBe(operations.length);
+  await expect.poll(fullDecisions).toBe(decisionsBefore + operations.length);
 });
 
 it("uses the calling thread's Full grant rather than the bot default or selected sibling", async () => {
