@@ -82,7 +82,7 @@ export function revealSettingsBlock(
   scroller.querySelector(`[data-settings-block="${section}"]`)?.scrollIntoView?.({ block: "start" });
 }
 
-function simplePageMatches(page: SimpleSettingsPage, query: string): boolean {
+export function simplePageMatches(page: SimpleSettingsPage, query: string): boolean {
   if (!query) return true;
   if (t(page.labelKey).toLowerCase().includes(query)) return true;
   return page.sections.some((id) => {

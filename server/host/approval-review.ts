@@ -8,6 +8,7 @@ import type { Store } from "../store.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import type { ModelSelection } from "../../shared/wire.ts";
 import type { UsageRow } from "../usage-ledger.ts";
+import { automaticApprovalFloor } from "./automatic-approval-floor.ts";
 
 export function createApprovalReviewService(deps: {
   store(): Store;
@@ -46,7 +47,20 @@ function approvedToolForTurn(threadId: string, isCurrent: () => boolean) {
 }
 
 function reviewToolForTurn(botId: string, threadId: string, session: ModelSelection, isCurrent: () => boolean) {
+  const floorVerdict = (action: ReviewAction): ReviewVerdict | null => {
+    const floor = automaticApprovalFloor(action);
+    if (!floor) return null;
+    const bot = deps.store().bot(botId);
+    appendDecision(deps.dataDir, { threadId, botId, botName: bot?.name, tool: action.tool, summary: floor.reason,
+      decision: floor.decision === "deny" ? "auto-denied" : "card-shown", source: "safety-floor", rule: floor.rule });
+    deps.store().appendMessage(threadId, { role: "bot", kind: "activity",
+      tool: { name: floor.reason, ok: floor.decision !== "deny" } });
+    return { decision: floor.decision, reason: floor.reason };
+  };
   return async (action: ReviewAction, signal: AbortSignal): Promise<ReviewVerdict> => {
+    if (signal.aborted || !isCurrent()) return { decision: "ask", reason: "The execution changed before review." };
+    const beforeReview = floorVerdict(action);
+    if (beforeReview) return beforeReview;
     const settings = deps.config().approvalReview ?? {};
     const settingsIdentity = JSON.stringify(settings);
     const messages = deps.store().activePath(threadId);
@@ -76,6 +90,10 @@ function reviewToolForTurn(botId: string, threadId: string, session: ModelSelect
           trigger: { kind: "bot", botId } }, usage.input !== undefined && usage.output !== undefined, threadId),
       });
       if (!current() || signal.aborted || controller.signal.aborted) return { decision: "ask", reason: "The execution changed while review was pending." };
+      if (verdict.decision === "allow") {
+        const beforeAllow = floorVerdict(action);
+        if (beforeAllow) return beforeAllow;
+      }
       const reason = redactSecretsInText(verdict.reason);
       appendDecision(deps.dataDir, { threadId, botId, botName: bot.name, tool: action.tool, summary: reason,
         decision: verdict.decision === "allow" ? "auto-approved" : verdict.decision === "deny" ? "auto-denied" : "card-shown",

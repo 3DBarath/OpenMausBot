@@ -5311,10 +5311,6 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 }
 
   const lastReply = new Map<string, string>();
- function turnFailureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
-  if (event.ok) return undefined;
-  return turnStops.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
-}
  const stoppedTurns = new Map<string, string | undefined>();
 const settlingTurns = new Set<string>();
  const sessionModelByThread = new Map<string, string>();
@@ -14910,7 +14906,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
             const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
             if (lane?.created) createdThread = lane.threadId;
-            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId);
+            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId, delegationOriginKind(coordinator.node(internalCapability.roomHandoffId ?? generation)));
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh

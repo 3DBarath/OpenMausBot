@@ -3763,9 +3763,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(model()).toBe("claude-haiku-5-5");
     await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
     expect(model()).toBe("claude-haiku-4-5");
-    // the contract gives permission review no way to name a model
-    await expect(instance.reviewPermission!("review this request")).resolves.toBe("fake generated text");
-    expect(model()).toBe("claude-haiku-4-5");
+    await expect(instance.reviewPermission!("review this request", { model: instance.models.default })).resolves.toBe("fake generated text");
+    expect(model()).toBe(instance.models.default);
   });
 
   it.each(["not JSON", '{"type":"assistant"}'])("rejects malformed one-shot output without invented usage (%s)", async result => {
