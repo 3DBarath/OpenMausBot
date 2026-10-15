@@ -31,8 +31,20 @@ it("uses a changed compatible capacity for the next compaction decision rather t
     fixture = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
     const api = (path: string, body?: unknown, method = "POST") => request(path, body === undefined ? {} : { method, body: JSON.stringify(body) }, fixture!.info.url) as Promise<any>;
     const cli = (...args: string[]) => runControlOmb([...args, "--url", fixture!.info.url]) as Promise<any>;
+    const refresh = async () => {
+      await expect.poll(async () => {
+        const response = await fetch(fixture!.info.url + "/api/instances/openaiCompat/refresh-models", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+        const body = await response.json();
+        if (response.status === 409) {
+          expect(body).toMatchObject({ error: "provider settings are already being updated" });
+          return false;
+        }
+        expect(response.ok, JSON.stringify(body)).toBe(true);
+        return true;
+      }, { timeout: 10_000 }).toBe(true);
+    };
     await api("/api/config", { openaiCompat: { key: "fixture-key", url: endpoint, model }, context: { autoCompact: true } }, "PUT");
-    await api("/api/instances/openaiCompat/refresh-models", {});
+    await refresh();
     const bot = (await cli("new-bot", "--name", "Context capacity fixture")).bot;
     const thread = bot.activeTaskId;
     await cli("set-model", "--bot", bot.id, "--instance", "openaiCompat", "--model", model, "--task", thread);
@@ -46,6 +58,7 @@ it("uses a changed compatible capacity for the next compaction decision rather t
     const usage = (await api("/api/bots?messages=0")).bots.find((entry: any) => entry.id === bot.id).tasks.find((entry: any) => entry.threadId === thread).usage;
     expect(usage.context).toMatchObject({ tokens: tokens + 2, window: capacity });
     await api("/api/config", { openaiCompat: { contextWindows: { [endpoint]: { [model]: 16384 } } } }, "PUT");
+    await refresh();
     await send("Continue after the capacity setting changes.");
     await expect.poll(async () => (await messages()).filter(message => message.kind === "compaction")).toHaveLength(1);
     const task = (await api("/api/bots?messages=0")).bots.find((entry: any) => entry.id === bot.id).tasks.find((entry: any) => entry.threadId === thread);
