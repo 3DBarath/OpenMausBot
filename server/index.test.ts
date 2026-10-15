@@ -9481,7 +9481,7 @@ describe("harness HTTP API", () => {
       const bot = (await api("POST", "/api/bots")).body.bot;
       bots.push(bot.id);
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
-        approvalMode: "auto",
+        approvalMode: "ask",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
         ...(computer ? { computer } : {}),
       })).status).toBe(200);
