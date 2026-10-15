@@ -554,9 +554,8 @@ describe("tool history in a rebuilt session", () => {
       const tools = history.slice(0, -1).flatMap(entry => Array.from({ length: 10 }, (_, i) => line(entry.id, `${entry.id}.${i}`)));
       const result = selectReplay(history, { tools });
       const plain = selectReplay(history);
-      // the same 40 messages (and the same omission notice) as without them
       expect(result.transcript).toEqual(plain.transcript);
-      expect(result.transcript.filter(entry => entry.id)).toHaveLength(40);
+      expect(result.transcript.filter(entry => entry.id)).toHaveLength(history.length);
       expect(result.inline.filter(entry => !toolLine(entry))).toEqual(plain.transcript);
       expect(result.inline.filter(toolLine).map(entry => entry.text))
         .toEqual(tools.slice(-REPLAY_TOOL_LINE_CAP).map(tool => tool.text));

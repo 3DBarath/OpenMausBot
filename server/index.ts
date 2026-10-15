@@ -1,3 +1,4 @@
+import { autoCompactWindow } from "./drivers/claude-checkpoint.ts";
      import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createConversationCompaction } from "./host/conversation-compaction.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -11,8 +12,8 @@ import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
-import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
-import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
+import { selectReplay, replayToolCalls } from "./context-rebuild.ts";
+import { compactionReading } from "./context-budget.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
 import { createRoomSessions } from "./host/room-sessions.ts";

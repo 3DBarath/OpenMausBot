@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { selectReplay } from "../context-rebuild.ts";
 import type { ContextMessage } from "../delta-context.ts";
 import { draftSummary, foldPoint, type CheckpointSource } from "../compaction-summary.ts";
-import { compactBudget, contextWindowFor, shouldCompact } from "../context-budget.ts";
+import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "../context-budget.ts";
 import { autoCompactWindow } from "../drivers/claude-checkpoint.ts";
 import type { AppConfig } from "../config.ts";
 import type { BotRecord, Message, Store } from "../store.ts";
@@ -40,7 +40,7 @@ export function createConversationCompaction(deps: {
   const selected = selectReplay(context, { excludedIds, compaction: record });
   const history = selected.transcript.filter(entry => entry.id);
   if (!history.length) return;
-  const measurement = task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined;
+  const measurement = compactionReading(instance.adapter.capabilities, task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined);
   const window = contextWindowFor(model, instance.models, measurement?.window);
   const bytes = history.reduce((n, entry) => n + Buffer.byteLength(entry.text), 0);
   let floor = task.contextFloor;
