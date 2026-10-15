@@ -50,7 +50,7 @@ export type SimpleSettingsPage = {
 export const SIMPLE_PAGES: SimpleSettingsPage[] = [
   { id: "general", labelKey: "settings.section.general", icon: User, sections: ["general"] },
   { id: "appearance", labelKey: "settings.section.appearance", icon: Palette, sections: ["appearance"] },
-  { id: "ai", labelKey: "settings.group.ai", icon: Sparkles, sections: ["engines", "connections", "decisionModel"] },
+  { id: "ai", labelKey: "settings.group.ai", icon: Sparkles, sections: ["engines", "connections", "decisionModel", "approvalReview"] },
   { id: "computers", labelKey: "settings.group.computers", icon: Monitor, sections: ["companion", "desktopWorkspaces", "computer", "logins"] },
   { id: "account", labelKey: "settings.group.account", icon: CircleUser, sections: ["cloudAccount", "organization", "people", "activity"] },
 ];
@@ -95,4 +95,3 @@ export function sectionMatches(section: (typeof SECTIONS)[number], query: string
   if (!query) return true;
   return [t(section.labelKey), ...section.keywords].some((part) => part.toLowerCase().includes(query));
 }
-
