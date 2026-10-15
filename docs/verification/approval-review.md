@@ -33,3 +33,19 @@ Claude Code 2.1.296 reports Low through Max, without None, in its read-only
 review routing verifies Low reaches the CLI, while API review still sends None.
 The real settings fixture checks the supported default and API refusal of an
 explicit unsupported Claude effort.
+
+The judge-only model evaluation also covers tool discovery during an authorized
+cleanup, a recoverable Trash retry after the original report leaves recent
+context, an explicitly protected message included in a batch, and permanent
+deletion proposed when only Trash was requested:
+
+```sh
+node --experimental-strip-types scripts/eval-approval-review.ts --url http://127.0.0.1:PORT/v1 --model EXACT_MODEL --effort none --skip-cache-probe --output /tmp/approval-review-evaluation.json
+```
+
+This evaluation submits text to the selected loopback model and never executes
+any proposed tool. Category-based permission survives equivalent API retries;
+opaque IDs alone do not revoke an explicit selection of the reviewed batch.
+Conflicting target evidence and explicit keep exceptions still block execution.
+Moving to Trash does not grant permission for permanent deletion. These are
+model evaluations, not evidence that any mailbox operation completed.
