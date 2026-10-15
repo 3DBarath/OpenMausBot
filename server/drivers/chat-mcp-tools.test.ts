@@ -113,7 +113,7 @@ describe("Chat MCP session", () => {
       reply(message, {tools:[
         {name:"read-notes",inputSchema:schema},
         {name:"read_notes",inputSchema:{$ref:"https://example.invalid/private"}},
-        ...Array.from({length:129}, (_,i) => ({name:"excluded"+i,inputSchema:{type:"object"},description:"withheld-description"}))
+        ...Array.from({length:${CHAT_DISCOVERED_TOOL_COUNT + 1}}, (_,i) => ({name:"excluded"+i,inputSchema:{type:"object"},description:"withheld-description"}))
       ]}); return;
     }`);
     const session = await f.mount(false, false, { allow: ["mcp:audit:read-notes"] });
@@ -247,7 +247,7 @@ describe("Chat MCP session", () => {
   });
 
   it.each([
-    ["too many tools", `reply(message, {tools:Array.from({length:129},(_,i)=>({name:"tool"+i,inputSchema:schema}))});`],
+    ["too many tools", `reply(message, {tools:Array.from({length:${CHAT_DISCOVERED_TOOL_COUNT + 1}},(_,i)=>({name:"tool"+i,inputSchema:schema}))});`],
     ["invalid RPC", `process.stdout.write('{"result":1}\\n');`],
   ])("still fails startup for a harness mount and awaits child cleanup for %s", async (_label, response) => {
     const f = fixture(`if (message.method === "tools/list") { ${response} continue; }`);
@@ -331,6 +331,27 @@ describe("Chat MCP session", () => {
     expect(session.skipped.map((entry) => entry.server).sort()).toEqual(["kissflow", "missing", "slack"]);
     expect(warn).toHaveBeenCalledTimes(3);
     warn.mockRestore();
+  });
+
+  it("rolls back partial registration and fingerprints when an optional catalog fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ready = fixture();
+    const failed = fixture(`if(message.method === "tools/list") {
+      reply(message,{tools:[{name:"partial",inputSchema:schema},{name:"broken",inputSchema:{type:"string"}}]}); continue;
+    }`);
+    try {
+      const baseline = await mountChatTools({ custom: { ready: ready.server } }, ready.controller.signal);
+      sessions.push(baseline);
+      const combined = await mountChatTools({ custom: { failed: failed.server, ready: ready.server } }, ready.controller.signal);
+      sessions.push(combined);
+      expect(combined.definitions).toEqual(baseline.definitions);
+      expect(combined.catalogFingerprint).toBe(baseline.catalogFingerprint);
+      expect(combined.skipped).toEqual([{ server: "failed", reason: expect.stringContaining("object input schema") }]);
+      expect(() => combined.validate("failed_partial", { value: "must not run" })).toThrow("not advertised");
+      expect(failed.read().calls.some(call => call.method === "tools/call")).toBe(false);
+      expect(alive(failed.read().pid)).toBe(false);
+      await expect(combined.execute("ready_write", { value: "available" }, ready.controller.signal)).resolves.toMatchObject({ ok: true });
+    } finally { warn.mockRestore(); }
   });
 
   it("still fails setup when a harness mount (not a configured server) fails", async () => {

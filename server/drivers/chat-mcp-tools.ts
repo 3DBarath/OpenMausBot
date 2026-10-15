@@ -276,7 +276,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const cancel = () => { void close().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   const definitions: ChatToolDefinition[] = [];
-  const registered = new Map<string, { client: ChatMcpClient; server: string; launch: string; builtInBrowser: boolean; agents: boolean; hostComputer: boolean; name: string; schema: ValidateFunction; searched: boolean }>();
+  const registered = new Map<string, RegisteredTool>();
   const directories = new Map<string, { directory: ToolDirectory; operation: string; server: string; byOriginal: Map<string, string> }>();
   let catalogBytes = 0;
   let catalogHash = createHash("sha256");

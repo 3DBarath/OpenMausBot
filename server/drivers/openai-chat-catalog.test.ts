@@ -10,7 +10,7 @@ it("invalidates complete history when original catalogs change behind identical 
   const execute = vi.fn(async () => ({ text: "synthetic operation receipt", ok: true }));
   vi.spyOn(chatTools, "mountChatTools").mockImplementation(async () => ({
     definitions: [{ type: "function", function: { name: "fixture_proxy", description: "Stable directory proxy", parameters: { type: "object", properties: {} } } }],
-    catalogFingerprint,
+    catalogFingerprint, skipped: [],
     validate: () => {}, view: (name, input) => ({ title: name, input, ask: false }),
     execute, close: async () => {},
   }));
