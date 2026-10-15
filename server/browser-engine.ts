@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
-import { browserBundlePaths } from "./browser-bundle-release.ts";
+import { browserBundlePaths, CHROME_VERSION } from "./browser-bundle-release.ts";
 import { browserProcessesRunning, browserProcessTree, stopBrowserProcesses } from "./browser-processes.ts";
 import { BROWSER_VIEWPORT_ARGS, browserRuntimeEnv, ownsBrowserViewport } from "./browser-runtime.ts";
 import { SIGN_IN_PROMPT } from "./system-prompt.ts";
@@ -538,6 +538,8 @@ export function agentBrowserIntegration(input: {
     if (input.headless !== false || displayless) {
       env.AGENT_BROWSER_HEADLESS = "1";
       env.AGENT_BROWSER_HEADED = "0";
+      env.AGENT_BROWSER_USER_AGENT = chromeUserAgent(input.platform ?? process.platform);
+      env.AGENT_BROWSER_ARGS = HIDE_AUTOMATION_ARG;
     }
   }
   // MCP clients may filter the parent env, so the Chrome path is carried explicitly, without unrelated secrets or flags.
@@ -550,6 +552,21 @@ export function agentBrowserIntegration(input: {
   }
   return { command: input.binaryPath, args: ["mcp", "--tools", "core", "--no-webmcp"], env };
 }
+
+const CHROME_SYSTEM_TOKENS: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: "Macintosh; Intel Mac OS X 10_15_7",
+  win32: "Windows NT 10.0; Win64; x64",
+};
+
+/** Headless Chrome names itself "HeadlessChrome" in its user agent, and sites such as reddit and indeed refuse that name
+ * (Chrome 154). Chrome's --user-agent also drops the Sec-CH-UA client hints that a real Chrome sends. */
+export function chromeUserAgent(platform: NodeJS.Platform): string {
+  const system = CHROME_SYSTEM_TOKENS[platform] ?? "X11; Linux x86_64";
+  return `Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION.split(".")[0]}.0.0.0 Safari/537.36`;
+}
+
+/** Google search answers "unusual traffic" to a browser that claims to be Chrome while navigator.webdriver is true (Chrome 154). */
+export const HIDE_AUTOMATION_ARG = "--disable-blink-features=AutomationControlled";
 
 export function setBrowserViewport(binaryPath: string, env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<boolean> {
   if (!ownsBrowserViewport(env)) return Promise.resolve(true);

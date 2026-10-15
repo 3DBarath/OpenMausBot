@@ -16,9 +16,11 @@ import {
   browserDaemonFile,
   browserRestoreKey,
   browserSessionId,
+  chromeUserAgent,
   clearBrowserSessionState,
   closeBrowserSession,
   ensureChrome,
+  HIDE_AUTOMATION_ARG,
   inRunningBrowser,
   installAgentBrowserBinary,
   isMusl,
@@ -29,7 +31,7 @@ import {
   setBrowserViewport,
 } from "./browser-engine.ts";
 import { AGENT_BROWSER_VERSION, agentBrowserReleaseUrl, agentBrowserReleaseVersion, resolveAgentBrowserReleaseAsset } from "./browser-engine-release.ts";
-import { browserBundlePaths, browserBundleSpec, SUPPORTED_BROWSER_TARGETS } from "./browser-bundle-release.ts";
+import { browserBundlePaths, browserBundleSpec, CHROME_VERSION, SUPPORTED_BROWSER_TARGETS } from "./browser-bundle-release.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 const posix = process.platform !== "win32";
@@ -792,7 +794,7 @@ describe("what a bot gets", () => {
       AGENT_BROWSER_SESSION: "bot-1", AGENT_BROWSER_NO_WEBMCP: "1", AGENT_BROWSER_RESTORE: browserRestoreKey("bot-1"),
       AGENT_BROWSER_RESTORE_SAVE: "auto", AGENT_BROWSER_ENCRYPTION_KEY: "session-key",
       AGENT_BROWSER_CONFIG: expect.stringContaining("omb-managed-config.json"),
-      AGENT_BROWSER_HEADLESS: "1", AGENT_BROWSER_HEADED: "0", PATH: "/usr/bin",
+      AGENT_BROWSER_HEADLESS: "1", AGENT_BROWSER_HEADED: "0", AGENT_BROWSER_USER_AGENT: chromeUserAgent(process.platform), AGENT_BROWSER_ARGS: HIDE_AUTOMATION_ARG, PATH: "/usr/bin",
       AGENT_BROWSER_EXECUTABLE_PATH: "/opt/trusted chrome/chrome",
     });
   });
@@ -806,7 +808,7 @@ describe("what a bot gets", () => {
       AGENT_BROWSER_SESSION: "bot-1", AGENT_BROWSER_NO_WEBMCP: "1", AGENT_BROWSER_RESTORE: browserRestoreKey("bot-1"),
       AGENT_BROWSER_RESTORE_SAVE: "auto", AGENT_BROWSER_ENCRYPTION_KEY: "session-key",
       AGENT_BROWSER_CONFIG: expect.stringContaining("omb-managed-config.json"),
-      AGENT_BROWSER_HEADLESS: "1", AGENT_BROWSER_HEADED: "0", PATH: "/usr/bin",
+      AGENT_BROWSER_HEADLESS: "1", AGENT_BROWSER_HEADED: "0", AGENT_BROWSER_USER_AGENT: chromeUserAgent(process.platform), AGENT_BROWSER_ARGS: HIDE_AUTOMATION_ARG, PATH: "/usr/bin",
       AGENT_BROWSER_EXECUTABLE_PATH: "/opt/process-chrome/chrome",
     });
     for (const env of [{}, { AGENT_BROWSER_EXECUTABLE_PATH: "" }]) {
@@ -838,7 +840,7 @@ describe("what a bot gets", () => {
     const spec = agentBrowserIntegration({ binaryPath: "/x/agent-browser", session: "work", encryptionKey: "session-key", env: { PATH: "/usr/bin" }, attach: {} });
     expect(spec.args).toEqual(["mcp", "--tools", "core", "--no-webmcp"]);
     expect(spec.env).toMatchObject({ AGENT_BROWSER_SESSION: "work", AGENT_BROWSER_AUTO_CONNECT: "1", AGENT_BROWSER_RESTORE_SAVE: "never", AGENT_BROWSER_NO_WEBMCP: "1" });
-    for (const name of ["AGENT_BROWSER_RESTORE", "AGENT_BROWSER_CDP", "AGENT_BROWSER_HEADLESS", "AGENT_BROWSER_HEADED"]) expect(spec.env).not.toHaveProperty(name);
+    for (const name of ["AGENT_BROWSER_RESTORE", "AGENT_BROWSER_CDP", "AGENT_BROWSER_HEADLESS", "AGENT_BROWSER_HEADED", "AGENT_BROWSER_USER_AGENT", "AGENT_BROWSER_ARGS"]) expect(spec.env).not.toHaveProperty(name);
     expect(agentBrowserIntegration({ binaryPath: "/x/agent-browser", session: "work", encryptionKey: "session-key", env: { PATH: "/usr/bin" } }).env)
       .toMatchObject({ AGENT_BROWSER_RESTORE: browserRestoreKey("work"), AGENT_BROWSER_RESTORE_SAVE: "auto", AGENT_BROWSER_HEADLESS: "1" });
   });
@@ -850,6 +852,20 @@ describe("what a bot gets", () => {
     expect(spec.env).toMatchObject({ AGENT_BROWSER_SESSION: "bot-1", AGENT_BROWSER_RESTORE: browserRestoreKey("bot-1"), AGENT_BROWSER_RESTORE_SAVE: "auto", AGENT_BROWSER_HEADLESS: "1", AGENT_BROWSER_HEADED: "0", PATH: "/usr/bin" });
     expect(spec.env.AGENT_BROWSER_ENCRYPTION_KEY).toBe("k".repeat(64));
     expect(agentBrowserIntegration({ binaryPath: "/x", session: "s", encryptionKey: "k", headless: false, platform: "darwin" }).env.AGENT_BROWSER_HEADLESS).toBeUndefined();
+  });
+
+  it("lets its own headless Chrome pass as a plain Chrome, and leaves a headed or attached Chrome as it is", () => {
+    const major = CHROME_VERSION.split(".")[0];
+    for (const [platform, system] of [["darwin", "Macintosh; Intel Mac OS X 10_15_7"], ["win32", "Windows NT 10.0; Win64; x64"], ["linux", "X11; Linux x86_64"]] as const) {
+      const { env } = agentBrowserIntegration({ binaryPath: "/x", session: "s", encryptionKey: "k", platform, env: { PATH: "/usr/bin" } });
+      expect(env.AGENT_BROWSER_USER_AGENT).toBe(`Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`);
+      expect(env.AGENT_BROWSER_ARGS).toBe("--disable-blink-features=AutomationControlled");
+    }
+    const headed = agentBrowserIntegration({ binaryPath: "/x", session: "s", encryptionKey: "k", headless: false, platform: "darwin" }).env;
+    expect(headed).not.toHaveProperty("AGENT_BROWSER_USER_AGENT");
+    expect(headed).not.toHaveProperty("AGENT_BROWSER_ARGS");
+    const ambient = agentBrowserIntegration({ binaryPath: "/x", session: "s", encryptionKey: "k", env: { PATH: "/usr/bin", AGENT_BROWSER_USER_AGENT: "ambient", AGENT_BROWSER_ARGS: "--no-sandbox" } }).env;
+    expect(ambient).toMatchObject({ AGENT_BROWSER_USER_AGENT: chromeUserAgent(process.platform), AGENT_BROWSER_ARGS: HIDE_AUTOMATION_ARG });
   });
 
   it("pins headless on a displayless Linux host, even for a headed-capable caller (#1383)", () => {
