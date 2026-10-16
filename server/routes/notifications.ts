@@ -21,3 +21,4 @@ export function createNotificationRoutes(deps = {
     return json(res, 200, { ok: true });
   };
 }
+export { createAttentionRoutes } from "./attention.ts";

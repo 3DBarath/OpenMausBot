@@ -3,6 +3,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 import { AttentionThreadRows, type AttentionThread } from "./SidebarBotActivity";
+import { AttentionRequests } from "./AttentionRequests";
 
 export function SidebarAttentionPanel({ entries, density, onUnpin, onJump, collapsed, onToggle }: {
   entries: AttentionThread[];
@@ -46,6 +47,7 @@ export function SidebarAttentionPanel({ entries, density, onUnpin, onJump, colla
           <PinOff size={compact ? 11 : 12} aria-hidden="true" />
         </button>
       </div>
+      {!collapsed && entries.some((entry) => entry.task.activity === "waiting-on-you") && <AttentionRequests compact={compact} />}
       {!collapsed && (entries.length === 0 ? (
         <div className="px-2.5 pb-1.5 pt-0.5 text-[11px] text-ink-secondary">{t("attention.empty")}</div>
       ) : (

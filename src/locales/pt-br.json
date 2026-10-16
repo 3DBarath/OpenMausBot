@@ -1622,5 +1622,8 @@
   "room.holds.resume": "Retomar {name}",
   "room.holds.stop": "Parar {name}",
   "room.holds.stopTitle": "Parar só {name}; o resto da sala continua",
-  "room.holds.avatarHeld": "{name} — em pausa (parado por você)"
+  "room.holds.avatarHeld": "{name} — em pausa (parado por você)",
+  "attention.requests.title": "Esperando sua resposta",
+  "attention.requests.where": "{name} · {title}",
+  "attention.requests.answerThere": "Responder na conversa"
 }
