@@ -1,3 +1,7 @@
+import { mixSrgb } from "./color-contrast";
+import type { MausColor } from "./mascot";
+import { userBubbleTone } from "./user-bubble-tone";
+
 export const ASCII_GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 export const ASCII_CELL = { width: 7, height: 13, font: 11 } as const;
@@ -7,10 +11,34 @@ const CLEAR_RADIUS = { x: 300, y: 150 } as const;
 
 export type Rgb = readonly [number, number, number];
 
-export interface AsciiPalette {
+export interface AsciiTint {
+  light: Rgb;
+  deep: Rgb;
+}
+
+export interface AsciiPalette extends AsciiTint {
   base: Rgb;
-  hot: Rgb;
+  glow: Rgb;
+  glowMix: number;
   peak: number;
+}
+
+export function hexRgb(hex: string): Rgb {
+  const n = Number.parseInt(hex.slice(1, 7), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+export function botTintHex(colors: readonly MausColor[]): { light: string; deep: string } | null {
+  const [first, second] = colors;
+  if (!first) return null;
+  const tone = userBubbleTone(first);
+  if (!second) return { light: mixSrgb("#ffffff", tone.background, 0.3), deep: mixSrgb("#000000", tone.deep, 0.12) };
+  return { light: tone.background, deep: userBubbleTone(second).background };
+}
+
+export function botTint(colors: readonly MausColor[]): AsciiTint | null {
+  const hex = botTintHex(colors);
+  return hex && { light: hexRgb(hex.light), deep: hexRgb(hex.deep) };
 }
 
 export type AsciiMode = "empty" | "chat";
@@ -95,6 +123,8 @@ uniform vec2 u_clearRadius;
 out vec2 v_uv;
 out float v_alpha;
 out float v_hot;
+out float v_lit;
+out float v_tint;
 
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -157,6 +187,10 @@ void main() {
   float hole = smoothstep(0.4, 1.0, length((center - u_canvas * vec2(0.5, 0.47)) / u_clearRadius));
   v_hot = smoothstep(0.004, 0.03, n - before) * smoothstep(lo + 0.02, lo + 0.16, n);
   v_alpha = lit * lit * u_brightness * mix(1.0, hole, u_clear);
+  v_lit = lit;
+  vec2 q = center / u_canvas;
+  float sweep = ((1.0 - q.x) + q.y) * 0.5;
+  v_tint = clamp(sweep + (fbm(vec3(p * 0.35 + 11.0, u_time * 0.05)) - 0.5) * 0.9, 0.0, 1.0);
 
   float rate = 0.12 + 0.4 * hash(cell + 7.7);
   float turn = floor(u_time * rate + hash(cell + 3.3) * 10.0);
@@ -174,19 +208,27 @@ precision mediump float;
 
 uniform sampler2D u_atlas;
 uniform vec3 u_base;
-uniform vec3 u_hot;
+uniform vec3 u_light;
+uniform vec3 u_deep;
+uniform vec3 u_glow;
+uniform float u_glowMix;
 uniform float u_peak;
 
 in vec2 v_uv;
 in float v_alpha;
 in float v_hot;
+in float v_lit;
+in float v_tint;
 
 out vec4 outColor;
 
 void main() {
   float cover = texture(u_atlas, v_uv).a;
   float a = min(1.0, cover * v_alpha * u_peak * (1.0 + 0.9 * v_hot));
-  outColor = vec4(mix(u_base, u_hot, v_hot) * a, a);
+  vec3 tint = mix(u_light, u_deep, v_tint);
+  vec3 color = mix(u_base, tint, 0.6 + 0.4 * v_lit);
+  color = mix(color, mix(tint, u_glow, u_glowMix), v_hot);
+  outColor = vec4(color * a, a);
 }
 `;
 
@@ -268,7 +310,10 @@ export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | 
     clearRadius: at("u_clearRadius"),
     atlas: at("u_atlas"),
     base: at("u_base"),
-    hot: at("u_hot"),
+    light: at("u_light"),
+    deep: at("u_deep"),
+    glow: at("u_glow"),
+    glowMix: at("u_glowMix"),
     peak: at("u_peak"),
   };
   let grid: AsciiGrid | null = null;
@@ -314,7 +359,10 @@ export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | 
       gl.uniform1f(u.clear, level.clearCenter);
       gl.uniform2f(u.clearRadius, CLEAR_RADIUS.x * grid.dpr, CLEAR_RADIUS.y * grid.dpr);
       gl.uniform3f(u.base, ...palette.base);
-      gl.uniform3f(u.hot, ...palette.hot);
+      gl.uniform3f(u.light, ...palette.light);
+      gl.uniform3f(u.deep, ...palette.deep);
+      gl.uniform3f(u.glow, ...palette.glow);
+      gl.uniform1f(u.glowMix, palette.glowMix);
       gl.uniform1f(u.peak, palette.peak);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type HTMLAttributes, type ReactNode } from "re
 
 import type { AsciiMode } from "@/lib/ascii-field";
 import { cn } from "@/lib/cn";
+import type { MausColor } from "@/lib/mascot";
 import { AsciiField } from "./AsciiField";
 
 type GlassEdge = "top" | "bottom";
@@ -25,7 +26,7 @@ export function publishGlassInsets(frame: HTMLElement): void {
   }
 }
 
-export function GlassScrollFrame({ className, children, asciiField, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode; asciiField?: AsciiMode }) {
+export function GlassScrollFrame({ className, children, asciiField, asciiColors, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode; asciiField?: AsciiMode; asciiColors?: readonly MausColor[] }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const frame = ref.current;
@@ -47,7 +48,7 @@ export function GlassScrollFrame({ className, children, asciiField, ...rest }: H
   }, []);
   return (
     <div ref={ref} data-glass-frame="" className={cn("relative min-h-0", className)} {...rest}>
-      {asciiField && <AsciiField mode={asciiField} />}
+      {asciiField && <AsciiField mode={asciiField} colors={asciiColors} />}
       {children}
     </div>
   );

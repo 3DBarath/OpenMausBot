@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { useAsciiBackground } from "@/lib/ascii-background-preference";
 import {
   asciiLevel,
+  botTint,
+  botTintHex,
   createAsciiRenderer,
   luminance,
   sameLevel,
@@ -12,6 +14,7 @@ import {
   type AsciiPalette,
   type Rgb,
 } from "@/lib/ascii-field";
+import type { MausColor } from "@/lib/mascot";
 
 const FOCUSED_FRAME_MS = 1000 / 30;
 const UNFOCUSED_FRAME_MS = 1000 / 10;
@@ -46,30 +49,44 @@ function resolveColor(value: string): Rgb | null {
   return [r / 255, g / 255, b / 255];
 }
 
-function readPalette(el: Element): AsciiPalette {
+function readPalette(el: Element, colors: readonly MausColor[]): AsciiPalette {
   const style = getComputedStyle(el);
   const base = resolveColor(style.getPropertyValue("--color-ink-tertiary")) ?? [0.55, 0.55, 0.55];
-  const hot = resolveColor(style.getPropertyValue("--color-accent")) ?? base;
+  const accent = resolveColor(style.getPropertyValue("--color-accent")) ?? base;
   const app = resolveColor(style.getPropertyValue("--color-app"));
-  const light = app ? luminance(app) > 0.4 : false;
-  return { base, hot, peak: light ? 0.32 : 0.28 };
+  const lightSkin = app ? luminance(app) > 0.4 : false;
+  const tint = botTint(colors) ?? { light: accent, deep: accent };
+  return {
+    ...tint,
+    base,
+    glow: lightSkin ? [0, 0, 0] : [1, 1, 1],
+    glowMix: lightSkin ? 0.2 : 0.3,
+    peak: lightSkin ? 0.32 : 0.3,
+  };
 }
 
 function monoFont(el: Element): string {
   return getComputedStyle(el).getPropertyValue("--font-mono").trim() || MONO_FALLBACK;
 }
 
-export function AsciiField({ mode }: { mode: AsciiMode }) {
+type AsciiFieldProps = { mode: AsciiMode; colors?: readonly MausColor[] };
+
+const NO_COLORS: readonly MausColor[] = [];
+
+export function AsciiField({ mode, colors = NO_COLORS }: AsciiFieldProps) {
   const enabled = useAsciiBackground();
   if (!enabled) return null;
-  return <AsciiCanvas mode={mode} />;
+  return <AsciiCanvas mode={mode} colors={colors} />;
 }
 
-function AsciiCanvas({ mode }: { mode: AsciiMode }) {
+function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
   const ref = useRef<HTMLCanvasElement>(null);
   const modeRef = useRef(mode);
+  const colorsRef = useRef(colors);
   const kickRef = useRef<() => void>(() => {});
+  const restyleRef = useRef<() => void>(() => {});
   const [generation, setGeneration] = useState(0);
+  const colorKey = colors.join(" ");
 
   useEffect(() => {
     modeRef.current = mode;
@@ -77,12 +94,17 @@ function AsciiCanvas({ mode }: { mode: AsciiMode }) {
   }, [mode]);
 
   useEffect(() => {
+    colorsRef.current = colorKey ? (colorKey.split(" ") as MausColor[]) : NO_COLORS;
+    restyleRef.current();
+  }, [colorKey]);
+
+  useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const renderer = createAsciiRenderer(canvas);
     if (!renderer) return;
 
-    let palette = readPalette(canvas);
+    let palette = readPalette(canvas, colorsRef.current);
     let font = monoFont(canvas);
     let still = reducedMotion();
     let dpr = window.devicePixelRatio || 1;
@@ -123,13 +145,14 @@ function AsciiCanvas({ mode }: { mode: AsciiMode }) {
     kickRef.current = kick;
 
     const restyle = () => {
-      palette = readPalette(canvas);
+      palette = readPalette(canvas, colorsRef.current);
       font = monoFont(canvas);
       still = reducedMotion();
       size();
       kick();
     };
 
+    restyleRef.current = restyle;
     size();
     kick();
 
@@ -154,6 +177,7 @@ function AsciiCanvas({ mode }: { mode: AsciiMode }) {
     return () => {
       if (raf) cancelAnimationFrame(raf);
       kickRef.current = () => {};
+      restyleRef.current = () => {};
       resize.disconnect();
       root.disconnect();
       motion.removeEventListener("change", restyle);
@@ -163,12 +187,28 @@ function AsciiCanvas({ mode }: { mode: AsciiMode }) {
     };
   }, [generation]);
 
+  const tint = botTintHex(colors);
+  const light = tint?.light ?? "var(--color-accent)";
+  const deep = tint?.deep ?? "var(--color-accent)";
   return (
-    <canvas
-      ref={ref}
-      aria-hidden="true"
-      data-ascii-field=""
-      className="pointer-events-none absolute inset-0 h-full w-full select-none"
-    />
+    <>
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 transition-opacity duration-700"
+        style={{
+          opacity: asciiLevel(mode).brightness,
+          backgroundImage: [
+            `radial-gradient(ellipse 75% 65% at 90% 5%, color-mix(in srgb, ${light} 16%, transparent), transparent 70%)`,
+            `radial-gradient(ellipse 75% 65% at 5% 100%, color-mix(in srgb, ${deep} 18%, transparent), transparent 70%)`,
+          ].join(", "),
+        }}
+      />
+      <canvas
+        ref={ref}
+        aria-hidden="true"
+        data-ascii-field=""
+        className="pointer-events-none absolute inset-0 h-full w-full select-none"
+      />
+    </>
   );
 }

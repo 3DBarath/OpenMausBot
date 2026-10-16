@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ASCII_CELL, ASCII_GLYPHS, asciiGrid, asciiLevel, luminance, sameLevel, stepFade, stepLevel } from "./ascii-field";
+import { ASCII_CELL, ASCII_GLYPHS, asciiGrid, asciiLevel, botTint, hexRgb, luminance, sameLevel, stepFade, stepLevel } from "./ascii-field";
+import { userBubbleTone } from "./user-bubble-tone";
 
 describe("ascii field grid", () => {
   it("covers the whole canvas with whole-pixel cells", () => {
@@ -82,5 +83,38 @@ describe("ascii field level", () => {
     expect(level.brightness).toBeCloseTo(0.55);
     level = stepLevel(level, asciiLevel("chat"), 700, 700);
     expect(sameLevel(level, asciiLevel("chat"))).toBe(true);
+  });
+});
+
+describe("ascii field tint", () => {
+  const close = (a: readonly number[], b: readonly number[]) => a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+
+  it("reads hex colours as 0..1 channels", () => {
+    expect(hexRgb("#ffffff")).toEqual([1, 1, 1]);
+    expect(hexRgb("#000000")).toEqual([0, 0, 0]);
+    expect(hexRgb("#377FE6")).toEqual([0x37 / 255, 0x7f / 255, 0xe6 / 255]);
+  });
+
+  it("runs a one-to-one chat from a lighter shade of the bot's colour to its deep shade", () => {
+    const tint = botTint(["orange"]);
+    const tone = userBubbleTone("orange");
+    expect(tint).not.toBeNull();
+    expect(luminance(tint!.deep)).toBeLessThan(luminance(hexRgb(tone.deep)));
+    expect(luminance(tint!.light)).toBeGreaterThan(luminance(hexRgb(tone.background)));
+    expect(luminance(tint!.light)).toBeGreaterThan(luminance(tint!.deep));
+  });
+
+  it("follows each bot's own colour", () => {
+    expect(close(botTint(["green"])!.deep, botTint(["purple"])!.deep)).toBe(false);
+  });
+
+  it("blends the first two members' colours in a room", () => {
+    const tint = botTint(["blue", "green", "red"]);
+    expect(close(tint!.light, hexRgb(userBubbleTone("blue").background))).toBe(true);
+    expect(close(tint!.deep, hexRgb(userBubbleTone("green").background))).toBe(true);
+  });
+
+  it("has no tint without a bot, so the skin accent is used", () => {
+    expect(botTint([])).toBeNull();
   });
 });
