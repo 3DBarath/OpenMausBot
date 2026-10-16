@@ -362,7 +362,7 @@ it("a guest's request never folds into a turn running in the owner's conversatio
   rmSync(join(home, "release"), { force: true });
 }, hostTimeout(60_000));
 
-it("a routine from before this update, on an engine that cannot be confined, tells the owner what to do", async () => {
+it("a routine the owner has not confirmed, on an engine that cannot be confined, tells the owner what to do", async () => {
   const bot = await newBot("Shelled routine bot", "shelled");
   const created = await api("POST", "/api/routines", { token: owner, body: { name: "From before", prompt: "Check the site.", botId: bot.id, enabled: false,
     schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
@@ -370,7 +370,7 @@ it("a routine from before this update, on an engine that cannot be confined, tel
   expect((await api("POST", `/api/routines/${created.body.routine.id}/run`, { token: owner })).status).toBe(201);
   await expect.poll(async () => JSON.stringify(((await api("GET", "/api/routines", { token: owner })).body.runs ?? [])
     .filter((run: any) => run.routineId === created.body.routine.id)), { timeout: hostTimeout(15_000) })
-    .toContain("This routine was made before this update. Open it and save it once to run it with full access.");
+    .toContain("This bot's engine needs a shell, so this run stopped. OpenMausBot can't tell who wrote this routine, so it runs without a shell until you confirm it's yours: press Run with full access on its run, or open it and save it.");
 }, hostTimeout(60_000));
 
 it("a room a guest opened with a bot whose engine needs its shell refuses the turn in one plain line", async () => {

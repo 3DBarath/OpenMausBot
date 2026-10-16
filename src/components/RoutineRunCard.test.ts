@@ -147,6 +147,19 @@ describe("RoutineRunCard", () => {
     expect(markup).not.toContain("Open run");
   });
 
+  it("offers the owner one click when OpenMausBot can't tell they wrote the routine, and only then", () => {
+    const refused = renderToStaticMarkup(createElement(RoutineRunCard, {
+      message: message("failed", { needsOwner: true, error: "This bot's engine needs a shell, so this run stopped." }),
+    }));
+    expect(refused).toContain("Run with full access");
+    expect(refused).toContain("This routine runs without a shell until you confirm it&#x27;s yours.");
+    const confined = renderToStaticMarkup(createElement(RoutineRunCard, { message: message("completed", { needsOwner: true, summary: "Done." }) }));
+    expect(confined).toContain("Run with full access");
+    for (const status of ["completed", "failed"] as const) {
+      expect(renderToStaticMarkup(createElement(RoutineRunCard, { message: message(status, { error: "Timed out." }) }))).not.toContain("Run with full access");
+    }
+  });
+
   it("recognizes only an execution thread still present in the owning bot's tasks", () => {
     const tasks = [{ threadId: "source-thread" }, { threadId: "execution-thread" }];
 

@@ -1,10 +1,11 @@
 import { ArrowRight, Loader2 } from "lucide-react";
+import { useState } from "react";
 
 import { cn } from "@/lib/cn";
 import { routineDateTime } from "@/lib/routine-display";
 import { t } from "@/lib/i18n";
 import type { RoutineRunCardData } from "../../shared/routine-run";
-import type { Message } from "@/state/store";
+import { api, type Message } from "@/state/store";
 
 const DETAIL_LIMIT = 280;
 
@@ -45,6 +46,26 @@ export function hasRoutineExecutionTask(
 ): executionThreadId is string {
   return Boolean(
     executionThreadId && tasks?.some((task) => task.threadId === executionThreadId),
+  );
+}
+
+/** On a Cloud home, a routine OpenMausBot can't tell the owner wrote: one click from their device runs it with full access. */
+function ConfirmOwner({ routineId }: { routineId: string }) {
+  const [state, setState] = useState<"idle" | "working" | "done" | { error: string }>("idle");
+  if (state === "done") return <p className="mt-2 text-[12.5px] font-medium text-ink-secondary">{t("routines.needsOwner.done")}</p>;
+  const confirm = () => {
+    setState("working");
+    api(`/api/routines/${encodeURIComponent(routineId)}/confirm`, { method: "POST" })
+      .then(() => setState("done"), (error: unknown) => setState({ error: error instanceof Error ? error.message : String(error) }));
+  };
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <button type="button" disabled={state === "working"} onClick={confirm}
+        className="rounded-md bg-accent/15 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/25 disabled:opacity-50">
+        {t("routines.needsOwner.confirm")}
+      </button>
+      <span className="text-[12px] text-ink-secondary">{typeof state === "object" ? t("routines.needsOwner.failed", { error: state.error }) : t("routines.needsOwner.note")}</span>
+    </div>
   );
 }
 
@@ -95,6 +116,7 @@ export function RoutineRunCard({
             {routineDateTime(run.scheduledFor ?? message.at)}
           </time>
           {detail && <p className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">{detail}</p>}
+          {run.needsOwner && <ConfirmOwner routineId={run.routineId} />}
           {run.status === "completed" && run.summary && run.summary.length > DETAIL_LIMIT && <details className="mt-2 text-[12px] text-ink-secondary">
             <summary className="cursor-pointer font-medium text-ink-secondary hover:text-ink">{t("routines.results.showReport")}</summary>
             <p className="mt-2 whitespace-pre-wrap leading-relaxed">{run.summary}</p>

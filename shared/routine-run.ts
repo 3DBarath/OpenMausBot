@@ -19,4 +19,7 @@ export interface RoutineRunCardData {
   executionThreadId?: string;
   summary?: string;
   error?: string;
+  /** On a Cloud home: OpenMausBot can't tell the owner wrote this routine, so its runs work without a shell until the
+   * owner confirms it from one of their own devices (POST /api/routines/:id/confirm). */
+  needsOwner?: true;
 }

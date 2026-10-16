@@ -289,6 +289,7 @@ import { createCloudHealth } from "./cloud-health.ts";
 import { createCloudSignedRoutes } from "./routes/cloud-signed.ts";
 import { noteSyncBotTurn } from "./routes/cloud-sync.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
+import { approvalShape, CONVERSATION_ENGINE_REFUSAL, CONVERSATION_FROM_BEFORE, createCloudRoutineOwner, ROUTINE_ENGINE_REFUSAL, ROUTINE_NOTICE, ROUTINE_UNCONFIRMED } from "./cloud-routine-owner.ts";
 import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { RESTART_EXIT_CODE } from "./restart.ts";
 import { holdIncludedServices, trialCreditCredential } from "./included-services.ts";
@@ -617,7 +618,7 @@ import { createComputerRoutes } from "./routes/computers.ts";
 import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
-import { createNotificationRoutes } from "./routes/notifications.ts";
+import { createNotificationRoutes } from "./routes/notifications.ts"; import { createRoutineOwnerRoutes } from "./routes/routine-owner.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
 import { createBotMessageRoutes } from "./routes/bot-messages.ts";
 import { createThreadRoutes } from "./routes/threads.ts";
@@ -963,53 +964,13 @@ function actorKey(auth: RequestAuth & { kind: "session" }): string {
   return CLOUD_OWNER_KEY && auth.scopes.includes("admin") ? CLOUD_OWNER_KEY : personKey(auth.session);
 }
 
-let routineWriterInFlight: string | undefined;
-function withRoutineWriter<T>(writer: string, work: () => T): T {
-  const previous = routineWriterInFlight;
-  routineWriterInFlight = writer;
-  try { return work(); } finally { routineWriterInFlight = previous; }
-}
-function cloudOwnersRoutine(routineId: string | undefined): void {
-  const routine = routineId ? routines?.listRoutines().find((candidate) => candidate.id === routineId) : undefined;
-  if (!routine || !cloudRoutineAuthors || !CLOUD_OWNER_KEY) return;
-  cloudRoutineAuthors.record(routine.id, routine);
-  cloudRoutineAuthors.wrote(routine.id, CLOUD_OWNER_KEY);
-}
-
-function cloudRoutineIsOwners(routineId: string | undefined): boolean {
-  const routine = routineId ? routines?.listRoutines().find((candidate) => candidate.id === routineId) : undefined;
-  if (!routine || !cloudRoutineAuthors || !CLOUD_OWNER_KEY) return false;
-  return cloudRoutineAuthors.authored(routine.id, routine) ||
-    (cloudRoutineAuthors.writer(routine.id) === CLOUD_OWNER_KEY && !cloudRoutineAuthors.recorded(routine.id));
-}
-
+/** Whose each routine is on a Cloud home (cloud-routine-owner.ts). */
+const routineOwner = cloudRoutineAuthors && CLOUD_OWNER_KEY ? createCloudRoutineOwner({ authors: cloudRoutineAuthors, ownerKey: CLOUD_OWNER_KEY,
+  nobodyKey: CLOUD_NOBODY_KEY, routine: (id) => routines?.listRoutines().find((routine) => routine.id === id), ownerPerson: cloudOwnerPerson,
+  noticesFile: join(DATA_DIR, "routine-owner-notices.json") }) : null;
+const withRoutineWriter = <T>(writer: string, work: () => T): T => routineOwner ? routineOwner.as(writer, work) : work();
 function cloudRoutineRunIsOwners(run: RoutineRun | null | undefined, botId: string, threadId: string): boolean {
-  if (!run || run.threadId !== threadId || store.taskByThread(botId, threadId)?.routineRunId !== run.id || !cloudRoutineAuthors) return false;
-  const routine = routines?.listRoutines().find((candidate) => candidate.id === run.routineId);
-  return Boolean(routine) && cloudRoutineAuthors.authored(run.routineId, {
-    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn,
-  }) === true;
-}
-
-/** Approving a change never makes anyone else's routine the owner's: `wasOwners` is taken before the change. */
-function cloudOwnerApplied(action: string, routineId: string | undefined, wasOwners: boolean): void {
-  if (action === "create" || ((action === "update" || action === "pause" || action === "resume") && wasOwners)) cloudOwnersRoutine(routineId);
-}
-
-function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string; schedule?: unknown; target?: string; groupId?: string | null; attachments?: { id: string; path: string }[] }): string {
-  const schedule = shape.schedule && typeof shape.schedule === "object" ? { ...(shape.schedule as Record<string, unknown>) } : null;
-  if (schedule) delete schedule.anchorAt;
-  return JSON.stringify([shape.prompt ?? "", shape.botId ?? "", shape.runOn ?? "maus", schedule, shape.target ?? "bot", shape.groupId ?? null,
-    (shape.attachments ?? []).map((attachment) => [attachment.id, attachment.path])]);
-}
-
-function routineOpener(routineId: string): string {
-  if (routineWriterInFlight) return routineWriterInFlight;
-  const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
-  if (routine && CLOUD_OWNER_KEY && cloudRoutineAuthors?.authored(routineId, routine)) return CLOUD_OWNER_KEY;
-  const writer = cloudRoutineAuthors?.writer(routineId);
-  if (writer && CLOUD_OWNER_KEY && writer === CLOUD_OWNER_KEY) return CLOUD_OWNER_KEY;
-  return writer && !cloudOwnerPerson(writer) ? writer : CLOUD_NOBODY_KEY;
+  return Boolean(run && run.threadId === threadId && store.taskByThread(botId, threadId)?.routineRunId === run.id && routineOwner?.authoredRun(run));
 }
 
 /** Its turns run in Ask, confined to a private folder, and nothing in it reaches the owner's turns. */
@@ -1048,26 +1009,19 @@ function parentThreadModel(botId: string, parentThreadId: string): { modelSelect
   return { modelSelection, ...(needsAsk ? { approvalMode: "ask" as const } : {}) };
 }
 
-const ROUTINE_FROM_BEFORE = "This routine was made before this update. Open it and save it once to run it with full access.";
-const CONVERSATION_FROM_BEFORE = "This conversation is from before My Cloud was only yours, so this bot works in it without a shell. Start a new conversation to use it fully.";
-function confinedWhy(threadId: string): string {
+const routineConfined = (threadId: string): boolean => {
   const run = activeRoutineRunForThread(threadId);
-  const writer = run ? cloudRoutineAuthors?.writer(run.routineId) : undefined;
-  return run && writer && !cloudOwnerPerson(writer) ? ROUTINE_FROM_BEFORE : CONVERSATION_FROM_BEFORE;
-}
-function guestEngineRefusal(threadId: string): string {
-  const why = confinedWhy(threadId);
-  return why === ROUTINE_FROM_BEFORE ? `This bot's engine can't run it that way. ${why}`
-    : "This conversation is from before My Cloud was only yours, and this bot's engine can't work in it. Start a new conversation.";
-}
+  return Boolean(run && routineOwner?.unconfirmed(run.routineId));
+};
+const confinedWhy = (threadId: string): string => routineConfined(threadId) ? ROUTINE_UNCONFIRMED : CONVERSATION_FROM_BEFORE;
+const guestEngineRefusal = (threadId: string): string => routineConfined(threadId) ? ROUTINE_ENGINE_REFUSAL : CONVERSATION_ENGINE_REFUSAL;
 
 /** A guest-driven turn runs in Ask whatever the bot's own level, with no shell. */
 function cloudGuestDriven(threadId: string): boolean {
   if (!CLOUD_HOME) return false;
   if (guestDrivenTurns.has(threadId) || cloudGuestOpened(threadId)) return true;
   const run = activeRoutineRunForThread(threadId);
-  const writer = run ? cloudRoutineAuthors?.writer(run.routineId) : undefined;
-  if (writer && !cloudOwnerPerson(writer)) return true;
+  if (run && routineOwner?.someoneElses(run.routineId)) return true;
   if (!store.groupByThread(threadId)) return false;
   const person = store.messagesFor(threadId).findLast((line) => line.role === "user" && !line.peerAsk && line.sender?.id)?.sender?.id;
   return person !== undefined && !cloudOwnerPerson(person);
@@ -9387,6 +9341,7 @@ function routineRunCard(run: RoutineRun): NonNullable<Message["routineRun"]> {
   if (run.threadId) card.executionThreadId = run.threadId;
   if (summary) card.summary = summary;
   if (error) card.error = error;
+  if (routineOwner?.unconfirmed(run.routineId)) card.needsOwner = true;
   return card;
 }
 
@@ -9552,7 +9507,7 @@ routines = new RoutineManager({
     const task = store.createTask(botId, title, activate);
     // On a Cloud home the routine's writer opens a run's conversation; a webhook run is the owner's, but its payload never reaches the lent Mac.
     if (task && CLOUD_HOME && run) {
-      threadStarters.set(task.threadId, run.triggerSource === "webhook" ? CLOUD_OWNER_KEY! : routineOpener(run.routineId));
+      threadStarters.set(task.threadId, run.triggerSource === "webhook" ? CLOUD_OWNER_KEY! : routineOwner?.opener(run.routineId));
     }
     return task;
   },
@@ -9572,7 +9527,7 @@ routines = new RoutineManager({
     const bot = store.bot(routine.botId);
     const chosen = !forceNew && routine.resultsThreadId && bot && !bot.hidden
       ? store.taskByThread(bot.id, routine.resultsThreadId) : undefined;
-    const opener = CLOUD_HOME ? routineOpener(routine.id) : undefined;
+    const opener = routineOwner?.opener(routine.id);
     const main = bot && !bot.hidden ? botMainThread(bot.id) : undefined;
     const mainAllowed = main && (!CLOUD_HOME || opener === CLOUD_OWNER_KEY);
     const keepChosen = chosen && !chosen.routineRunId && !(mainAllowed && legacyResultsThread(routine.name, chosen));
@@ -9614,7 +9569,13 @@ routines = new RoutineManager({
     }
   },
   interruptGoal: interruptRoutineGroupGoal,
-  onRunChanged: (run) => { cloudHealth?.noteRoutineRun(run); syncRoutineRunToSource(run); },
+  onRunChanged: (run) => {
+    cloudHealth?.noteRoutineRun(run);
+    syncRoutineRunToSource(run);
+    // A confined run that still completed: told once too, since nothing failed to say so.
+    const bot = run.status === "completed" && routineOwner?.unconfirmed(run.routineId) && routineOwner.tellOnce(run.routineId) ? store.bot(run.botId) : undefined;
+    if (bot) notify(buildNotification("incident", routineSourceOwner(run)?.bot ?? bot, routineSourceThread(run) ?? run.threadId ?? bot.threadId, `${run.routineName}: ${ROUTINE_NOTICE}`));
+  },
   onRunFailed: (run) => {
     cloudHealth?.noteRoutineRun(run);
     if (run.threadId) {
@@ -9624,8 +9585,10 @@ routines = new RoutineManager({
       }
     }
     const bot = store.bot(run.botId);
-    if (!bot) return;
-    const detail = run.error ? `${run.routineName}: ${run.error}` : run.routineName;
+    // Refused until the owner confirms it, the same way at every run: they are told once, and each run's card offers the click.
+    const unconfirmed = run.error?.includes(ROUTINE_UNCONFIRMED);
+    if (!bot || (unconfirmed && !routineOwner?.tellOnce(run.routineId))) return;
+    const detail = run.error ? `${run.routineName}: ${unconfirmed ? ROUTINE_NOTICE : run.error}` : run.routineName;
     const notificationBot = routineSourceOwner(run)?.bot ?? bot;
     notify(buildNotification("routine-failed", notificationBot, routineSourceThread(run) ?? run.threadId ?? bot.threadId, detail));
     reportIncident({ kind: "routine-failed", bot, threadId: run.threadId ?? bot.threadId, detail });
@@ -10227,9 +10190,9 @@ function resolveAndSendRoutine(
     (message) => message.card?.requestId === args.requestId && message.card.routineRequest,
   )?.card;
   const operation = card?.routineRequest?.operation;
-  const wasOwners = operation && operation.action !== "create" ? cloudRoutineIsOwners(operation.routineId) : false;
+  const wasOwners = operation && operation.action !== "create" ? routineOwner?.isOwners(operation.routineId) === true : false;
   const result = routineRequests.resolve(args);
-  if (ownersAnswer && result.claimed && result.state === "applied") cloudOwnerApplied(result.action, result.resultId, wasOwners);
+  if (ownersAnswer && result.claimed && result.state === "applied") routineOwner?.applied(result.action, result.resultId, wasOwners);
   if (
     result.claimed &&
     (result.state === "applied" || result.state === "denied")
@@ -10360,10 +10323,10 @@ function undoAppliedChange(res: ServerResponse, threadId: string, requestId: str
     if (undone.claimed && undone.state === "undone" && cloudRoutineAuthors) {
       if (undone.action === "create") cloudRoutineAuthors.remove(undone.routineId);
       else if (undone.action === "update") {
-        if (undone.ownersBefore) cloudOwnersRoutine(undone.routineId);
+        if (undone.ownersBefore) routineOwner?.own(undone.routineId);
         else cloudRoutineAuthors.forget(undone.routineId);
       } else if (undone.action === "delete" && undone.restoredId) {
-        if (undone.ownersBefore) cloudOwnersRoutine(undone.restoredId);
+        if (undone.ownersBefore) routineOwner?.own(undone.restoredId);
         else cloudRoutineAuthors.wrote(undone.restoredId, CLOUD_NOBODY_KEY);
       }
     }
@@ -13656,6 +13619,8 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
+ROUTES.push(createRoutineOwnerRoutes({ owner: routineOwner, ownerDevice: cloudOwnerSession,
+  confirmed: (id) => { for (const run of routines!.listRuns().filter((run) => run.routineId === id).slice(0, 50)) syncRoutineRunToSource(run); } }));
 ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }), createNotificationRoutes(), createUpdateCheckRoutes({ check: serverUpdateChecker({ desktopManaged: DESKTOP_MANAGED, managed: Boolean(CLOUD_HOME || HOSTED_WORKSPACE) }) }));
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard, saveTarget: signInSaveTarget, threadVisible: (auth, threadId) => visibleTo(viewerFor(auth)).thread(threadId) }));
 ROUTES.push(createRoomHoldRoutes({
@@ -14879,7 +14844,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           : body.action === "update"
             ? { action: body.action, routineId: body.routineId, changes: body.changes, forBot }
             : { action: body.action, routineId: body.routineId, forBot };
-        const wasOwners = proposedInput.action !== "create" && typeof proposedInput.routineId === "string" ? cloudRoutineIsOwners(proposedInput.routineId) : false;
+        const wasOwners = proposedInput.action !== "create" && typeof proposedInput.routineId === "string" ? routineOwner?.isOwners(proposedInput.routineId) === true : false;
         const run = activeRoutineRunForThread(fromThreadId);
         const ownersTurn = cloudOwnerOnlyThread(fromThreadId) || cloudRoutineRunIsOwners(run, from.id, fromThreadId);
         const proposed = await routineRequests.submit({
@@ -14892,7 +14857,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
           // Applied at once: in the owner's own conversation the routine is theirs; from anywhere else it is no longer the owner's.
         const applied = CLOUD_HOME && proposed.state === "applied" && "result" in proposed ? proposed.result : undefined;
-        if (applied?.resultId && ownersTurn) cloudOwnerApplied(applied.action, applied.resultId, wasOwners);
+        if (applied?.resultId && ownersTurn) routineOwner?.applied(applied.action, applied.resultId, wasOwners);
         else if (applied?.resultId && (applied.action === "create" || applied.action === "update")) {
           cloudRoutineAuthors?.forget(applied.resultId);
           cloudRoutineAuthors?.wrote(applied.resultId, CLOUD_NOBODY_KEY);

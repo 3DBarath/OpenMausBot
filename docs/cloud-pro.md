@@ -235,12 +235,31 @@ The routines a revoked session wrote are paused at that start, and the
 conversations it opened lose their working folder: their next turn works in
 a folder of their own, never the owner's project.
 
-A routine that ends up nobody's though it is the owner's (for example one a
-v0.1.91 bot template made on the server, which recorded no writer) runs
-confined, and a run that cannot says so: open it and save it once, and it is
-the owner's again, with full access. A routine the owner approved on a bot's
-proposal card is theirs (the card records who allowed it, and what it
-showed: a routine from before counts only while it still runs exactly that,
+A routine that ends up nobody's though it is the owner's runs confined. The
+records cannot tell it from a guest's: one that was on the Cloud before it
+was only the owner's (made on v0.1.90 or v0.1.91, or brought by a Copy this
+computer here applied then, which the first personal start does not count
+as proof, since nothing recorded what changed between that copy and the
+upgrade), one a bot made or changed at once in a conversation not provably
+the owner's alone (a conversation copied from a computer holds lines with no
+recorded sender), one a package or team import brought (it records no
+writer), or one a restore brought that reports into a conversation a device
+the Cloud never knew opened. Each of its runs says so in one line
+("OpenMausBot can't tell who wrote this routine, so it runs without a shell
+until you confirm it's yours: press Run with full access on its run, or open
+it and save it."; an engine that cannot run without its shell refuses the
+run with that line), and its run card in the conversation carries **Run
+with full access**. The owner is told once per routine
+(`routine-owner-notices.json`, at the first run that is refused or confined;
+later refusals of the same routine notify nobody and reach no Chief of
+Staff). One click from one of the owner's own devices (`POST
+/api/routines/:id/confirm`, admin sessions only; a bot's shell is a service
+and cannot reach it) records what the routine runs now as the owner's, like
+saving it. Nothing else does: turning it on, running it, a notice or a
+restart never makes it theirs, and anyone else's later change undoes it.
+
+A routine the owner approved on a bot's proposal card is theirs (the card
+records who allowed it, and what it showed: a routine from before counts only while it still runs exactly that,
 the same instructions, bot, schedule and place, with no attachment), and so
 is one created at once in the owner's own Full-access conversation, or by a
 run of one of the owner's routines. Approving a change (an edit, a pause, a
@@ -693,9 +712,9 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
 - A guest's turn gets no shell and reads nothing outside its own folder, on
   every engine; an engine that cannot run it that way refuses it with one
   line, before anything is recorded. On a personal Cloud that line speaks to
-  the owner, since only what came before is confined: for a routine, "This
-  routine was made before this update. Open it and save it once to run it
-  with full access."; for a conversation, that it is from before the Cloud
+  the owner, since only what came before is confined: for a routine, that
+  OpenMausBot can't tell who wrote it and to press **Run with full access**
+  on its run (below); for a conversation, that it is from before the Cloud
   was only theirs, and to start a new one:
 
   | Engine | A guest's turn |

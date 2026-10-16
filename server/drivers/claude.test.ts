@@ -738,9 +738,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284", FAKE_CLAUDE_KEEP_BASH: "1" });
-    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true, confinedWhy: "This routine was made before this update." });
+    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true, confinedWhy: "OpenMausBot can't tell who wrote this routine." });
     await recorder.until((e) => e.type === "turn.completed");
-    expect(JSON.stringify(recorder.events)).toContain("kept its shell, so it can't run this turn. Update Claude Code. This routine was made before this update.");
+    expect(JSON.stringify(recorder.events)).toContain("kept its shell, so it can't run this turn. Update Claude Code. OpenMausBot can't tell who wrote this routine.");
     expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: false });
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
     const refused = await instance.adapter.sendTurn({ threadId: "t-old", text: "hello", approvalMode: "ask", guestConfined: true })
