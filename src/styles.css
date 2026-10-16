@@ -1141,6 +1141,13 @@ body {
   margin-top: var(--glass-top, 0px);
   margin-bottom: var(--glass-bottom, 0px);
 }
+[data-glass-frame]:has(> [data-ascii-field]) [data-composer-backdrop] {
+  display: none;
+}
+[data-glass-frame]:has(> [data-ascii-field]) > .glass-scroller {
+  -webkit-mask-image: linear-gradient(to top, transparent 34px, black 54px);
+  mask-image: linear-gradient(to top, transparent 34px, black 54px);
+}
 .glass-scroller-content {
   padding-top: var(--glass-top, 0px);
   padding-bottom: calc(var(--glass-bottom, 0px) + var(--glass-bottom-reach, 0px));
