@@ -616,6 +616,18 @@ describe("Chat MCP tool directory", () => {
     expect(f.read().calls.filter((call) => call.method === "tools/call").map((call) => call.params)).toEqual([{ name: "payments_list", arguments: args.arguments }]);
   });
 
+  it("defers a large HighLevel catalog and discovers tools without executing them", async () => {
+    const catalog = whopLikeCatalog(300);
+    const f = fixture(`if (message.method === "tools/list") { reply(message, {tools:${JSON.stringify(catalog)}}); continue; }`);
+    const session = await mountChatTools({ highlevel: f.server }, f.controller.signal);
+    sessions.push(session);
+    expect(session.definitions.map(tool => tool.function.name)).toEqual(["highlevel_search_tools", "highlevel_describe_tool", "highlevel_call_tool"]);
+    const result = JSON.parse((await session.execute("highlevel_search_tools", { query: "list payments", limit: 1 }, f.controller.signal)).text);
+    expect(result.matches[0].name).toBe("payments_list");
+    expect(session.view("highlevel_search_tools", { query: "list payments" }).ask).toBe(false);
+    expect(f.read().calls.filter(call => call.method === "tools/call")).toEqual([]);
+  });
+
   it("defers a few verbose computer tools without activating the computer for discovery", async () => {
     const toolSchema = { ...schema, description: "Instructions ".repeat(Math.ceil(CHAT_LISTED_CATALOG_BYTES / 4)) };
     const f = fixture("", toolSchema);

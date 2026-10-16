@@ -283,7 +283,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     const halves = promptHalves(turn);
     const system = halves.stable ?? turn.system ?? "";
     const integrations = turn.integrations;
-    const hasMcp = Boolean(integrations?.agents || integrations?.composio || integrations?.data ||
+    const hasMcp = Boolean(integrations?.agents || integrations?.composio || integrations?.data || integrations?.highlevel ||
       (options.computerUse && (integrations?.localComputer || integrations?.browser)) ||
       Object.keys(integrations?.custom ?? {}).length);
     return system + (options.tools === false || !hasMcp || system.endsWith(CHAT_TOOL_DISCOVERY_PROMPT) ? "" : CHAT_TOOL_DISCOVERY_PROMPT);
