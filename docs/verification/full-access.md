@@ -1,5 +1,7 @@
 # Full Access workflows
 
+Upstream already lets ordinary Full-access connected-app actions run without a second outbound approval. The remaining change verifies the active delegated turn and its lineage at dispatch, preserves recipient Custom and outside-origin boundaries, and refuses a grant revoked before execution. Connector scopes and tool grants remain in force.
+
 Run the isolated integration recipe:
 
 ```sh
