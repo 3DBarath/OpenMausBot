@@ -40,7 +40,7 @@ import { LicenseExpiryBanner } from "./LicenseExpiryBanner";
 import { WorkspacesSection, workspacesAvailable } from "./WorkspacesSection";
 import { SkinPicker } from "./SkinPicker";
 import { ChatWidthRow, FontRow, SidebarToolsLayoutRow } from "./AppearanceSelectRows";
-import { setColorUserBubbles, useColorUserBubbles } from "@/lib/user-bubble-preference";
+import { AnimatedBackgroundRow, ColorUserBubblesRow } from "./AppearanceToggleRows";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { McpCallTimeoutSettings } from "./McpCallTimeoutSettings";
 import { AboutMeSettings } from "./AboutMeSettings";
@@ -390,19 +390,6 @@ function SendKeyRow() {
           <option key={mode} value={mode}>{sendKeyLabel(mode)}</option>
         ))}
       </Select>
-    </SettingRow>
-  );
-}
-
-function ColorUserBubblesRow() {
-  const enabled = useColorUserBubbles();
-  return (
-    <SettingRow title={t("settings.userBubbles.title")} subtitle={t("settings.userBubbles.subtitle")}>
-      <Switch
-        checked={enabled}
-        aria-label={t("settings.userBubbles.aria")}
-        onClick={() => setColorUserBubbles(!enabled)}
-      />
     </SettingRow>
   );
 }
@@ -826,6 +813,7 @@ export function SettingsModal() {
             <FontRow />
             <ChatWidthRow />
             <ColorUserBubblesRow />
+            <AnimatedBackgroundRow />
             <SendKeyRow />
             <SidebarDensityRow />
             {advanced && <SidebarToolsLayoutRow />}

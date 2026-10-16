@@ -1209,7 +1209,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     <ThreadLinkContext value={threadLink}>
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       <CallOverlay bot={bot} />
-      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]">
+      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]" asciiField={windowedMessages.length === 0 && !bot.busy}>
       {/* z-[25]: above the room set-up card (z-20), below the CallOverlay (z-30). */}
       <GlassBar edge="top" className="z-[25]">
       <div
@@ -1358,7 +1358,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       <div
         ref={scrollRef}
-        className="glass-scroller h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
+        className="glass-scroller relative h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
         {...scrollHandlers}
       >
         <div

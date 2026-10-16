@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, type HTMLAttributes, type ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
+import { AsciiField } from "./AsciiField";
 
 type GlassEdge = "top" | "bottom";
 
@@ -23,7 +24,12 @@ export function publishGlassInsets(frame: HTMLElement): void {
   }
 }
 
-export function GlassScrollFrame({ className, children, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
+/**
+ * `asciiField` draws the drifting letter field behind everything in the frame while true
+ * (and fades it out when it turns false); leave it unset for no field. The scroller should be
+ * positioned so its content paints above the field.
+ */
+export function GlassScrollFrame({ className, children, asciiField, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode; asciiField?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const frame = ref.current;
@@ -45,6 +51,7 @@ export function GlassScrollFrame({ className, children, ...rest }: HTMLAttribute
   }, []);
   return (
     <div ref={ref} data-glass-frame="" className={cn("relative min-h-0", className)} {...rest}>
+      {asciiField !== undefined && <AsciiField active={asciiField} />}
       {children}
     </div>
   );

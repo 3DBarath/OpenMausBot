@@ -10,6 +10,7 @@ export const WORKSPACE_BACKUP_CLIENT_KEYS = [
   "omb-show-run-card",
   "omb-send-key",
   "omb-color-user-bubbles",
+  "omb-ascii-background",
   "omb-chat-width",
   "openmausbot.sidebarDensity",
   "openmausbot.sidebarToolsLayout",

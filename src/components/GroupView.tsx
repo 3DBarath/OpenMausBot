@@ -1314,7 +1314,7 @@ export function GroupView({ group }: { group: Group }) {
       {membersOpen && !remoteClient && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />
       )}
-      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]">
+      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]" asciiField={group.messages.length === 0}>
       {/* z-[25]: above the room set-up card (z-20), below the GroupCallOverlay (z-30). */}
       <GlassBar edge="top" className="z-[25]">
       <div
@@ -1482,7 +1482,7 @@ export function GroupView({ group }: { group: Group }) {
 
       <div
         ref={scrollRef}
-        className="glass-scroller h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
+        className="glass-scroller relative h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
         {...scrollHandlers}
       >
         {setupPending ? (
