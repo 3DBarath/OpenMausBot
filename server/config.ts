@@ -20,8 +20,8 @@ import { loopGuardConfigSchema } from "./host/loop-guard.ts";
 import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
-import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
-import { browserEngineConfigSchema, isValidCdpTarget, type BrowserEngineConfig } from "./browser/config.ts";
+import { deciderConfigSchema } from "./decider/config.ts";
+import { browserEngineConfigSchema, isValidCdpTarget } from "./browser/config.ts";
 import { roomContextSettings } from "./room-context-settings.ts";
 
 const optionalText = z.string().optional();
