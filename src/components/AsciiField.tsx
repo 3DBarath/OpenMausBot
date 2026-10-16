@@ -1,22 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useAsciiBackground } from "@/lib/ascii-background-preference";
-import { createAsciiRenderer, luminance, stepFade, type AsciiPalette, type Rgb } from "@/lib/ascii-field";
+import {
+  asciiLevel,
+  createAsciiRenderer,
+  luminance,
+  sameLevel,
+  stepLevel,
+  type AsciiLevel,
+  type AsciiMode,
+  type AsciiPalette,
+  type Rgb,
+} from "@/lib/ascii-field";
 
-const FRAME_MS = 1000 / 30;
-/** Behind other windows the field keeps drifting, more slowly, to spare the GPU. */
+const FOCUSED_FRAME_MS = 1000 / 30;
 const UNFOCUSED_FRAME_MS = 1000 / 10;
 const FADE_MS = 700;
-/** The moment a still (reduced-motion) field shows: a calm one, mid-swell. */
-const STILL_TIME = 30;
-/** Shared by every mount, so switching chats does not restart the drift. */
-const CLOCK_OFFSET = 200 + Math.random() * 600;
+const REDUCED_MOTION_TIME = 30;
+const SESSION_CLOCK_OFFSET = 200 + Math.random() * 600;
 const MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-/** Keeps the empty chat's avatar, name and prompt (centred in the pane) on a clean ground. */
-const CLEAR_CENTER = {
-  maskImage: "radial-gradient(ellipse 300px 150px at 50% 47%, transparent 40%, black 100%)",
-  WebkitMaskImage: "radial-gradient(ellipse 300px 150px at 50% 47%, transparent 40%, black 100%)",
-} as const;
 
 function reducedMotion(): boolean {
   if (document.documentElement.dataset.reducedMotion === "true") return true;
@@ -25,7 +27,6 @@ function reducedMotion(): boolean {
 
 let probe: CanvasRenderingContext2D | null | undefined;
 
-/** Resolves any CSS colour (hex, rgb, display-p3, color-mix) to sRGB channels, or null. */
 function resolveColor(value: string): Rgb | null {
   if (probe === undefined) {
     const canvas = document.createElement("canvas");
@@ -58,27 +59,22 @@ function monoFont(el: Element): string {
   return getComputedStyle(el).getPropertyValue("--font-mono").trim() || MONO_FALLBACK;
 }
 
-/**
- * The drifting letter field behind an empty chat. Fills its nearest positioned
- * ancestor; give the content that should sit above it a position of its own.
- * Fades in while `active`, fades out and stops drawing when not.
- */
-export function AsciiField({ active }: { active: boolean }) {
+export function AsciiField({ mode }: { mode: AsciiMode }) {
   const enabled = useAsciiBackground();
   if (!enabled) return null;
-  return <AsciiCanvas active={active} />;
+  return <AsciiCanvas mode={mode} />;
 }
 
-function AsciiCanvas({ active }: { active: boolean }) {
+function AsciiCanvas({ mode }: { mode: AsciiMode }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const activeRef = useRef(active);
+  const modeRef = useRef(mode);
   const kickRef = useRef<() => void>(() => {});
   const [generation, setGeneration] = useState(0);
 
   useEffect(() => {
-    activeRef.current = active;
+    modeRef.current = mode;
     kickRef.current();
-  }, [active]);
+  }, [mode]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -90,7 +86,7 @@ function AsciiCanvas({ active }: { active: boolean }) {
     let font = monoFont(canvas);
     let still = reducedMotion();
     let dpr = window.devicePixelRatio || 1;
-    let fade = 0;
+    let shown: AsciiLevel = { brightness: 0, clearCenter: asciiLevel(modeRef.current).clearCenter };
     let raf = 0;
     let last = 0;
 
@@ -101,7 +97,7 @@ function AsciiCanvas({ active }: { active: boolean }) {
 
     const frame = (now: number) => {
       raf = 0;
-      if (last && now - last < (document.hasFocus() ? FRAME_MS : UNFOCUSED_FRAME_MS) - 1) {
+      if (last && now - last < (document.hasFocus() ? FOCUSED_FRAME_MS : UNFOCUSED_FRAME_MS) - 1) {
         raf = requestAnimationFrame(frame);
         return;
       }
@@ -111,16 +107,10 @@ function AsciiCanvas({ active }: { active: boolean }) {
         dpr = window.devicePixelRatio || 1;
         size();
       }
-      const target = activeRef.current ? 1 : 0;
-      fade = still ? target : stepFade(fade, target, dt, FADE_MS);
-      if (fade <= 0 && target === 0) {
-        renderer.clear();
-        last = 0;
-        return;
-      }
-      const eased = fade * fade * (3 - 2 * fade);
-      renderer.draw(still ? STILL_TIME : now / 1000 + CLOCK_OFFSET, eased, palette);
-      if (still && fade === target) {
+      const target = asciiLevel(modeRef.current);
+      shown = still ? target : stepLevel(shown, target, dt, FADE_MS);
+      renderer.draw(still ? REDUCED_MOTION_TIME : now / 1000 + SESSION_CLOCK_OFFSET, shown, palette);
+      if (still && sameLevel(shown, target)) {
         last = 0;
         return;
       }
@@ -179,7 +169,6 @@ function AsciiCanvas({ active }: { active: boolean }) {
       aria-hidden="true"
       data-ascii-field=""
       className="pointer-events-none absolute inset-0 h-full w-full select-none"
-      style={CLEAR_CENTER}
     />
   );
 }

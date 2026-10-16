@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ASCII_CELL, ASCII_GLYPHS, asciiGrid, luminance, stepFade } from "./ascii-field";
+import { ASCII_CELL, ASCII_GLYPHS, asciiGrid, asciiLevel, luminance, sameLevel, stepFade, stepLevel } from "./ascii-field";
 
 describe("ascii field grid", () => {
   it("covers the whole canvas with whole-pixel cells", () => {
@@ -62,5 +62,25 @@ describe("luminance", () => {
     expect(luminance([1, 1, 1])).toBeCloseTo(1);
     expect(luminance([7 / 255, 7 / 255, 7 / 255])).toBeLessThan(0.01);
     expect(luminance([253 / 255, 245 / 255, 234 / 255])).toBeGreaterThan(0.85);
+  });
+});
+
+describe("ascii field level", () => {
+  it("shows the field behind every chat, brightest and cleared in the middle while empty", () => {
+    const empty = asciiLevel("empty");
+    const chat = asciiLevel("chat");
+    expect(empty).toEqual({ brightness: 1, clearCenter: 1 });
+    expect(chat.brightness).toBeGreaterThan(0);
+    expect(chat.brightness).toBeLessThan(empty.brightness);
+    expect(chat.clearCenter).toBe(0);
+  });
+
+  it("eases both values from the empty look to the chat look together", () => {
+    let level = asciiLevel("empty");
+    level = stepLevel(level, asciiLevel("chat"), 350, 700);
+    expect(level.clearCenter).toBeCloseTo(0.5);
+    expect(level.brightness).toBeCloseTo(0.55);
+    level = stepLevel(level, asciiLevel("chat"), 700, 700);
+    expect(sameLevel(level, asciiLevel("chat"))).toBe(true);
   });
 });

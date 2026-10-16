@@ -1,28 +1,32 @@
-// A field of monospace letters behind an empty chat. A slow, warped noise field
-// lights letters up in drifting patches; where a patch is arriving the letters
-// take the accent colour, and each letter swaps for another now and then.
-//
-// One instanced WebGL2 draw per frame: the vertex shader evaluates the field once
-// per letter (not per pixel) and collapses unlit letters, and the fragment shader
-// only samples a glyph atlas. The CPU sets a handful of uniforms.
-
 export const ASCII_GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/** Letter cell and font size in CSS pixels. */
 export const ASCII_CELL = { width: 7, height: 13, font: 11 } as const;
 
-/** How wide one patch of the field is, in CSS pixels. */
 const FIELD_SCALE = 380;
+const CLEAR_RADIUS = { x: 300, y: 150 } as const;
 
 export type Rgb = readonly [number, number, number];
 
 export interface AsciiPalette {
-  /** Lit letters. */
   base: Rgb;
-  /** Letters where a patch is arriving. */
   hot: Rgb;
-  /** Opacity of a fully lit letter. */
   peak: number;
+}
+
+export type AsciiMode = "empty" | "chat";
+
+export interface AsciiLevel {
+  brightness: number;
+  clearCenter: number;
+}
+
+const LEVELS: Record<AsciiMode, AsciiLevel> = {
+  empty: { brightness: 1, clearCenter: 1 },
+  chat: { brightness: 0.55, clearCenter: 0 },
+};
+
+export function asciiLevel(mode: AsciiMode): AsciiLevel {
+  return LEVELS[mode];
 }
 
 export interface AsciiGrid {
@@ -35,7 +39,6 @@ export interface AsciiGrid {
   dpr: number;
 }
 
-/** Device-pixel grid for a canvas of the given CSS size. Cells are whole pixels so glyphs stay sharp. */
 export function asciiGrid(cssWidth: number, cssHeight: number, dpr: number): AsciiGrid {
   const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   const cellWidth = Math.max(1, Math.round(ASCII_CELL.width * scale));
@@ -53,7 +56,6 @@ export function asciiGrid(cssWidth: number, cssHeight: number, dpr: number): Asc
   };
 }
 
-/** Moves `current` toward `target` (both 0..1) so a full change takes `durationMs`. */
 export function stepFade(current: number, target: number, dtMs: number, durationMs: number): number {
   if (durationMs <= 0) return target;
   const step = Math.max(0, dtMs) / durationMs;
@@ -61,7 +63,17 @@ export function stepFade(current: number, target: number, dtMs: number, duration
   return Math.abs(next - target) < 1e-9 ? target : next;
 }
 
-/** WCAG relative luminance of an sRGB colour given as 0..1 channels. */
+export function stepLevel(current: AsciiLevel, target: AsciiLevel, dtMs: number, durationMs: number): AsciiLevel {
+  return {
+    brightness: stepFade(current.brightness, target.brightness, dtMs, durationMs),
+    clearCenter: stepFade(current.clearCenter, target.clearCenter, dtMs, durationMs),
+  };
+}
+
+export function sameLevel(a: AsciiLevel, b: AsciiLevel): boolean {
+  return a.brightness === b.brightness && a.clearCenter === b.clearCenter;
+}
+
 export function luminance([r, g, b]: Rgb): number {
   const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
   return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
@@ -76,7 +88,9 @@ uniform float u_cols;
 uniform float u_field;
 uniform float u_time;
 uniform float u_glyphs;
-uniform float u_fade;
+uniform float u_brightness;
+uniform float u_clear;
+uniform vec2 u_clearRadius;
 
 out vec2 v_uv;
 out float v_alpha;
@@ -117,7 +131,6 @@ float fbm(vec3 p) {
   return sum / 0.875;
 }
 
-// Domain-warped fbm: the warp bends patches into the curved bands of the reference.
 float field(vec2 p, float t) {
   vec2 drift = vec2(t * 0.045, -t * 0.03);
   vec2 warp = vec2(fbm(vec3(p * 0.8 + drift, t * 0.09)), fbm(vec3(p * 0.8 + vec2(5.2, 1.3) - drift, t * 0.09 + 3.1)));
@@ -132,17 +145,18 @@ void main() {
     (v == 1 || v == 4 || v == 5) ? 1.0 : 0.0,
     (v == 2 || v == 3 || v == 5) ? 1.0 : 0.0);
 
-  vec2 p = (cell + 0.5) * u_cell / u_field;
+  vec2 center = (cell + 0.5) * u_cell;
+  vec2 p = center / u_field;
   float jitter = (hash(cell) - 0.5) * 0.05;
   float n = field(p, u_time) + jitter;
   float before = field(p, u_time - 0.8) + jitter;
 
-  // A slow swell so the whole field breathes between busy and almost empty.
   float swell = 0.5 + 0.5 * sin(u_time * 0.21) * sin(u_time * 0.13 + 1.7);
   float lo = 0.575 - 0.07 * swell;
   float lit = smoothstep(lo - 0.03, lo + 0.2, n);
+  float hole = smoothstep(0.4, 1.0, length((center - u_canvas * vec2(0.5, 0.47)) / u_clearRadius));
   v_hot = smoothstep(0.004, 0.03, n - before) * smoothstep(lo + 0.02, lo + 0.16, n);
-  v_alpha = lit * lit * u_fade;
+  v_alpha = lit * lit * u_brightness * mix(1.0, hole, u_clear);
 
   float rate = 0.12 + 0.4 * hash(cell + 7.7);
   float turn = floor(u_time * rate + hash(cell + 3.3) * 10.0);
@@ -177,10 +191,8 @@ void main() {
 `;
 
 export interface AsciiRenderer {
-  /** Sizes the canvas for its CSS box and redraws the glyph atlas when the cell or font changes. */
   resize(cssWidth: number, cssHeight: number, dpr: number, fontFamily: string): void;
-  draw(time: number, fade: number, palette: AsciiPalette): void;
-  clear(): void;
+  draw(time: number, level: AsciiLevel, palette: AsciiPalette): void;
   dispose(): void;
 }
 
@@ -229,7 +241,6 @@ function drawAtlas(grid: AsciiGrid, fontFamily: string): HTMLCanvasElement | nul
   return atlas;
 }
 
-/** A renderer for `canvas`, or null when WebGL2 is unavailable (the field is then simply absent). */
 export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | null {
   const gl = canvas.getContext("webgl2", {
     alpha: true,
@@ -252,7 +263,9 @@ export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | 
     field: at("u_field"),
     time: at("u_time"),
     glyphs: at("u_glyphs"),
-    fade: at("u_fade"),
+    brightness: at("u_brightness"),
+    clear: at("u_clear"),
+    clearRadius: at("u_clearRadius"),
     atlas: at("u_atlas"),
     base: at("u_base"),
     hot: at("u_hot"),
@@ -281,7 +294,7 @@ export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | 
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       atlasKey = key;
     },
-    draw(time, fade, palette) {
+    draw(time, level, palette) {
       if (!grid || !atlasKey || gl.isContextLost()) return;
       gl.viewport(0, 0, grid.width, grid.height);
       gl.clearColor(0, 0, 0, 0);
@@ -297,18 +310,15 @@ export function createAsciiRenderer(canvas: HTMLCanvasElement): AsciiRenderer | 
       gl.uniform1f(u.field, FIELD_SCALE * grid.dpr);
       gl.uniform1f(u.time, time);
       gl.uniform1f(u.glyphs, ASCII_GLYPHS.length);
-      gl.uniform1f(u.fade, fade);
+      gl.uniform1f(u.brightness, level.brightness);
+      gl.uniform1f(u.clear, level.clearCenter);
+      gl.uniform2f(u.clearRadius, CLEAR_RADIUS.x * grid.dpr, CLEAR_RADIUS.y * grid.dpr);
       gl.uniform3f(u.base, ...palette.base);
       gl.uniform3f(u.hot, ...palette.hot);
       gl.uniform1f(u.peak, palette.peak);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, grid.cols * grid.rows);
-    },
-    clear() {
-      if (gl.isContextLost()) return;
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
     },
     dispose() {
       if (gl.isContextLost()) return;
