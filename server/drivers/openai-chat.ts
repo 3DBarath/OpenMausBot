@@ -572,8 +572,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               // A person's "no" is never answered with another attempt; a failure may first get the configured corrective rounds.
               if (!denials.length && correctiveRounds < (turn.toolErrorCorrectiveRounds ?? 0)) {
                 correctiveRounds += 1;
+                messages.push(finalMessage, { role: "user", content: CORRECTIVE_ROUND });
                 finalMessage = undefined;
-                messages.push({ role: "user", content: CORRECTIVE_ROUND });
                 continue;
               }
               stopReason = "tool_error";

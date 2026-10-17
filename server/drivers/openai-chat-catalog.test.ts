@@ -66,7 +66,7 @@ it("discards retained wire history when a corrective round fails after an earlie
     const message = bodies.length === 1
       ? { content: null, tool_calls: [{ id: "failed-call", type: "function", function: { name: "fixture_tool", arguments: "{}" } }] }
       : { content: bodies.length === 2 ? "Earlier answer" : "Follow-up" };
-    return new Response(JSON.stringify({ choices: [{ message, finish_reason: bodies.length === 1 ? "tool_calls" : "stop" }] }));
+    return new Response(JSON.stringify({ choices: [{ message, finish_reason: bodies.length === 1 ? "tool_calls" : "stop" }] }), { headers: { "content-type": "application/json" } });
   }));
   const instance = await OpenAICompatDriver.create({ instanceId: "corrective-history", displayName: "Fixture", enabled: true,
     config: { url: "http://127.0.0.1:1/v1", apiKeyEnv: "K", model: "fixture" }, environment: { K: "fixture" } });
@@ -77,6 +77,7 @@ it("discards retained wire history when a corrective round fails after an earlie
       systemStable: "Stable", approvalMode: "full", toolErrorCorrectiveRounds: 1 });
     await vi.waitFor(() => expect(finished).toHaveLength(1));
     expect(finished[0]).toMatchObject({ ok: false });
+    expect(bodies[2].messages.at(-2)).toMatchObject({ role: "assistant", content: "Earlier answer" });
     await instance.adapter.sendTurn({ threadId: "t", text: "Continue", sourceMessage: { id: "u2", role: "user", text: "Continue" },
       systemStable: "Stable", approvalMode: "full", transcript: [{ id: "u1", role: "user", text: "Try" }, { id: "a1", role: "assistant", text: "Earlier answer" }] });
     await vi.waitFor(() => expect(finished).toHaveLength(2));
