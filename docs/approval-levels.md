@@ -113,7 +113,7 @@ with it. Questions and missing credentials still reach you.
 ## Changing the level while working
 
 The composer selector stays available during a running turn. OpenMausBot saves
-changes for that conversation; its siblings keep their selections. Full access uses the existing upstream grant flow.
+changes for that conversation; its siblings keep their selections.
 
 For OpenAI-compatible and other chat API engines, the new selection applies
 before the next tool executes, including later tools in the same response.

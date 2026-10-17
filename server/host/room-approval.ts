@@ -1,5 +1,3 @@
-import { delegationOriginKind } from "./delegation-origin.ts";
-import type { OriginKind } from "../runtime/types.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import type { BotRecord } from "../store.ts";
 import type { HandoffView } from "../coordinator.ts";
@@ -9,20 +7,19 @@ export function createRoomApprovalModes(deps: {
   bot(id: string): BotRecord | null | undefined;
   cloudGuestDriven(threadId: string): boolean;
   approvalModeForTurn(bot: BotRecord, peerInitiated: boolean, threadId: string): ApprovalMode;
-  delegatedLevel(from: BotRecord, sourceThreadId: string, target: BotRecord, own: ApprovalMode, origin?: OriginKind): ApprovalMode | null;
+  delegatedLevel(from: BotRecord, sourceThreadId: string, target: BotRecord, own: ApprovalMode): ApprovalMode | null;
 }) {
   function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: { roomHandoffId?: string }): ApprovalMode {
     const handoff = orchestration?.roomHandoffId ? deps.node(orchestration.roomHandoffId) : undefined;
     const source = handoff?.parentId ? deps.node(handoff.parentId) : undefined;
-    const origin = delegationOriginKind(handoff ? deps.node(handoff.rootId) : undefined);
-    return roomTurnLevel(bot, threadId, source, origin);
+    return roomTurnLevel(bot, threadId, source);
   }
 
-  function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined, origin: OriginKind = "outside"): ApprovalMode {
+  function roomTurnLevel(bot: BotRecord, threadId: string, source: Pick<HandoffView, "botId" | "threadId"> | undefined): ApprovalMode {
     if (deps.cloudGuestDriven(threadId)) return "ask";
     const from = source ? deps.bot(source.botId) : undefined;
     const own = deps.approvalModeForTurn(bot, source !== undefined, threadId);
-    return (from && source && deps.delegatedLevel(from, source.threadId, bot, own, origin)) || own;
+    return (from && source && deps.delegatedLevel(from, source.threadId, bot, own)) || own;
   }
 
   return { roomTurnApprovalMode, roomTurnLevel };

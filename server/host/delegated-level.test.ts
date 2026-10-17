@@ -6,14 +6,14 @@ const chief = { id: "chief", chiefOfStaff: true, approvalMode: "full", modelSele
 const member = { id: "member", approvalMode: "ask", modelSelection: { instanceId: "native", model: "fixture" } } as BotRecord;
 const resolve = createDelegatedLevel({ sourceApprovalMode: () => "full", driverKind: () => "claudeAgent" });
 
-describe("delegated native grant boundaries", () => {
-  it.each(["person", "routine"] as const)("keeps a Chief's grant for %s lineage", origin => {
-    expect(resolve(chief, "source", member, "ask", origin)).toBe("full");
+describe("a Chief's level flowing to a teammate", () => {
+  it("raises the teammate to the Chief's level", () => {
+    expect(resolve(chief, "source", member, "ask")).toBe("full");
   });
-  it("keeps outside work at the recipient's own level", () => {
-    expect(resolve(chief, "source", member, "ask", "outside")).toBeNull();
+  it("never raises a bot on Custom, which a peer turn reads as Auto", () => {
+    expect(resolve(chief, "source", { ...member, approvalMode: "custom" }, "auto")).toBeNull();
   });
-  it.each(["person", "routine", "outside"] as const)("never elevates Custom when peer dispatch projects it to Auto (%s)", origin => {
-    expect(resolve(chief, "source", { ...member, approvalMode: "custom" }, "auto", origin)).toBeNull();
+  it("never raises the Chief itself", () => {
+    expect(resolve(chief, "source", chief, "ask")).toBeNull();
   });
 });
