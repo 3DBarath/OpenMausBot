@@ -179,6 +179,37 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     } finally { await instance.dispose(); }
   }, 20_000);
 
+  it("reads a narrower mode before a later tool in the same model response", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-live-boundary-")); mcpDir.push(dir);
+    const receipt = join(dir, "calls.txt");
+    let requests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+      if (!String(url).endsWith("/chat/completions")) return new Response(JSON.stringify({ data: [] }));
+      const first = requests++ === 0;
+      const delta = first ? { tool_calls: [0, 1].map(index => ({ index, id: `write-${index}`, type: "function", function: { name: "fx_write", arguments: "{}" } })) }
+        : { content: "Finished." };
+      return sse(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: first ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
+    }));
+    const instance = await OpenAICompatDriver.create({ instanceId: "live-boundary", displayName: "Fixture", enabled: true,
+      config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.test/v1", apiKeyEnv: "K", model: "fixture" }), environment: { K: "synthetic" } });
+    let mode: "full" | "ask" = "full";
+    const events: RuntimeEvent[] = [];
+    instance.adapter.onEvent(event => {
+      events.push(event);
+      if (event.type === "item.completed" && event.itemId === "write-0") mode = "ask";
+    });
+    try {
+      await instance.adapter.sendTurn({ threadId: "live-boundary", text: "Do the fixture writes", approvalMode: "full",
+        currentApprovalMode: () => mode, integrations: { custom: { fx: toolServer(receipt) } } });
+      await vi.waitFor(() => expect(events.some(event => event.type === "request.opened")).toBe(true), { timeout: 10_000 });
+      expect(readFileSync(receipt, "utf8")).toBe("write\n");
+      const card = events.find(event => event.type === "request.opened")!;
+      expect(await instance.adapter.respondToRequest("live-boundary", card.requestId!, { behavior: "deny" })).toBe("rejected");
+      await vi.waitFor(() => expect(events.some(event => event.type === "turn.completed")).toBe(true));
+      expect(readFileSync(receipt, "utf8")).toBe("write\n");
+    } finally { await instance.dispose(); }
+  }, 20_000);
+
   const cardRaisedFor = async (approvalMode: "ask" | "full") => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(
       'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"fx_write","arguments":"{}"}}]}}]}\n\n'

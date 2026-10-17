@@ -89,6 +89,8 @@ export interface SendTurnInput {
   recalled?: string;
   /** Reasserted every turn so a resumed native session cannot keep a stale, more permissive mode. */
   approvalMode?: ApprovalMode;
+  /** App-owned gates read this before execution; native modes are dispatched per turn. */
+  currentApprovalMode?: () => ApprovalMode;
   /** Fresh owner selection, independent of execution approval and resume state. */
   toolScope?: ToolScope;
   /** A guest turn: no shell or command execution, no reads outside its folder. Sent only to drivers whose guestTurns is "confined". */
