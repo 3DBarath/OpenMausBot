@@ -143,7 +143,7 @@ function rejectsReasoningReplay(status: number, body: string): boolean {
 
 /** Groq fails a completion with `tool_use_failed` when a generated tool call is invalid: usually a
  *  tool it was not offered (gpt-oss inventing a "json" tool), sometimes arguments missing the schema. */
- export class RejectedToolCallError extends ChatProtocolError {
+export class RejectedToolCallError extends ChatProtocolError {
   readonly refusal: Record<string, unknown>;
   constructor(message: string, refusal: Record<string, unknown>) {
     super(message);
@@ -169,7 +169,7 @@ function completionError(json: CompletionJson, label: string): ChatProtocolError
   return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
 }
 
- export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
+export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
   const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
   const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
   const what = tool ? `tried to use a tool it was not given ("${tool}")` : "made a tool call the provider rejected";
