@@ -1,4 +1,4 @@
-         import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, FileText, Image as ImageIcon, Slack, Smartphone, X } from "lucide-react";
 
 import { cn } from "@/lib/cn";
@@ -42,7 +42,7 @@ const labelCls = "mb-1.5 block text-[12px] text-ink-secondary";
 
 export type SimpleBotTab = "details" | "memory" | "library" | "skills" | "routines" | "vault";
 
- const TABS = [
+const TABS = [
   ["details", "botSettings.simple.details"],
   ["memory", "botSettings.simple.memory"],
   ["library", "botSettings.simple.library"],
@@ -51,22 +51,22 @@ export type SimpleBotTab = "details" | "memory" | "library" | "skills" | "routin
   ["vault", "botSettings.simple.vault"],
 ] as const;
 
- const SIMPLE_PLACES: readonly Place[] = ["local", "cloud"];
+const SIMPLE_PLACES: readonly Place[] = ["local", "cloud"];
 
- const USES_SHOWN = 4;
+const USES_SHOWN = 4;
 
 const rowsCls = "divide-y divide-hairline/40 border-y border-hairline/40";
 const sectionTitleCls = "text-[12px] text-ink-secondary";
- const rowActionCls = "flex shrink-0 items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[13px] font-medium text-ink hover:bg-raised";
+const rowActionCls = "flex shrink-0 items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[13px] font-medium text-ink hover:bg-raised";
 const linkCls = "rounded-md px-1.5 py-0.5 text-[12px] font-medium text-accent-text hover:bg-raised";
- const segmentCls = "inline-flex shrink-0 rounded-full bg-inset p-0.5";
+const segmentCls = "inline-flex shrink-0 rounded-full bg-inset p-0.5";
 const segmentItemCls = (on: boolean) =>
   cn(
     "rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
     on ? "bg-raised text-ink shadow-sm" : "text-ink-secondary enabled:hover:text-ink",
   );
 
- function Row({ title, hint, badge, children, ...rest }: {
+function Row({ title, hint, badge, children, ...rest }: {
   title: ReactNode;
   hint?: ReactNode;
   badge?: ReactNode;
@@ -95,7 +95,7 @@ export interface LibraryItem {
   messageId: string;
 }
 
- export function botLibraryItems(bot: Bot): LibraryItem[] {
+export function botLibraryItems(bot: Bot): LibraryItem[] {
   const groups: LibraryItem[][] = [];
   const seen = new Set<string>();
   for (const message of [...visibleMessages(bot)].reverse()) {
@@ -155,6 +155,7 @@ export function SimpleBotPanel({
   const platform = capabilities.host?.platform ?? "other";
   const placeSeat = usePlaceSeat(state.config, platform);
   const { patch, approvalMode, engine, trustedModesAvailable } = derived;
+  // Antigravity's old Auto still executes as Ask: show that without changing the saved mode or granting Full.
   const displayedApprovalMode = engine?.driverKind === "antigravityAgent" && approvalMode === "auto" ? "ask" : approvalMode;
 
   const autoOffered = approvalModeOptionsFor(engine?.driverKind ?? "", trustedModesAvailable)

@@ -1,4 +1,5 @@
-     import type { ApprovalMode } from "../shared/approval-mode.ts";
+// A Chief's delegated level rides the room handoff, never the shared room thread, so permission requests read it here.
+import type { ApprovalMode } from "../shared/approval-mode.ts";
 
 export type RoomTurnLevels = ReturnType<typeof createRoomTurnLevels>;
 

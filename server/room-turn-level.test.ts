@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { autoVerdict } from "./auto-approve.ts";
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 
-   const own = () => "ask" as const;
+// An ACP engine (Antigravity, Gemini) leaves every permission request to the app, with `execute` mapped to "shell".
+const own = () => "ask" as const;
 
 describe("room turn level", () => {
   it("auto-approves a request from a room turn a Chief ran on Full access", () => {

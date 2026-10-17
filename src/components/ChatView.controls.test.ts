@@ -21,7 +21,8 @@ vi.mock("@/state/store", async (importOriginal) => {
     dispatch: fixture.dispatch,
   }) };
 });
-  vi.mock("./DesktopCapabilities", async (importOriginal) => ({
+// The real useCaptionChrome rides along: it only asks this module for the window chrome.
+vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: fixture.platform }, localComputer: { available: false, reasonCode: fixture.localReasonCode, message: fixture.localMessage } }, ready: true }),
 }));
@@ -31,7 +32,8 @@ vi.mock("@/lib/thread-preferences", async (importOriginal) => ({
   useShowThreads: () => fixture.showThreads,
 }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: vi.fn() }));
-  vi.mock("./SidebarPopoverMenu", async (importOriginal) => ({
+// The trigger still renders, so the markup assertions in this file see the same header.
+vi.mock("./SidebarPopoverMenu", async (importOriginal) => ({
   ...await importOriginal<typeof import("./SidebarPopoverMenu")>(),
   SidebarPopoverMenu: (props: { ariaLabel: string; items: never[]; renderTrigger: (state: { open: boolean }) => unknown }) => {
     fixture.menus.push({ ariaLabel: props.ariaLabel, items: props.items });
@@ -425,6 +427,7 @@ describe("thread control placement", () => {
       ...bot,
       messages: [{ id: "mixed-script", role: "user", kind: "text", at: 1, text }],
     } }));
+    // unicode-bidi does not inherit, so the class must sit on the node holding the prose.
     expect(markup).toMatch(/<div class="chat-text[^"]*"[^>]*>(?:شغّل|שלום|مرحبا)/);
     expect(markup).not.toMatch(/class="[^"]*chat-text[^"\n]*bg-bubble-user/);
   });
@@ -479,7 +482,7 @@ describe("thread control placement", () => {
   });
 });
 
-    describe("screen reader announcements", () => {
+describe("screen reader announcements", () => {
   it("keeps the transcript log out of live announcements", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup).toMatch(/role="log" aria-live="off" aria-label="Conversation with Pepper"/);
@@ -499,7 +502,7 @@ describe("thread control placement", () => {
   });
 });
 
-  describe("a guest's composer on a Cloud home", () => {
+describe("a guest's composer on a Cloud home", () => {
   it("offers a new conversation in one click, with no dialog", () => {
     const onNew = vi.fn();
     const markup = renderToStaticMarkup(createElement(NewConversationInstead, { onNew }));

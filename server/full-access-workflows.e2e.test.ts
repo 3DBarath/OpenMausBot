@@ -101,7 +101,7 @@ it.each(["ask", "full"] as const)("applies Full workflows while outside API dele
     await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvePeerComms: true });
     const ask = (await api("POST", `/api/bots/${chief.id}/tasks`, { title: "Ask sibling" }, 201)).task;
     const peer = (await cli("new-bot", "--name", "Ada", "--section", "Operations")).bot;
-    // The fixture exercises explicit Ask and Full independently of Chief authority.
+    // Ada's own level is an explicit Ask, so the Chief's Full has something to raise.
     await api("PATCH", `/api/bots/${peer.id}`, { approvalMode: "ask" });
     const inverse = (await cli("new-bot", "--name", "Thread Full", "--section", "Private")).bot;
     const modelSelection = chief.modelSelection;

@@ -166,6 +166,7 @@ app.whenReady().then(async () => {
   const revoked = await coordinator.request(child, whole.id, "ask", { allThreads: true });
   assert.equal(revoked.approvalMode, "ask");
   assert.ok(revoked.tasks.every(task => task.approvalMode === "ask"));
+  // Auto and Edits reach every thread the same way, in one write.
   const autoEverywhere = await coordinator.request(child, whole.id, "auto", { allThreads: true });
   assert.equal(autoEverywhere.approvalMode, "auto");
   assert.ok(autoEverywhere.tasks.every(task => task.approvalMode === "auto"));
@@ -175,6 +176,8 @@ app.whenReady().then(async () => {
   const created = await api("/api/bots", "POST", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
   assert.equal(created.status, 201);
   const id = created.body.bot.id;
+  // Full needs no private channel: the API applies it at once. Custom keeps
+  // the private channel (checked below).
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "full" })).status, 200);
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "ask" })).status, 200);
   for (const [mode, native] of [["full", "bypassPermissions"], ["auto", "auto"], ["edits", "acceptEdits"], ["ask", "default"]]) {
@@ -284,6 +287,8 @@ app.whenReady().then(async () => {
           return !state.busy && state;
         });
         const text = settled.messages.slice(before).map((message) => message.text ?? "").join("\n");
+        // Anchored to line starts: session_search's result quotes earlier
+        // reads mid-line.
         assert.match(text, /^list_bots:/m);
         assert.match(text, /^session_search:/m);
         assert.equal((text.match(/^list_bots:/gm) ?? []).length, 2, "Repeated reads complete without another prompt");
