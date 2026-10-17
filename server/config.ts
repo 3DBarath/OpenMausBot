@@ -1265,6 +1265,11 @@ const API_KEY_FLEET: InstanceConfigMap = {
   },
 };
 
+export function openaiCompatConnectionUrl(cfg: AppConfig): string {
+  const config = cfg.instances?.openaiCompat?.config as { url?: unknown } | undefined;
+  return typeof config?.url === "string" && config.url ? config.url : cfg.openaiCompat?.url || "https://openrouter.ai/api/v1";
+}
+
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // Google retired Gemini CLI for the free/Pro/Ultra tiers on 2026-06-18; enterprise licences restore it with
   // `{"instances": {"gemini": {"driver": "geminiAgent"}}}`.

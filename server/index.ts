@@ -1,6 +1,5 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
-import { openaiCompatConnectionUrl } from "./openai-compat-settings.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -184,7 +183,7 @@ import {
   persistableInstanceConfigs,
   type AppConfig,
   vpsSshAlias,
-  DATA_DIR, EVENTS_DIR,
+  DATA_DIR, EVENTS_DIR, openaiCompatConnectionUrl,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,

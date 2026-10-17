@@ -3,10 +3,10 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "./schema.ts";
-import { openaiCompatConnectionUrl } from "./openai-compat-settings.ts";
 
 import { cacheUntilConfigChanges,
   changedInstanceIds,
+  openaiCompatConnectionUrl,
   customMcpServers,
   engineLaunches,
   DATA_DIR,
