@@ -89,7 +89,7 @@ function parseDocument(text: string, previous: Checkpoint | undefined, users: Re
     } else {
       if (sources.some(id => !users.has(id))) throw new Error("checkpoint requirement cites non-user source material");
       const id = createHash("sha256").update(JSON.stringify([sources, item.text])).digest("hex").slice(0, 24);
-      active.set(id, { id, text: item.text, sourceIds: sources });
+      if (!active.has(id)) active.set(id, { id, text: item.text, sourceIds: sources });
     }
   }
   for (const item of parsed.verifiedOutcomes) {

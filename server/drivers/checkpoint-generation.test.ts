@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CheckpointGenerationOptions, ProviderInstance, RuntimeEvent } from "../contracts.ts";
 import { CLAUDE_CHECKPOINT_SYSTEM_PROMPT, ClaudeDriver } from "./claude.ts";
+import { OpenAICompatDriver } from "./openai-compat.ts";
+import { createClaudeCheckpointHelper } from "./claude-checkpoint.ts";
 import { GrokDriver } from "./grok.ts";
 import { anthropicBaseUrl, localHost } from "./local-inject.ts";
 
 const options = (extra: Partial<CheckpointGenerationOptions> = {}): CheckpointGenerationOptions => ({
-  signal: new AbortController().signal, maxTokens: 8_000, prefillTimeoutMs: 1_000, idleTimeoutMs: 1_000, ...extra,
+  signal: new AbortController().signal, maxTokens: 8_000, prefillTimeoutMs: null, idleTimeoutMs: 1_000, ...extra,
 });
 const frame = (res: ServerResponse, value: unknown) => res.write(`data: ${JSON.stringify(value)}\n\n`);
 const delta = (content: Record<string, unknown>) => ({ choices: [{ index: 0, delta: content }] });
@@ -20,9 +22,10 @@ const terminal = (res: ServerResponse, reason = "stop") => {
 };
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function openai(handler: (res: ServerResponse, body: any) => void) {
+async function openai(handler: (res: ServerResponse, body: any) => void, compatible = false) {
   const requests: any[] = [];
   const server = createServer(async (req, res) => {
+    if (req.url?.endsWith("/models")) { res.end('{"data":[]}'); return; }
     let raw = "";
     for await (const part of req) raw += part;
     const body = JSON.parse(raw);
@@ -35,7 +38,7 @@ async function openai(handler: (res: ServerResponse, body: any) => void) {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("no fixture port");
   cleanups.push(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const instance = await GrokDriver.create({ instanceId: "checkpoint-fixture", displayName: "Fixture", enabled: true,
+  const instance = await (compatible ? OpenAICompatDriver : GrokDriver).create({ instanceId: "checkpoint-fixture", displayName: "Fixture", enabled: true,
     config: { url: `http://127.0.0.1:${address.port}`, apiKeyEnv: "FIXTURE_KEY" }, environment: { FIXTURE_KEY: "fake-key" } });
   cleanups.push(() => instance.dispose());
   return { instance, requests };
@@ -226,5 +229,29 @@ describe("native Claude checkpoint streaming", () => {
     const request = instance.generateCheckpoint!("prompt", options({ prefillTimeoutMs: null, signal: controller.signal }));
     const reason = new DOMException("host Stop", "AbortError"); controller.abort(reason);
     await expect(request).rejects.toBe(reason);
+  });
+});
+
+describe("checkpoint provider contracts", () => {
+  it.each(["gpt-5", "gpt-6.1", "o3", "openai/o4-mini", "local-model"])("uses the token-limit parameter for %s", async model => {
+    const { instance, requests } = await openai(res => { frame(res, delta({ content: "done" })); terminal(res); }, true);
+    await instance.generateCheckpoint!("prompt", options({ model }));
+    const field = model === "local-model" ? "max_tokens" : "max_completion_tokens";
+    expect(requests[0][field]).toBe(options().maxTokens);
+    expect(requests[0]).not.toHaveProperty(field === "max_tokens" ? "max_completion_tokens" : "max_tokens");
+  });
+
+  it.each(["configDir", "key", "url", "injectedModel"])("refuses managed checkpoint billing without valid %s", async missing => {
+    const environment = vi.fn(() => ({}));
+    const helper = createClaudeCheckpointHelper({
+      config: { cli: "must-not-run", managed: true, configDir: missing === "configDir" ? undefined : "/fixture/managed" },
+      inputEnvironment: { ...(missing === "key" ? {} : { ANTHROPIC_API_KEY: "fake" }),
+        ...(missing === "url" ? {} : { ANTHROPIC_BASE_URL: "https://company.example.invalid" }) },
+      environment, readClaudeAuthSettings: () => ({}), noKeyMessage: "Missing key",
+    });
+    await expect(helper.generateCheckpoint("prompt", options({ model: missing === "injectedModel" ? "route::personal" : "company-model" })))
+      .rejects.toThrow(/personal billing will not be used/);
+    expect(environment).not.toHaveBeenCalled();
+    helper.close();
   });
 });

@@ -140,3 +140,15 @@ it("allows carried checkpoint outcomes to cite receipts from the earlier folded 
   const checkpoint = await draftSummary(history, { ...options(async () => result(doc({ requirements: [], verifiedOutcomes: [{ text: "Earlier test receipt reported success", sourceIds: ["earlier-receipt"] }] }))), previous, previousReceiptIds: new Set(["earlier-receipt"]) });
   expect(checkpoint.summary).toContain("earlier-receipt");
 });
+
+ it("keeps corrections when a later checkpoint re-emits an earlier requirement without its id", async () => {
+  const first = await draftSummary(history, options(async () => result()));
+  const correction: CheckpointSource = { id: "later-correction", role: "user", sourceKind: "user", text: "Only deploy to staging." };
+  const changed = await draftSummary([history[0]!, correction], { ...options(async () => result(doc({
+    retiredRequirements: [{ id: first.requirements[0]!.id, supersedingUserId: correction.id }],
+  }))), previous: first });
+  expect(changed.requirements[0]!.corrections).toEqual([{ sourceId: correction.id, text: correction.text }]);
+  const again = await draftSummary([history[0]!], { ...options(async () => result()), previous: changed });
+  expect(again.requirements).toEqual(changed.requirements);
+  expect(again.summary).toContain(correction.text);
+});
