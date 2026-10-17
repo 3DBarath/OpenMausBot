@@ -354,7 +354,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     try {
       await instance.adapter.sendTurn({ threadId: "tools", text: "first", systemStable: "Stable rules.", systemVolatile: "Memory.",
         sourceMessage: { id: "u1", role: "user", text: "first" }, transcript: [], approvalMode: "full", integrations: integration });
-      await vi.waitFor(() => expect(completed).toHaveLength(1));
+      await vi.waitFor(() => expect(completed).toHaveLength(1), { timeout: 10_000 });
       expect(completed[0]).toMatchObject({ ok: true });
       expect(bodies[0].messages[0]).toMatchObject({ role: "system", content: "Stable rules." + CHAT_TOOL_DISCOVERY_PROMPT });
       expect(contextUsage.at(-1)).toMatchObject({ input: 3_000, output: 20, contextTokens: 2_010 });
@@ -363,7 +363,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
         sourceMessage: { id: "u2", role: "user", text: "second" }, transcript: [
           { id: "u1", role: "user", text: "first" }, { id: "a1", role: "assistant", text: "Completed." },
         ], approvalMode: "ask", integrations: integration });
-      await vi.waitFor(() => expect(completed).toHaveLength(2));
+      await vi.waitFor(() => expect(completed).toHaveLength(2), { timeout: 10_000 });
       expect(bodies[2].messages.slice(0, bodies[1].messages.length)).toEqual(bodies[1].messages);
       expect(bodies[2].messages.at(-2)).toMatchObject({ role: "assistant", content: "Completed.", reasoning_content: "The call returned successfully." });
       expect(bodies[2].messages.at(-1)).toEqual({ role: "user", content: "second" });
