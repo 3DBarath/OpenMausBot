@@ -141,7 +141,7 @@ it("allows carried checkpoint outcomes to cite receipts from the earlier folded 
   expect(checkpoint.summary).toContain("earlier-receipt");
 });
 
- it("keeps corrections when a later checkpoint re-emits an earlier requirement without its id", async () => {
+it("keeps corrections when a later checkpoint re-emits an earlier requirement without its id", async () => {
   const first = await draftSummary(history, options(async () => result()));
   const correction: CheckpointSource = { id: "later-correction", role: "user", sourceKind: "user", text: "Only deploy to staging." };
   const changed = await draftSummary([history[0]!, correction], { ...options(async () => result(doc({
