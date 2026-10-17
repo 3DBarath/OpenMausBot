@@ -1,5 +1,4 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
-import { delegationOriginKind } from "./host/delegation-origin.ts";
 import { createDelegatedApprovals } from "./host/delegated-approval.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -3337,7 +3336,8 @@ function previewSystemPrompt(bot: BotRecord) {
   const owner = connectorThread(botId, threadId);
   if (!owner) return "ask";
   const bot = store.projectBotForTask(botId, threadId) ?? owner.bot;
-  return approvalModeForTurn(bot, false, threadId);
+  const active = coordinator.active().find(node => node.botId === botId && node.threadId === threadId && node.parentId && node.status === "running");
+  return active ? roomTurnApprovalMode(bot, threadId, { roomHandoffId: active.id }) : approvalModeForTurn(bot, false, threadId);
 }
 
 function fullAccessForSource(botId: string, threadId: string): boolean {
@@ -3367,7 +3367,7 @@ const delegatedApprovals = createDelegatedApprovals({
   driverKind: selection => registry.cliTarget(selection.instanceId)?.driverKind,
   cloudGuestDriven, sourceApprovalMode, approvalModeForTurn,
 });
-const { applyDelegatedLevel, roomTurnApprovalMode, roomTurnLevel } = delegatedApprovals;
+const { roomTurnApprovalMode, roomTurnLevel } = delegatedApprovals;
 
 /** A connector capability covers only its active runtime turn; authority is
  * re-read at dispatch so a cancelled assignment or revoked grant cannot run. */
@@ -3380,7 +3380,7 @@ function connectorTurnFullAccess(capability: InternalCapability): boolean {
   if (capability.roomHandoffId && (!node || node.botId !== capability.botId || node.threadId !== capability.threadId ||
       !["running", "source"].includes(node.status) || (parent && (["failed", "cancelled"].includes(parent.status) || roomHandoffProblem(node, parent))))) return false;
   const bot = store.projectBotForTask(capability.botId, capability.threadId) ?? owner.bot;
-  return (owner.group ? roomTurnApprovalMode(bot, capability.threadId, capability)
+  return (node || owner.group ? roomTurnApprovalMode(bot, capability.threadId, capability)
     : sourceApprovalMode(capability.botId, capability.threadId)) === "full";
 }
 
@@ -4426,13 +4426,12 @@ function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined 
       else store.patchTask(bot.id, node.threadId, { unread: true });
       notify(buildNotification("delegation-settled", bot, node.threadId, question, { avatarUrl: bot.avatarUrl }));
     },
-    levelOf: (target, source, origin) => {
+    levelOf: (target, source, origin, mode) => {
       const bot = store.bot(target.botId);
       if (!bot) return { level: "ask" };
       const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
       const driverKind = registry.cliTarget(running.modelSelection.instanceId)?.driverKind;
-      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source, origin), driverKind };
-      return { level: approvalModeForTurn(running, true, target.threadId), driverKind };
+      return { level: roomTurnLevel(running, target.threadId, source, origin, mode), driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
     outward: node => {
@@ -6888,7 +6887,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       const unattended = permission && asker && event.requestId ? isUnattended(asker.id, event.threadId) : false;
       const guestDriven = cloudGuestDriven(event.threadId);
-      const ownApprovalMode = (who: BotRecord) => approvalModeForTurn(who, isInternalTurn(event.threadId), event.threadId);
+      const ownApprovalMode = (who: BotRecord) => approvalModeForOrigin(sourceApprovalMode(who.id, event.threadId), { peerInitiated: isInternalTurn(event.threadId) });
       const effectiveApprovalMode = !asker || guestDriven ? "ask"
         : group && speaker?.botId === asker.id ? roomTurnLevels.forRequest(event.threadId, asker.id, () => ownApprovalMode(asker))
           : ownApprovalMode(asker);
@@ -8914,7 +8913,7 @@ function shownScreenHash(threadId: string): string | undefined {
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
         images: dispatchContext.images,
-        approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
+        approvalMode: coordinationNode?.parentId ? roomTurnApprovalMode(bot, threadId, { roomHandoffId: coordinationNode.id }) : approvalModeForTurn(bot, commsDepth > 0, threadId),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         model,
@@ -14934,7 +14933,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
             const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
             if (lane?.created) createdThread = lane.threadId;
-            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId, delegationOriginKind(coordinator.node(internalCapability.roomHandoffId ?? generation)));
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -14943,7 +14941,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!task) throw new Error("The recipient no longer exists");
               target.threadId = task.threadId;
               if (!continued) createdThread = task.threadId;
-              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId, delegationOriginKind(coordinator.node(internalCapability.roomHandoffId ?? generation)));
             }
             const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
             const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {

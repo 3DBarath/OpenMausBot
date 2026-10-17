@@ -13,11 +13,11 @@ const fixture = (custom = false, outside = false) => {
   const store = { bot: (id: string) => bots.get(id), projectBotForTask: (id: string) => bots.get(id), taskByThread: () => ({ approvalMode: "ask" }), patchTask, appendMessage: vi.fn() } as unknown as Store;
   const nodes = new Map<string, Partial<HandoffView>>([
     ["root", { id: "root", rootId: "root", botId: chief.id, threadId: "source", origin: outside ? { kind: "outside" } : { kind: "user", request: "Perform this synthetic assignment." } }],
-    ["handoff", { id: "handoff", rootId: "root", parentId: "root", botId: member.id, threadId: "destination" }],
+    ["handoff", { id: "handoff", rootId: "root", parentId: "root", botId: member.id, threadId: "destination", mode: "work", level: "full" }],
   ]);
   const coordinator = { node: (id: string) => nodes.get(id) } as unknown as Coordinator;
   const levels = createDelegatedApprovals({ store: () => store, coordinator: () => coordinator, driverKind: () => "codex", cloudGuestDriven: () => false,
-    sourceApprovalMode: () => "full", approvalModeForTurn: (bot, peerInitiated) => approvalModeForOrigin(approvalModeFor(bot), { peerInitiated: Boolean(peerInitiated) }) });
+    sourceApprovalMode: () => approvalModeFor(chief), approvalModeForTurn: (bot, peerInitiated) => approvalModeForOrigin(approvalModeFor(bot), { peerInitiated: Boolean(peerInitiated) }) });
   return { nodes, levels, chief, member, patchTask, source: { botId: chief.id, threadId: "source" } };
 };
 
@@ -30,22 +30,37 @@ describe("delegated connector authority", () => {
     const f = fixture();
     Object.assign(f.nodes.get("root")!, { origin: { kind: "outside" }, originKind: "routine" });
     expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("full");
-    f.levels.applyDelegatedLevel(f.chief, "source", f.member, "destination", "routine");
-    expect(f.patchTask).toHaveBeenCalledWith(f.member.id, "destination", { approvalMode: "full", autoApprove: false, alwaysAllow: [] });
   });
   it("does not borrow a Chief grant for outside work or an unknown lineage", () => {
     const f = fixture(false, true);
     expect(f.levels.roomTurnLevel(f.member, "destination", f.source, "outside")).toBe("ask");
     expect(f.levels.roomTurnLevel(f.member, "destination", f.source)).toBe("ask");
     expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("ask");
-    f.levels.applyDelegatedLevel(f.chief, "source", f.member, "destination", "outside");
     expect(f.patchTask).not.toHaveBeenCalled();
   });
   it("does not elevate a Custom recipient after peer normalization", () => {
     const f = fixture(true);
     expect(f.levels.roomTurnLevel(f.member, "destination", f.source, "person")).toBe("auto");
     expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("auto");
-    f.levels.applyDelegatedLevel(f.chief, "source", f.member, "destination", "person");
     expect(f.patchTask).not.toHaveBeenCalled();
   });
+});
+
+it("keeps delegated authority transient and rechecks revocation and consultation", () => {
+  const f = fixture();
+  expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("full");
+  f.chief.approvalMode = "ask";
+  expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("ask");
+  f.chief.approvalMode = "full";
+  Object.assign(f.nodes.get("handoff")!, { mode: "consult" });
+  expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("ask");
+  expect(f.levels.roomTurnLevel(f.member, "destination", f.source, "person", "consult")).toBe("ask");
+  expect(f.levels.roomTurnApprovalMode(f.member, "destination")).toBe("ask");
+  expect(f.patchTask).not.toHaveBeenCalled();
+});
+
+it("does not exceed the queued assignment's grant ceiling", () => {
+  const f = fixture();
+  Object.assign(f.nodes.get("handoff")!, { level: "auto" });
+  expect(f.levels.roomTurnApprovalMode(f.member, "destination", { roomHandoffId: "handoff" })).toBe("auto");
 });
