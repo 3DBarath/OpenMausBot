@@ -1,5 +1,4 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-
 import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -42,11 +41,12 @@ import * as procs from "../procs.ts";
 import * as localInject from "./local-inject.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
- const dumpedPid = (dump: string): number => JSON.parse(readFileSync(dump, "utf8")).pid;
+const dumpedPid = (dump: string): number => JSON.parse(readFileSync(dump, "utf8")).pid;
 
- const COLLISION_THREAD_IDS = ["t-dup-1", "t-dup-2", "t-dup-3", "t-dup-4"];
+/** Each must truncate to a unique 8-char tag so no two tests share a broker socket. */
+const COLLISION_THREAD_IDS = ["t-dup-1", "t-dup-2", "t-dup-3", "t-dup-4"];
 
- function connectSocket(path: string): Promise<Socket> {
+function connectSocket(path: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
     let retriesLeft = 20;
     const tryConnect = () => {
@@ -58,6 +58,7 @@ const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", 
       const onError = (error: NodeJS.ErrnoException) => {
         conn.removeListener("connect", onConnect);
         conn.destroy();
+        // A Windows named pipe can briefly disappear while the server creates its next instance.
         if (process.platform === "win32" && error.code === "ENOENT" && retriesLeft-- > 0) {
           setTimeout(tryConnect, 25);
           return;
@@ -71,7 +72,7 @@ const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", 
   });
 }
 
- function answerQueue(conn: ReturnType<typeof connect>) {
+function answerQueue(conn: ReturnType<typeof connect>) {
   const waiters: Array<(msg: any) => void> = [];
   let buf = "";
   conn.on("data", (chunk) => {
@@ -144,6 +145,7 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 
   it("finds the running cost the CLI restored for a resumed session", () => {
+    // Real 2.1.282 frames: modelUsage is [input, cache read, cache write, output] per model for the session.
     const opus = (total: number, tokens: [number, number, number, number]) => claudeCostSnapshot(total, {
       "claude-opus-5-5": { inputTokens: tokens[0], cacheReadInputTokens: tokens[1], cacheCreationInputTokens: tokens[2], outputTokens: tokens[3], costUSD: total },
     })!;
@@ -215,6 +217,7 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 
   it("keeps threads whose ids share a prefix on distinct sockets", () => {
+    // Only the digest separates them; Windows pipes would otherwise collide.
     expect(permissionSocketPath("t-perm-dup-1")).not.toBe(permissionSocketPath("t-perm-dup-2"));
   });
 
@@ -309,11 +312,13 @@ describe("ClaudeDriver.decodeConfig", () => {
     }
   });
 
+  // Windows cannot listen on filesystem socket paths (EACCES); the fake-CLI e2e covers its pipe fallback.
   it.skipIf(process.platform === "win32")(
     "binds the next candidate when the first is unbindable, and asks round-trip on it",
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "omb-broker-fallback-"));
       const held = join(dir, "held.sock");
+      // A directory squats the path the way a hung child holds a pipe.
       mkdirSync(held);
       const free = join(dir, "free.sock");
       const asks: Array<{ id: string }> = [];
@@ -361,6 +366,7 @@ describe("ClaudeDriver.decodeConfig", () => {
         onResolve: () => {},
       });
       try {
+        // One line spans many reads, and most read boundaries fall inside a three-byte character.
         const content = "中文ok€".repeat(150_000);
         const conn = connect(socketPath);
         await new Promise<void>((resolve, reject) => {
@@ -690,6 +696,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       .resolves.toMatchObject({ ok: false, stopReason: "update_required" });
     const outdatedPid = JSON.parse(readFileSync(outdatedDump, "utf8")).pid;
 
+    // Only a new child sees this replacement runtime; a pooled child keeps its loaded code.
     process.env.FAKE_CLAUDE_MODE = "happy";
     const retryDump = join(scratch, "updated-session.json");
     process.env.FAKE_CLAUDE_DUMP = retryDump;
@@ -850,6 +857,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("flattens ask_user choices a model sends as {label, description} rows", async () => {
+    // MiniMax M3 (through the Anthropic-compatible endpoint) answers ask_user with AskUserQuestion-shaped rows.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-object-choices", text: "go" });
     const conn = await connectSocket(permissionSocketPath("t-object-choices"));
@@ -876,6 +884,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("draws a multiSelect ask_user as a checkbox question card", async () => {
+    // In Full access the CLI has no permission prompt tool, so ask_user is the only way to ask.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-multi-ask", text: "go", approvalMode: "full" });
     const conn = await connectSocket(permissionSocketPath("t-multi-ask"));
@@ -895,6 +904,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("turns Claude's own AskUserQuestion into a question card, not an approval", async () => {
+    // The CLI routes AskUserQuestion through --permission-prompt-tool like any other tool use.
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-structured-ask", text: "go" });
     const conn = await connectSocket(permissionSocketPath("t-structured-ask"));
@@ -940,6 +950,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "session.started");
 
     const conn = await connectSocket(permissionSocketPath("t-perm-lbl"));
+    // The companion maps every label but "Allow" to a denial, so model-authored labels would all deny.
     conn.write(
       JSON.stringify({
         t: "ask",
@@ -1541,8 +1552,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("withholds a flag from a CLI that predates it, instead of failing every turn", async () => {
+    // 2.1.100 knows --strict-mcp-config and --setting-sources but not --autocompact (2.1.122).
     const dump = join(scratch, "old-cli.json");
     await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: "2.1.100" });
+    // The harness snapshots every instance before any turn; that is where the driver learns the version.
     await instance.snapshot();
     await instance.adapter.sendTurn({ threadId: "t-old-cli", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
@@ -1572,6 +1585,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps only the isolation flag a very old CLI accepts", async () => {
+    // 1.0.100: --strict-mcp-config exists (1.0.60), --setting-sources not yet (1.0.122).
     const dump = join(scratch, "very-old-cli.json");
     await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: "1.0.100" });
     await instance.snapshot();
@@ -2108,6 +2122,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const sessionId = argv[argv.indexOf("--session-id") + 1];
     await expect.poll(() => existsSync(`${gone}.closed`)).toBe(true);
     const { turnId } = await instance.adapter.sendTurn({ threadId, text: "second", resumeCursor: sessionId });
+    // POSIX only: with fd 0 closed the pipe has no reader. On Windows Node's stdin keeps a duplicate
+    // handle, so the write can land and only the exit ends the process.
     if (process.platform !== "win32") {
       expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).toContain('"close":"stdin write failed"');
     }
@@ -2158,6 +2174,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const running = await instance.adapter.sendTurn({ threadId, text: "stop this turn" });
     await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool" && e.turnId === running.turnId);
     const stoppedPid = JSON.parse(readFileSync(dump, "utf8")).pid;
+    // Holds the interrupt-before-exit window open: the pipe stays writable until the kill is released.
     const conn = await connectSocket(permissionSocketPath(threadId));
     const nextAnswer = answerQueue(conn);
     const kill = procs.killCliTree;
@@ -2242,6 +2259,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
     expect(instance.adapter.capabilities.queueing).toBe(true);
     await expect(instance.adapter.steer!("t-steer", "and also this")).resolves.toBe("steered");
+    // An 800ms timer can finish before a loaded CI runner resumes this test's continuation.
     await expect.poll(() => existsSync(received)).toBe(true);
     writeFileSync(finishGate, "finish");
     await recorder.until((e) => e.type === "turn.completed");
@@ -2301,6 +2319,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps the turn open while a steered message the CLI could not fold runs as its next native turn", async () => {
+    // The CLI folds a mid-turn message only before a model call that has not started; words landing during
+    // the last call run as its next turn. This fake sends no queued_turn_count, like an older CLI.
     const finishGate = join(scratch, "late-steer-first.gate");
     const continuationGate = join(scratch, "late-steer-continuation.gate");
     const received = join(scratch, "late-steer-received");
@@ -2328,6 +2348,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("books a steered continuation on a retained process's second turn at that turn's share", async () => {
+    // Process totals 0.01, 0.02 (held for the steer), then 0.03: the second logical turn cost 0.02.
     const finishGate = join(scratch, "retained-steer-finish.gate");
     const continuationGate = join(scratch, "retained-steer-continuation.gate");
     const received = join(scratch, "retained-steer-received");
@@ -2520,6 +2541,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("keeps a Stop in the held window an interrupt when the grace lapses before the CLI exits", async () => {
+    // taskkill is asynchronous on Windows: the lapsing grace must leave the turn to the Stop.
     process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.5";
     const finishGate = join(scratch, "held-slow-stop-first.gate");
     const continuationGate = join(scratch, "held-slow-stop-continuation.gate");
@@ -2547,6 +2569,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("gives a steer that lands while a result is held the whole grace", async () => {
+    // Grace 3 s, the second steer 2 s in, the continuations let out 3.8 s in.
     process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "1.5";
     const finishGate = join(scratch, "regrace-first.gate");
     const continuationGate = join(scratch, "regrace-continuation.gate");
@@ -2582,6 +2605,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("closes a steered continuation that announces itself and then stays silent", async () => {
+    // Only the silence bound is scaled down (30 s → 600 ms); the 2 s grace before `init` stays, so a slow
+    // worker cannot lapse the hold before the driver reads the init frame.
     process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE = "0.02";
     const finishGate = join(scratch, "silent-first.gate");
     const continuationGate = join(scratch, "silent-continuation.gate");
@@ -2691,6 +2716,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("measures a resumed process from the restored cost even when its first result has none", async () => {
+    // An overloaded API answers the first turn after --resume with an error result carrying no total_cost_usd.
     const costState = join(scratch, "cost-state-error");
     mkdirSync(costState);
     const dump = join(scratch, "resumed-error-dump.json");
@@ -2780,6 +2806,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("closes an idle session after the configured window", async () => {
+    // Ten seconds is the floor; poll the native log for the close instead of sleeping past it.
     process.env.OMB_CLAUDE_SESSION_IDLE_MIN_MS = "10000";
     process.env.OMB_CLAUDE_SESSION_IDLE_MS = "10000";
     await create();
@@ -2967,6 +2994,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   }, 30_000);
 
   it("an interrupt during the relaunch window (after backoff, before the new process) still stops the turn", async () => {
+    // A custom model routes through the local-model probe; holding it open keeps the relaunch window deterministic.
     const probe = vi.spyOn(localInject, "probeLocalInjects").mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       return [];
@@ -2998,7 +3026,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     }
   }, 30_000);
 
-
   it("skips malformed protocol lines without losing the turn", async () => {
     await create("malformed");
     await instance.adapter.sendTurn({ threadId: "t-noise", text: "go" });
@@ -3024,6 +3051,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("tags each ask with whether the CLI's own reviewer is running, read from init", async () => {
+    // The CLI accepts `--permission-mode auto` for every model and silently runs Manual where auto is
+    // unavailable (Haiku 4.5, Sonnet 4.5 on 2.1.266); only init's permissionMode says so.
     process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS = "claude-haiku-4-5";
     await create("hang", {}, { permissionMode: "bypassPermissions" });
     const raise = async (threadId: string, id: string) => {
@@ -3310,6 +3339,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
     const basePath = permissionSocketPath("t-perm-squat");
+    // Squat the deterministic path like a hung child: POSIX steals the socket file, Windows must bind a fallback.
     const squatter = createNetServer(() => {});
     await new Promise<void>((resolve, reject) => {
       squatter.once("listening", () => resolve());
@@ -3531,6 +3561,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const nextAnswer = answerQueue(conn);
     const initialReply = nextAnswer();
     conn.write(JSON.stringify({ t: "ask", kind: "question", id: "q-ready", tool: "ask_user", input: { question: "ready?" } }) + "\n");
+    // Windows can signal a named-pipe connect before the server accepts it.
     await recorder.until((e) => e.type === "request.opened" && e.requestId === "q-ready");
 
     await instance.adapter.interruptTurn("t-question-late");
@@ -3800,7 +3831,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 });
 
-    describe("ClaudeDriver resume recovery (fake CLI)", () => {
+describe("ClaudeDriver resume recovery (fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -3880,6 +3911,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("recovers only once, then fails visibly", async () => {
+    // exit-early refuses every launch, resumed or fresh.
     process.env.FAKE_CLAUDE_MODE = "exit-early";
     const prompts = join(scratch, "prompts.jsonl");
     process.env.FAKE_CLAUDE_PROMPTS = prompts;
@@ -4014,6 +4046,7 @@ describe("ClaudeDriver snapshot auth (fake CLI)", () => {
     process.env.FAKE_CLAUDE_AUTH = "malformed";
     expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
 
+    // The turn strips inherited API keys, so the auth probe must too.
     process.env.FAKE_CLAUDE_AUTH = "inherited-api-key";
     process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
     expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });

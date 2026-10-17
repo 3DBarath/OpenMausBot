@@ -1,4 +1,5 @@
-   // and reports account failures as HTTP 200 with a JSON `base_resp` body.
+// MiniMax's api.minimax.io/v1 closes the connection after the finish_reason chunk without `data: [DONE]`,
+// and reports account failures as HTTP 200 with a JSON `base_resp` body.
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 const sse = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 
- async function runTurn(body: string | (() => Response), driver: "openai-compat" | "minimax" = "openai-compat") {
+/** `body` is every request's stream, or a factory per chat completion (the catalog fetch then gets a 404). */
+async function runTurn(body: string | (() => Response), driver: "openai-compat" | "minimax" = "openai-compat") {
   vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => typeof body === "string" ? sse(body)
     : String(url).endsWith("/chat/completions") ? body() : new Response("", { status: 404 })));
   const instance = driver === "minimax"
@@ -516,6 +518,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
         return found;
       }, { timeout: 10_000 });
       expect(opened).toMatchObject({ requestType: "question", tool: "ask_user" });
+      // Close the card unanswered: the same null the 15-minute timeout produces.
       expect(await instance.adapter.respondToRequest("noreply", opened.requestId!, { behavior: "deny" })).toBe("rejected");
       await vi.waitFor(() => {
         if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
@@ -602,6 +605,7 @@ describe("createOpenAIChatRuntime mid-turn steer", () => {
       threadId: "t", text: "hi", approvalMode: "full",
       integrations: { custom: { fx: toolServer() } },
     });
+    // Request 1 must be in flight before the asides are parked: they belong to the next round.
     await vi.waitFor(() => {
       if (bodies.length < 1) throw new Error("first request not sent yet");
     }, { timeout: 10_000 });
@@ -642,6 +646,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
   });
 
   it("parses a final finish_reason+usage frame with no trailing newline before the socket closes", async () => {
+    // No trailing \n\n after the last frame: several real local servers just close the connection.
     const events = await runTurn(
       'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n' +
         'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":9}}',
@@ -674,6 +679,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
     const events: RuntimeEvent[] = [];
     instance.adapter.onEvent((event) => events.push(event));
     await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    // The final frame's tail arrives in a second chunk, after a complete earlier frame.
     controller!.enqueue(
       encoder.encode(
         'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n' +
@@ -702,6 +708,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
   });
 
   it("settles a turn whose stream was cut mid-frame instead of failing it", async () => {
+    // A stop or a dropped connection leaves a partial frame in the buffer.
     const events = await runTurn(
       'data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n\n'
         + 'data: {"choices":[{"index":0,"delta":{"content":" wor',
@@ -755,6 +762,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
 });
 
 describe("createOpenAIChatRuntime refused tool calls", () => {
+  // Groq's reply when gpt-oss calls a tool it was never offered.
   const refusal = {
     message: "Tool call validation failed: tool call validation failed: attempted to call tool 'JSON' which was not in request",
     type: "invalid_request_error",

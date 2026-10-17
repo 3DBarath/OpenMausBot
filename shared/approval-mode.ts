@@ -21,7 +21,12 @@ export function supportsApprovalMode(driverKind: string | undefined, mode: Appro
   return true;
 }
 
- export function modelSwitchNeedsAsk(
+/** Whether switching engines must first drop this level to Ask. A Custom
+ * grant's rules belong to one provider's tool semantics, so it never crosses
+ * engines; Full carries silently to any engine; Auto-accept edits stops at an
+ * engine without it.
+ * Adapted from tahodev's provider-switch guard. */
+export function modelSwitchNeedsAsk(
   mode: ApprovalMode,
   fromDriver: string | undefined,
   toDriver: string | undefined,
@@ -66,7 +71,9 @@ export function setDefaultApprovalMode(mode: ApprovalMode): void {
   defaultApprovalMode = mode;
 }
 
- export function approvalModeFor(bot: {
+/** An unset level runs at the default, the pre-approvalMode Auto bit reads as
+ * safe Auto, and an unknown persisted value fails closed to Ask. */
+export function approvalModeFor(bot: {
   approvalMode?: unknown;
   autoApprove?: unknown;
   /** Server-only two-phase grant marker. Until Electron confirms it, the

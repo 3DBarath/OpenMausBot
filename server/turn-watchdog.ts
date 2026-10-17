@@ -1,4 +1,5 @@
-           export interface WatchedTurn {
+// A turn whose thread emits nothing for stallMs is wedged; waiting on a person or a computer is not a stall.
+export interface WatchedTurn {
   threadId: string;
   botId: string;
   startedAt: number;
@@ -22,6 +23,7 @@ export class TurnWatchdog {
   private timer: ReturnType<typeof setInterval> | null = null;
   private opts: TurnWatchdogOptions;
 
+  // No parameter properties: Node's type-stripping cannot transform them.
   constructor(opts: TurnWatchdogOptions) {
     this.opts = opts;
   }

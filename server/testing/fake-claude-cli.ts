@@ -54,13 +54,13 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-
 import { join } from "node:path";
 import { runRoomHandoffAgent } from "./room-handoff-agent.ts";
 
 const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
 
-   const writeDumpAtomic = (path: string, contents: string): void => {
+// Concurrent turns share a capture path: publish whole JSON in one rename.
+const writeDumpAtomic = (path: string, contents: string): void => {
   const tmp = `${path}.${process.pid}.tmp`;
   const delays = [5, 10, 20, 40, 80];
   try {
@@ -77,11 +77,12 @@ const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
       }
     }
   } finally {
-    try { unlinkSync(tmp); } catch { /* already renamed, or failed cleanup */ }
+    try { unlinkSync(tmp); } catch {}
   }
 };
 
-  {
+// Follow the spawning server down; on Windows ppid does not change after parent exit.
+{
   const spawner = process.ppid;
   const orphanWatch = setInterval(() => {
     if (process.ppid !== spawner) process.exit(0);
@@ -164,7 +165,7 @@ const settingsHooks: Record<string, Array<{ hooks?: Array<{ type?: string; comma
     return {};
   }
 })();
- function runHooks(event: string, payload: Record<string, unknown>): string {
+function runHooks(event: string, payload: Record<string, unknown>): string {
   let stdout = "";
   for (const entry of settingsHooks[event] ?? []) {
     for (const hook of entry.hooks ?? []) {
@@ -191,7 +192,7 @@ const argAfter = (flag: string): string | null => {
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 
- const probe = argv[0] === "--version" ? "version" : argv[0] === "--help" ? "help" : argv[0] === "auth" && argv[1] === "status" ? "auth" : null;
+const probe = argv[0] === "--version" ? "version" : argv[0] === "--help" ? "help" : argv[0] === "auth" && argv[1] === "status" ? "auth" : null;
 if (probe) {
   if (process.env.FAKE_CLAUDE_PROBE_LOG) appendFileSync(process.env.FAKE_CLAUDE_PROBE_LOG, `${probe} ${process.pid}\n`);
   const hold = process.env[`FAKE_CLAUDE_HOLD_${probe.toUpperCase()}`];
@@ -199,11 +200,13 @@ if (probe) {
 }
 
 if (argv[0] === "--version") {
+  // FAKE_CLAUDE_VERSION stands in for an older CLI.
   process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? "2.1.232"} (Claude Code)\n`);
   process.exit(0);
 }
 
 if (argv[0] === "--help") {
+  // FAKE_CLAUDE_AUTOCOMPACT=0, or a version below 2.1.122, leaves --autocompact out of --help.
   const [maj = 0, min = 0, pat = 0] = (process.env.FAKE_CLAUDE_VERSION ?? "2.1.232").split(".").map(Number);
   const has = process.env.FAKE_CLAUDE_AUTOCOMPACT !== "0" && (maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 122))));
   process.stdout.write(
@@ -277,7 +280,7 @@ if (argv[0] === "auth" && argv[1] === "status") {
 }
 
 // One-shot helper mode used by generateText. The prompt is
-  if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
+if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
   const prompt = await new Promise<string>((resolve) => {
     let input = "";
     process.stdin.setEncoding("utf8");
@@ -306,6 +309,7 @@ if (argv[0] === "auth" && argv[1] === "status") {
     }));
     process.exit(0);
   }
+  // Background one-shots never overwrite the shared turn dump; FAKE_CLAUDE_TEXT_DUMP records them.
   const upkeepCall = /You are the (?:CAPTURE|TIDY|ORGANIZE) step of a memory system|You are the SKILL REVIEW step/.test(prompt);
   const oneShotDump = process.env.FAKE_CLAUDE_TEXT_DUMP ?? (upkeepCall ? undefined : process.env.FAKE_CLAUDE_DUMP);
   if (oneShotDump) {
@@ -316,6 +320,7 @@ if (argv[0] === "auth" && argv[1] === "status") {
   }
   if (process.env.FAKE_CLAUDE_TEXT_LOG) appendFileSync(process.env.FAKE_CLAUDE_TEXT_LOG, `${JSON.stringify({ prompt })}\n`);
   if (process.env.FAKE_CLAUDE_TEXT_HANG) {
+    // An unsettled top-level await is fatal in Node; a repeating timer keeps the loop alive.
     await new Promise(() => setInterval(() => {}, 1 << 30));
   }
   const replyText = (text: string, code = 0) => {
@@ -337,9 +342,7 @@ if (argv[0] === "auth" && argv[1] === "status") {
       if (hit) {
         replyText(hit[1]);
       }
-    } catch {
-      // a malformed routes file falls through to the plain reply below
-    }
+    } catch {}
   }
   if (process.env.FAKE_CLAUDE_TEXT_FILE) {
     const file = process.env.FAKE_CLAUDE_TEXT_FILE;
@@ -353,6 +356,8 @@ if (argv[0] === "auth" && argv[1] === "status") {
   replyText("fake generated text\n");
 }
 
+// Like the real CLI under --input-format stream-json: each stdin message starts a turn, and one
+// sent mid-turn is folded into it.
 // Isolated reviews read plain stdin while ordinary turns remain line-driven.
 if (argAfter("--output-format") === "stream-json" && !argAfter("--input-format") && argv.includes("--no-session-persistence")) {
   let prompt = "";
@@ -371,10 +376,10 @@ if (argAfter("--output-format") === "stream-json" && !argAfter("--input-format")
   process.exit(0);
 }
 
-      type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 const sessionId = argAfter("--resume") ?? argAfter("--session-id") ?? "fake-session";
 const model = argAfter("--model") ?? "claude-fake";
-  const requestedPermissionMode = argAfter("--permission-mode") ?? "default";
+const requestedPermissionMode = argAfter("--permission-mode") ?? "default";
 const autoUnavailableFor = (process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS ?? "").split(",").filter(Boolean);
 const permissionMode =
   requestedPermissionMode === "auto" && autoUnavailableFor.includes(model) ? "default" : requestedPermissionMode;
@@ -385,11 +390,11 @@ const mcpStatus = () => process.env.FAKE_CLAUDE_MCP_FAILED
 const toolsFlag = argAfter("--tools");
 const tools = [...new Set([...(toolsFlag ? toolsFlag.split(",") : ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]),
   ...(process.env.FAKE_CLAUDE_KEEP_BASH === "1" ? ["Bash"] : [])])];
- let launchFiles: Record<string, unknown> | null = null;
+let launchFiles: Record<string, unknown> | null = null;
 let turnRunning = false;
 let steered: string[] = [];
- let steeredMessages: JsonValue[] = [];
-    const replayUserMessages = argv.includes("--replay-user-messages");
+let steeredMessages: JsonValue[] = [];
+const replayUserMessages = argv.includes("--replay-user-messages");
 let replayCount = 0;
 const replay = (sent: JsonValue) => {
   if (!replayUserMessages) return;
@@ -400,10 +405,10 @@ const replay = (sent: JsonValue) => {
 const replaySteered = () => {
   for (const message of steeredMessages.splice(0)) replay(message);
 };
-  const lateSteers: JsonValue[] = [];
+const lateSteers: JsonValue[] = [];
 let lateContinuation = false;
 let lateTurnWaiting = false;
-  type FakeModelUsage = { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number };
+type FakeModelUsage = { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number };
 const costStateFile = process.env.FAKE_CLAUDE_COST_STATE ? join(process.env.FAKE_CLAUDE_COST_STATE, `${sessionId}.json`) : null;
 const runningCost: { total: number; modelUsage: Record<string, FakeModelUsage> } = (() => {
   if (costStateFile && argv.includes("--resume")) {
@@ -416,7 +421,9 @@ const runningCost: { total: number; modelUsage: Record<string, FakeModelUsage> }
 let stdinEnded = false;
 let steerGateArmed = false;
 
-    const armSteerGate = () => {
+// FAKE_CLAUDE_STEER_GATE: stop reading stdin after the first prompt until this file exists, so a
+// large second write leaves adapter.steer() pending while the first turn settles.
+const armSteerGate = () => {
   const gate = process.env.FAKE_CLAUDE_STEER_GATE;
   if (!gate || steerGateArmed) return;
   steerGateArmed = true;
@@ -432,7 +439,7 @@ const promptText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
   return typeof m?.content === "string" ? m.content : "";
 };
- const steeredText = (prompt: JsonValue): string => {
+const steeredText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
   if (!Array.isArray(m?.content)) return promptText(prompt);
   return m.content
@@ -441,7 +448,7 @@ const promptText = (prompt: JsonValue): string => {
     .join(" ");
 };
 
- const startLateTurn = (): boolean => {
+const startLateTurn = (): boolean => {
   if (lateTurnWaiting) return true;
   const late = lateSteers[0];
   if (late === undefined) return false;
@@ -468,6 +475,7 @@ const finishIfDone = () => {
   if (process.env.FAKE_CLAUDE_EXIT_AFTER_TURN === "1") process.stdout.write("", () => process.exit(0));
   const gone = process.env.FAKE_CLAUDE_GONE_AFTER_TURN;
   if (gone) process.stdout.write("", () => {
+    // Node keeps fd 0 open through stdin.destroy().
     process.stdin.pause();
     closeSync(0);
     writeFileSync(`${gone}.closed`, "closed");
@@ -482,15 +490,13 @@ const finishTurn = () => {
   finishIfDone();
 };
 
- const readLaunchFiles = (): Record<string, unknown> => {
+const readLaunchFiles = (): Record<string, unknown> => {
   const configPath = argAfter("--mcp-config");
   let mcpConfig: unknown = null;
   if (configPath) {
     try {
       mcpConfig = JSON.parse(readFileSync(configPath, "utf8"));
-    } catch {
-      /* leave null — the test will see it */
-    }
+    } catch {}
   }
   const systemPromptPath = argAfter("--append-system-prompt-file");
   const settingsPath = argAfter("--settings");
@@ -500,14 +506,12 @@ const finishTurn = () => {
   if (systemPromptPath) {
     try {
       systemPrompt = readFileSync(systemPromptPath, "utf8");
-    } catch {
-      /* leave null — the test will see it */
-    }
+    } catch {}
   }
   return { systemPrompt, mcpConfig, settings, settingsMode };
 };
 
- const useCloudComputer = () => {
+const useCloudComputer = () => {
   launchFiles ??= readLaunchFiles();
   const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
     ?.mcpServers?.computer;
@@ -524,7 +528,9 @@ const finishTurn = () => {
     is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
 };
 
-     const MCP_CALL_PROGRAM = `
+// The connected-apps bridge exits when its stdin closes, before a reply that needs a harness
+// round trip, so stdin stays open until the reply arrives.
+const MCP_CALL_PROGRAM = `
 const { spawn } = require("node:child_process");
 const { command, args, env, request } = JSON.parse(process.argv[1]);
 const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
@@ -584,6 +590,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   lateContinuation = late;
   steered = [];
   steeredMessages = [];
+  // FAKE_CLAUDE_PROMPTS: every prompt this process receives, one JSON line each.
   if (process.env.FAKE_CLAUDE_PROMPTS) appendFileSync(process.env.FAKE_CLAUDE_PROMPTS, `${JSON.stringify(prompt)}\n`);
   if (!late && process.env.FAKE_CLAUDE_DUMP) {
     launchFiles ??= readLaunchFiles();
@@ -623,6 +630,8 @@ const playTurn = (prompt: JsonValue, late = false) => {
     process.stderr.write("fake-claude: simulated crash before result\n");
     process.exit(3);
   }
+  // FAKE_CLAUDE_TRANSIENTS launches fail transiently (exit 5), counted in the FAKE_CLAUDE_STATE file;
+  // FAKE_CLAUDE_PARTIAL_FAILS makes the first one emit a text delta before failing.
   if (process.env.FAKE_CLAUDE_TRANSIENTS && process.env.FAKE_CLAUDE_STATE) {
     let launched = 0;
     try {
@@ -718,6 +727,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
     process.stdout.write("this is not json\n{broken\n");
   }
 
+  // A signed-out CLI's frames, verbatim: only the frame's own error fields mark the failure.
   if (mode === "not-logged-in") {
     out({
       type: "assistant",
@@ -825,6 +835,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
     finishIfDone();
   };
   if (mode === "background-result") {
+    // Claude emits a synthetic result when a background task finishes; it does not complete the turn.
     out({ type: "result", origin: { kind: "task-notification" }, is_error: false, total_cost_usd: 99 });
     out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "parent still working" } } });
     const poll = setInterval(() => {
@@ -858,6 +869,8 @@ const playTurn = (prompt: JsonValue, late = false) => {
       const poll = setInterval(() => {
         if (!existsSync(finishGate)) return;
         clearInterval(poll);
+        // Timers run before the poll phase that reads the pipe, so finishing here could leave the
+        // steer unread: hand off to the check phase.
         setImmediate(finishSlowTurn);
       }, 10);
     } else {

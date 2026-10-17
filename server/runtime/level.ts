@@ -1,4 +1,4 @@
-     import { hasAppAutoReview, hasNativeAutoReview, supportsApprovalMode } from "../../shared/approval-mode.ts";
+import { hasAppAutoReview, hasNativeAutoReview, supportsApprovalMode } from "../../shared/approval-mode.ts";
 import type { Level, LevelSource, OriginKind } from "./types.ts";
 
 export interface LevelInput {
@@ -9,7 +9,8 @@ export interface LevelInput {
   driverKind?: string;
 }
 
- const TRAVELS: readonly Level[] = ["ask", "edits", "auto", "full"];
+/** `custom` never travels: it is one provider's own rule set, so it has no rank. */
+const TRAVELS: readonly Level[] = ["ask", "edits", "auto", "full"];
 const rank = (level: Level): number => TRAVELS.indexOf(level);
 
 /** Whether the engine runs a level as that level, not as something weaker
@@ -24,7 +25,7 @@ function engineRuns(level: Level, driverKind: string | undefined): boolean {
   return level === "ask";
 }
 
- function engineCap(inherited: Level, driverKind: string | undefined): Level {
+function engineCap(inherited: Level, driverKind: string | undefined): Level {
   for (let i = rank(inherited); i > 0; i--) {
     if (engineRuns(TRAVELS[i]!, driverKind)) return TRAVELS[i]!;
   }

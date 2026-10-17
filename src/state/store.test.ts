@@ -2746,6 +2746,7 @@ describe("restoring the open conversation", () => {
   });
 
   describe("the provider's own effect", () => {
+    // The provider opens the one stream and pulls the snapshot itself, so the fixture answers both.
     class FixtureEventSource {
       static opened: FixtureEventSource[] = [];
       onopen: (() => void) | null = null;

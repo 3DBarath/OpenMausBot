@@ -3,6 +3,8 @@ import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import type { AppSettingsSection } from "@/state/store";
 
+// labelKey, not a label: t() reads the active pack when called, so a label resolved at module scope would freeze the
+// boot language.
 export type SettingsGroup = "you" | "ai" | "computers" | "account";
 
 export const SETTINGS_GROUPS: Array<{ id: SettingsGroup; labelKey: LocaleKey }> = [

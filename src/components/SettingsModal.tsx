@@ -8,7 +8,7 @@ import {
   sectionMatches,
 } from "./settings-navigation";
 export { SETTINGS_GROUPS, SECTIONS, SIMPLE_PAGES, SIMPLE_HIDDEN_SECTIONS, simpleSettingsPages, revealSettingsBlock, simplePageMatches, sectionMatches, type SettingsGroup, type SimpleSettingsPage } from "./settings-navigation";
-    import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
@@ -71,7 +71,7 @@ import { parseSendKey, SEND_KEYS, sendKeyLabel, setSendKey, useSendKey } from "@
 import { effectiveLanguage, setLanguageChoice, useLanguageChoice } from "@/lib/language-preference";
 import { Select } from "./Select";
 
- function ProfileFields() {
+function ProfileFields() {
   const { state, dispatch } = useStore();
   const [name, setName] = useState(state.config?.profile?.name ?? "");
   const [email, setEmail] = useState(state.config?.profile?.email ?? "");
@@ -112,7 +112,7 @@ import { Select } from "./Select";
   );
 }
 
- export function UpdatesRow() {
+export function UpdatesRow() {
   const s = useUpdaterState();
   const updater = window.ogb?.updater;
   if (!s || !updater) return null;
@@ -170,7 +170,7 @@ import { Select } from "./Select";
   );
 }
 
-  function NewBotEffortRow() {
+function NewBotEffortRow() {
   const { state, dispatch } = useStore();
   const current = state.config?.newBots?.effort ?? "";
   const [saving, setSaving] = useState(false);
@@ -549,7 +549,8 @@ function BrowserProfilesRow() {
   );
 }
 
- function DiagnosticsRow() {
+/** Security: the report never holds credential values; the desktop shell does not read secret fields. */
+function DiagnosticsRow() {
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 

@@ -93,7 +93,7 @@ vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.owne
 
 const render = () => renderToStaticMarkup(createElement(SettingsModal));
 
- function rail(html: string): Record<string, string[]> {
+function rail(html: string): Record<string, string[]> {
   const groups: Record<string, string[]> = {};
   let current = "";
   for (const match of html.matchAll(/data-settings-(group|section)="([^"]+)"/g)) {

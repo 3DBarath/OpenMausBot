@@ -8,7 +8,8 @@ import { removeTempDir } from "../testing/cleanup.ts";
 import { recordEvents } from "../testing/events.ts";
 import { CLAUDE_ACCOUNT_ENV_KEYS, ClaudeDriver, resolveClaudeConfigDir } from "./claude.ts";
 
-  const FAKE_CLI = `#!/usr/bin/env node
+// Reads synthetic account labels and records its spawn contract; never the real CLI, Keychain or network.
+const FAKE_CLI = `#!/usr/bin/env node
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";

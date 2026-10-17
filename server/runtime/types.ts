@@ -1,16 +1,19 @@
-          import type { ApprovalMode } from "../../shared/approval-mode.ts";
-
+// The job runtime's public types: one record for every hand-off between bots, one lifecycle, one wake lane.
+import type { ApprovalMode } from "../../shared/approval-mode.ts";
 
 /** Where the work ultimately started. Immutable down the whole tree. */
 export type OriginKind = "person" | "routine" | "outside";
- export type OriginSource = "chat" | "routine" | "webhook" | "relay" | "external_runtime" | "guest" | "peer" | "api";
+/** The concrete source behind an outside origin. */
+export type OriginSource = "chat" | "routine" | "webhook" | "relay" | "external_runtime" | "guest" | "peer" | "api";
 
 export interface Origin {
   kind: OriginKind;
   source: OriginSource;
   /** The thread, routine or webhook the work came from, when known. */
   ref?: string;
+  /** The person's own request, harness-quoted (at most 400 characters), when kind is "person". Never model text. */
   quote?: string;
+  /** Who the work is for when a bot acts for a named person. */
   onBehalfOf?: string;
 }
 
@@ -32,9 +35,10 @@ export type DestinationKind = "work_thread" | "standing_thread" | "room_thread";
 
 export interface Assignee {
   botId: string;
+  /** `threadId` is empty only on a legacy-import row that named no thread: the kind is then
+   * "standing_thread" and the host resolves or refuses it at dispatch. */
   destination: { kind: DestinationKind; threadId: string; groupId?: string };
 }
-
 
 /** work: do it with your own tools. consult: answer from what you know, act
  * on nothing. notify: one-way, nothing comes back. */
@@ -88,6 +92,8 @@ export interface Assignment {
   brief: string;
   /** The requester's own completion criterion, if it gave one. */
   doneWhen?: string;
+  /** A root that is one step of a room goal run (the run's id): it neither parks nor continues in
+   * place and is not run again after a restart. Never changed after begin. */
   goalRunId?: string;
   status: Status;
   outcome?: Outcome;
@@ -98,6 +104,8 @@ export interface Assignment {
   executions: number;
   /** Turns of it a restart cut and ran again in place. */
   restarts: number;
+  /** Set until the turn after a restart settles: "rerun" its cut turn runs again; "cut" it was cut after
+   * handing out work; "teammates" only work it waits on was cut. */
   restart?: "rerun" | "cut" | "teammates";
   createdAt: number;
   startedAt?: number;
@@ -114,6 +122,7 @@ export interface Assignment {
   /** The same brief to the same assignee under one parent is one request;
    * a repeat lands on it unless rework is set. */
   rework: boolean;
+  /** While parked: the exact question for the person. */
   question?: string;
   /** The person's answer, harness-quoted, carried into the next turn. */
   answer?: string;
@@ -125,7 +134,10 @@ export interface Assignment {
   /** The next execution continues the last one in place: after a step cap,
    * or a wait the host could not hold (a computer seat). Cleared at dispatch. */
   continuation?: { note: string; handoffPath?: string; count: number };
+  /** While a node continues in place, for the loop guard: `stale` counts consecutive continuations
+   * with no successful tool call; `errors` holds the last three tool error texts. */
   guard?: { stale: number; errors: string[] };
+  /** A peer-review card allowed this before it was sent. */
   approved?: boolean;
   /** A room brief shown once per call: every recipient of that call shares it. */
   batchKey?: string;
@@ -175,8 +187,8 @@ export interface InboxItem {
   deliveredAt?: number;
 }
 
-
 export interface EnqueueRequest {
+  /** The requesting conversation's own running assignment; absent when a new root opens. */
   parentId?: string;
   origin: Origin;
   requester: Requester;
@@ -189,6 +201,7 @@ export interface EnqueueRequest {
   /** The requester's own level and, for a Chief lineage, the Chief
    * conversation's level, as the harness knows them. */
   levels: { own: Level; chief?: Level };
+  /** The assignee's engine, for the level cap. */
   driverKind?: string;
   approved?: boolean;
   batchKey?: string;
@@ -198,13 +211,14 @@ export type EnqueueResult =
   | { ok: true; assignment: Assignment; duplicate: boolean }
   | { ok: false; reason: string; outcome: "refused" | "budget" | "duplicate" };
 
-
 export interface RunInput {
+  /** first; resume (returns settled children's results); rerun (after a restart cut it); answered; continued. */
   turn: "first" | "resume" | "rerun" | "answered" | "continued";
   /** Not the node's first turn (any `turn` but "first"). */
   resumed: boolean;
   /** What the restart did, for the first line of the turn ("" when nothing). */
   restartNote: string;
+  /** The harness-written envelope that opens the turn. */
   envelope: string;
   /** The person's answer to the question this assignment was parked on. */
   answer?: string;
@@ -253,7 +267,8 @@ export interface EnvelopeNames {
   thread?: string;
 }
 
- export interface TurnRunner {
+/** What the runtime needs from the server. No method may throw into the runtime: a throw is logged and read as "not now". */
+export interface TurnRunner {
   /** Recheck addresses and routes right before every dispatch. A string
    * refuses the assignment with that reason. */
   validate(a: Assignment, parent?: Assignment): string | undefined;
@@ -275,6 +290,8 @@ export interface EnvelopeNames {
   changed(assignments: readonly Assignment[]): void;
   /** Display names for the envelope of a turn (ids are the fallback). */
   names(a: Assignment, parent?: Assignment): EnvelopeNames;
+  /** What the cut turn of this node already did outward, as short labels. Read at open() only: a
+   * turn that acted outward is not run again. Absent or empty: the turn reruns once. */
   outward?(a: Assignment): string[];
 }
 
@@ -315,7 +332,6 @@ export const DEFAULT_LIMITS: Limits = {
   turnStallMs: 20 * 60_000,
   inputWaitMs: 30 * 60_000,
 };
-
 
 export interface LiveEdge {
   sourceBotId: string;

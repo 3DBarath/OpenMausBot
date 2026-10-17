@@ -1,4 +1,4 @@
-        import * as boat from "../boat.ts";
+import * as boat from "../boat.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "../boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "../boat-delete-journal.ts";
 import { browserEngineStatus, browserSessionId } from "../browser-engine.ts";
@@ -41,16 +41,16 @@ import * as tts from "../tts/index.ts";
 import * as vps from "../vps-computer.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
- export interface BusyFlag {
+export interface BusyFlag {
   get(): boolean;
   set(busy: boolean): void;
 }
 
- export type RemoteComputerProvider = "box" | "vps";
+export type RemoteComputerProvider = "box" | "vps";
 
- export type ModelSelectionCheck = { ok: true; selection: ModelSelection } | { ok: false; status: number; error: string };
+export type ModelSelectionCheck = { ok: true; selection: ModelSelection } | { ok: false; status: number; error: string };
 
- export type ConfigStatus = Record<string, unknown>;
+export type ConfigStatus = Record<string, unknown>;
 
 export interface ConfigRouteDeps {
   store: Pick<Store, "bots" | "patchBot" | "clearVoiceSelections">;
@@ -105,6 +105,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
     configForAccess, approvalReviewSettingsBusy, resyncOpenCodeProviderKeys, revokeEngineCapabilities, reloadProviders, broadcast, drainQueuedSends,
   } = deps;
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
+    // API keys are never echoed back: booleans only.
     if (method === "GET" && path === "/api/config") {
       return json(res, 200, configForAccess(configStatus(), auth.scopes.includes("admin")));
     }
@@ -163,6 +164,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       const changingVoiceProvider = patch.tts?.provider !== undefined
         && patch.tts.provider !== tts.voiceProvider(cfg);
       if (changingVoiceProvider && patch.tts?.voice === undefined) {
+        // Voice ids are provider-owned: never carry one from one catalog into another.
         patch.tts = { ...patch.tts, voice: "" };
       }
       if (providerConfigBusy.get()) return json(res, 409, { error: "provider settings are already being updated" });
@@ -270,6 +272,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
           try {
             await boat.verifyBoatDeletionCredential({ box: { token: nextBoatToken } });
             replacementProvedByDeletion = true;
+            // Re-snapshot: verification may have retired the deletion fence and its create receipt.
             boatRecovery = boatCreateRecoverySnapshot();
             boatDeletions = boatDeletionSnapshot();
           } catch (error) {
@@ -295,6 +298,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
                 error: `${currentBoatInventory.problem ?? "cloud computer inventory is unavailable"}. Keep the current Boat account and retry`,
               });
             }
+            // A rejected old key cannot authorize its own rotation.
             currentBoatInventory = null;
           }
           if (currentBoatInventory) {
@@ -303,6 +307,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
             );
             for (const recovery of boatRecovery) {
               if (!recovery.boxId) continue;
+              // The replacement credential already proved this exact deletion target.
               if (replacementProvedByDeletion && deletingBoatIds.has(recovery.boxId)) continue;
               const inspected = await boat.inspectBoatIdentity({ box: { token: currentBoatToken } }, recovery.boxId);
               if (!inspected.available) {
@@ -311,6 +316,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
                 });
               }
               if (!inspected.identity) {
+                // Reconcile stale receipts while the current credential still works.
                 retireDeletedBoatCreate(recovery.boxId);
                 continue;
               }
@@ -362,6 +368,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         if (!check.ok) return json(res, 400, { error: check.message, ...(check.rejected ? { code: "key_rejected" } : {}) });
       }
       if (replacingRejectedBoatToken) {
+        // An expired credential cannot authorize its own replacement: probe without adopting or retiring identities.
         const replacement = await boat.listManagedBoats(
           { box: { token: nextBoatToken } }, managedBoatOwners(), { adoptLegacy: false },
         );
@@ -427,6 +434,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         );
         if (resourceError) return json(res, 409, { error: resourceError });
       }
+      // Validated against each voice provider's own credential, so no service is ever sent another's key.
       const newTts = patch.tts;
       if (newTts?.key?.trim()) {
         const check = await tts.verifyKey("elevenlabs", newTts.key.trim());
@@ -447,6 +455,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         }
       }
       if (patch.browserProfiles !== undefined) {
+        // Revalidated: the awaits above let a turn claim a profile. No awaits from here through the save.
         const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
         const activeReference = store.bots.find(
           (bot) => bot.busy && bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile),
@@ -466,6 +475,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         const conflict = providerOperationConflict(provider);
         if (conflict) return json(res, 409, { error: conflict });
       }
+      // Only the named keys change; merged with no await before the save.
       if (patch.opencodeGo?.providerKeys) {
         const merged = mergeOpenCodeProviderKeys(cfg, patch.opencodeGo.providerKeys);
         if (!merged.ok) return json(res, 400, { error: merged.error });
@@ -501,11 +511,13 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       const enginesBefore = engineLaunches(providerConfigs());
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       try {
+        // Before the provider commit, so a failed write never leaves a foreign voice id to speak.
         if (patch.approvalReview && approvalReviewSettingsBusy()) return json(res, 409, {
           error: "Finish active Approve for me turns before changing approval review settings.",
         });
         if (changingVoiceProvider) store.clearVoiceSelections();
         if (externalSecretStorage) {
+          // Supplied credentials are already in the OS-encrypted store: tombstone them so no older plaintext survives the merge.
           const persisted = structuredClone(patch);
           if (persisted.xai?.key !== undefined) persisted.xai.key = "";
           if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
@@ -525,6 +537,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         } else {
           saveConfig(patch);
           configWriteCommitted = true;
+          // loadConfig prefers env over the file for credentials, so the env must follow the save.
           syncCredentialEnv(patch);
           Object.assign(cfg, loadConfig());
         }
@@ -573,11 +586,14 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
             }
           }
         } catch (error) {
+          // Config is already durable: this failure must not skip revocation and reload below.
           browserReferenceCleanupError = error;
         }
       }
       const changedEngines = new Set(changedInstanceIds(enginesBefore, engineLaunches(providerConfigs())));
+      // Revoked before any await: a changed engine's old children are invalid at once.
       revokeEngineCapabilities(changedEngines);
+      // Commit failures wait until every mandatory effect has run: no journal failure may leave a bearer or stale engines active.
       const finalized = await finalizeBrowserCleanupMutation({
         requests: browserCleanupRequests,
         referenceError: browserReferenceCleanupError,
@@ -607,6 +623,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
           return status;
         },
       });
+      // Asserted after every mandatory post-commit effect, so the runtime matches the config even on a 503.
       requireBrowserCleanupAcknowledged(
         finalized.acknowledgements.every(Boolean),
         removedBrowserProfileIds.length === 1 ? "The browser profile" : "The browser profiles",

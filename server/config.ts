@@ -1,7 +1,8 @@
+// ~/.openmausbot/config.json, with env vars overriding its credentials.
 import { createApprovalReviewSchemas } from "./config-approval-review.ts";
 import type { AppConfig } from "./config-types.ts";
 export type { AppConfig } from "./config-types.ts";
-   import { readFileSync, mkdirSync, existsSync, renameSync, statSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -30,24 +31,26 @@ const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const LEGACY_BROWSER_PROFILE_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const BROWSER_PROFILE_ID = /^[a-z0-9_-]{1,40}$/;
 
- export const FISH_TTS_MODELS = ["s2.1-pro", "s2.1-pro-free"] as const;
+/** Fish Audio speech models (`tts.fishModel`); unset means `s2.1-pro`, and `s2.1-pro-free` is Fish's free tier. */
+export const FISH_TTS_MODELS = ["s2.1-pro", "s2.1-pro-free"] as const;
 export type FishTtsModel = (typeof FISH_TTS_MODELS)[number];
 
 export const DEFAULT_ROOM_TURN_TIMEOUT_MINUTES = 5;
 export const MIN_ROOM_TURN_TIMEOUT_MINUTES = 1;
 export const MAX_ROOM_TURN_TIMEOUT_MINUTES = 1_440;
- export const DEFAULT_MCP_CALL_TIMEOUT_MINUTES = 10;
+export const DEFAULT_MCP_CALL_TIMEOUT_MINUTES = 10;
 export const MIN_MCP_CALL_TIMEOUT_MINUTES = 1;
 export const MAX_MCP_CALL_TIMEOUT_MINUTES = 60;
 export const DEFAULT_MAX_CONCURRENT_BOT_THREADS = 3;
 export const MAX_CONCURRENT_BOT_THREADS = 10;
- export const MIN_THREAD_EVENT_LOG_BYTES = 256 * 1024;
+/** The floor keeps a log tail large enough for the event inspector's recent-line window. */
+export const MIN_THREAD_EVENT_LOG_BYTES = 256 * 1024;
 export const MAX_THREAD_EVENT_LOG_BYTES = 4 * 1024 * 1024 * 1024;
 export const DEFAULT_LOCAL_VM_MODE = "shared" as const;
 export const DEFAULT_LOCAL_VM_MAX_INSTANCES = 2;
 export const MIN_LOCAL_VM_MAX_INSTANCES = 1;
 export const MAX_LOCAL_VM_MAX_INSTANCES = 8;
- export const DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 480;
+export const DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 480;
 export const MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 5;
 export const MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 1_440;
 
@@ -79,6 +82,7 @@ const roomConfigSchema = z.object({
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
 });
 const mcpConfigSchema = z.object({
+  /** Minutes one bot MCP tool call may run; default 10. */
   callTimeoutMinutes: z
     .number()
     .int()
@@ -86,7 +90,8 @@ const mcpConfigSchema = z.object({
     .max(MAX_MCP_CALL_TIMEOUT_MINUTES)
     .optional(),
 }).strict();
- const localVmConfigSchema = z.object({
+/** Bot desktop isolation, default "shared"; `maxInstances` caps per-bot desktops or pool seats. Switching modes cold-starts every desktop. */
+const localVmConfigSchema = z.object({
   mode: z.enum(["shared", "per-bot", "pool"]).optional(),
   maxInstances: z
     .number()
@@ -101,12 +106,15 @@ const mcpConfigSchema = z.object({
     .max(MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES)
     .optional(),
 });
- const browserProfileSchema = z.object({
+/** A named browser session; its id names a durable Electron partition. */
+const browserProfileSchema = z.object({
+  // Lowercase only: Chromium partition directories collide on case-insensitive filesystems.
   id: z.string().regex(BROWSER_PROFILE_ID).refine((id) => id !== "guest", "guest is reserved"),
   name: z.string().trim().min(1).max(40),
+  /** "chrome" uses the person's own running Chrome (My Chrome); absent is the built-in browser. */
   browser: z.literal("chrome").optional(),
 }).strict();
-   const legacyBrowserProfileSchema = z.object({
+const legacyBrowserProfileSchema = z.object({
   id: z.string().regex(LEGACY_BROWSER_PROFILE_ID).refine((id) => id !== "guest", "guest is reserved"),
   name: z.string().trim().min(1).max(40),
   partitionId: z.string().regex(LEGACY_BROWSER_PROFILE_ID).refine((id) => id !== "guest", "guest is reserved").optional(),
@@ -223,21 +231,29 @@ const browserProfilesSchema = z.array(browserProfileSchema).max(20).superRefine(
     });
   });
 });
-   const featureConfigSchema = z.object({
+// Not strict: a stale client's unknown flag must be dropped, not fail the whole config.
+const featureConfigSchema = z.object({
+  /** Bots may draft skills for your review. On unless false. */
   skillAuthoring: z.boolean().optional(),
+  /** The bot's engine reviews long conversations and updates its learned skills. Off unless true; needs skillAuthoring. */
   skillReview: z.boolean().optional(),
   /** Tool steps in one conversation between automatic reviews. */
   skillReviewSteps: z.number().int().min(3).max(100).optional(),
   /** Show each tool run in the transcript. Off unless explicitly enabled. */
   showToolCalls: z.boolean().optional(),
+  /** Run a routine in the conversation it reports to, not a hidden thread. Off unless true. */
   routinesInConversation: z.boolean().optional(),
+  /** Built-in browser. On unless false; each bot also has its own switch. */
   browser: z.boolean().optional(),
+  /** Computer sharing. Off unless true, set by hand: there is no Settings toggle. */
   sharedComputers: z.boolean().optional(),
   claudeUserMcp: z.boolean().optional(), // Claude bots also load this machine's Claude Code MCP servers. Off unless true: tools cost tokens.
   claudeUserSkills: z.boolean().optional(), // Claude bots also load the skills in ~/.claude/skills, in place. Off unless true.
   /** LLM-generated titles for new threads. Off unless true. */
   llmThreadTitles: z.boolean().optional(),
+  /** Recall matching passages from the bot's memory into each turn. On unless false. */
   autoRecall: z.boolean().optional(),
+  /** One shared skills store that bots read by assignment. Off unless true. */
   skillsLibrary: z.boolean().optional(),
   shareLearnedSkills: z.enum(["off", "ask", "auto"]).optional(),
   /** Memory upkeep also reads a member bot's room turns. Off unless true. */
@@ -283,29 +299,34 @@ const automaticRecoverySchema = z.object({
   backup: defaultModelSelectionSchema.optional(),
 }).strict().refine((recovery) => !recovery.enabled || recovery.backup !== undefined,
   { message: "Choose a backup model before enabling automatic recovery", path: ["backup"] });
- const cacheKeepWarmSchema = z.object({
+/** Prompt-cache keep-warm. Off unless enabled; a bot's own `cacheKeepWarm` overrides it. */
+const cacheKeepWarmSchema = z.object({
   enabled: z.boolean(),
   windowMinutes: z.number().int().min(15).max(MAX_WINDOW_MINUTES).optional(),
 }).strict();
 const threadsConfigSchema = z.object({
   maxConcurrentPerBot: z.number().int().min(1).max(MAX_CONCURRENT_BOT_THREADS),
+  /** Byte cap for each thread's events/ and native/ log; absent means unbounded. */
   eventLogMaxBytes: z.number().int().min(MIN_THREAD_EVENT_LOG_BYTES).max(MAX_THREAD_EVENT_LOG_BYTES).optional(),
+  /** Days a closed or archived thread's event logs survive; absent keeps them forever. */
   eventLogRetentionDays: z.number().int().min(1).max(3650).optional(),
 }).strict();
- const newBotsConfigSchema = z.object({
+const newBotsConfigSchema = z.object({
   /** Effort for a new bot whose model selection names none. */
   effort: z.enum(EFFORT_LEVELS).optional(),
 }).strict();
- const newBotsPatchSchema = z.object({
+const newBotsPatchSchema = z.object({
   effort: newBotsConfigSchema.shape.effort.nullable(),
 }).strict();
- const threadsPatchSchema = threadsConfigSchema.extend({
+const threadsPatchSchema = threadsConfigSchema.extend({
   maxConcurrentPerBot: threadsConfigSchema.shape.maxConcurrentPerBot.optional(),
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
 const appConfigSchema = z.object({
+  /** Set only by the verified domain endpoint, never by a config patch. */
   customDomain: z.string().optional(),
+  /** Who may sign in with an emailed code: addresses or `@domain` entries; admins get every scope, members chat only. */
   signIn: z.object({ admins: z.array(z.string().max(320)).max(500).optional(), members: z.array(z.string().max(320)).max(5000).optional() }).optional(),
   defaultModelSelection: defaultModelSelectionSchema.optional(),
   automaticRecovery: automaticRecoverySchema.optional(),
@@ -313,6 +334,7 @@ const appConfigSchema = z.object({
   approvalReview: approvalReviewSchema.optional(),
   newBotDefaults: newBotDefaultsSchema.optional(),
   newBots: newBotsConfigSchema.optional(),
+  /** CLI launch preferences; never enables remote access implicitly. */
   cliStartup: z.object({
     access: z.enum(["local", "tunnel", "tailscale", "public-url"]),
     publicUrl: z.string().url().optional(),
@@ -323,16 +345,20 @@ const appConfigSchema = z.object({
   groq: z.object({ key: optionalText, url: optionalText }).optional(),
   meta: z.object({ key: optionalText, url: optionalText }).optional(),
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
+  /** Anthropic API key for Claude Code billed per token; `url` is for a proxy or test double. Never a login OAuth token. */
   anthropic: z.object({ key: optionalText, url: optionalText, everyClaudeBot: z.boolean().optional() }).optional(),
+  /** OpenAI API key for the `openai` instance only; Codex keeps its own login. */
   openai: z.object({ key: optionalText }).optional(),
   /** OpenRouter key, for the `openrouter` instance only. */
   openrouter: z.object({ key: optionalText }).optional(),
+  /** Workspace monthly spend limit; enforced only with the `budgets` entitlement. */
   budgets: z
     .object({
       monthlyUsd: z.number().min(0).max(1_000_000).optional(),
       warnAtPercent: z.number().int().min(1).max(100).optional(),
     })
     .optional(),
+  /** Operator sell prices per million tokens by model id, `driver/model` or `default`; read only with the `billing` entitlement. */
   billing: z
     .object({
       currency: z.string().regex(/^[A-Z]{3}$/).optional(),
@@ -348,13 +374,17 @@ const appConfigSchema = z.object({
         .optional(),
     })
     .optional(),
+  /** `model` seeds the default selection; `provider` pins an OpenRouter upstream (e.g. "fireworks"). */
   openaiCompat: z
     .object({ key: optionalText, url: optionalText, model: optionalText, provider: optionalText })
     .optional(),
+  /** Composio project key; `userId`/`sessionId` reuse one Composio Session. */
   composio: z.object({ apiKey: optionalText, userId: optionalText, sessionId: optionalText }).optional(),
   box: z.object({ token: optionalText }).optional(),
   vps: vpsConfigSchema.optional(),
+  /** OpenCode key, plus `providerKeys` for its other providers by the env name OpenCode reads; both write-only and only for its child. */
   opencodeGo: z.object({ apiKey: optionalText, providerKeys: z.record(z.string(), z.string()).optional() }).optional(),
+  /** `provider`: "elevenlabs" (default, `key`), "fish" (`fishKey`, `fishModel`), "system", "xai" (`xai.key`) or "chatterbox" (local; `baseUrl`, `model`). */
   tts: z.object({
     key: optionalText,
     fishKey: optionalText,
@@ -370,6 +400,7 @@ const appConfigSchema = z.object({
     fishModel: z.enum(FISH_TTS_MODELS).optional(),
   }).optional(),
   decider: deciderConfigSchema.optional(),
+  /** Live calls: a GPT-Live OpenAI project key kept apart from every other OpenAI key; `voice` is a GPT-Live voice. */
   live: z.object({
     key: optionalText,
     voice: z.string().trim().max(40).regex(/^[a-z]*$/, "a Live voice is a lowercase built-in voice name").optional(),
@@ -395,6 +426,7 @@ const appConfigSchema = z.object({
   }).optional(),
   /** Non-secret profile details; aboutMe is shared with every bot. */
   profile: z.object({ name: optionalText, email: optionalText, aboutMe: z.string().max(24_000).optional() }).optional(),
+  /** UI language override (BCP-47, lowercase); absent follows the system. */
   language: optionalText,
   rooms: roomConfigSchema.optional(),
   mcp: mcpConfigSchema.optional(),
@@ -410,6 +442,7 @@ const appConfigSchema = z.object({
     tidyHour: z.number().int().min(0).max(23).optional(),
   }).strict().optional(),
   threads: threadsConfigSchema.optional(),
+  /** Minimum days of decision-log month files kept; OMB_DECISION_RETENTION_DAYS wins. */
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
   loopGuard: loopGuardConfigSchema.optional(),
   safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(), // off by default: safetyFloorEnabled in server/safety-floor-gate.ts
@@ -419,10 +452,12 @@ const appConfigSchema = z.object({
   browserEngine: browserEngineConfigSchema.optional(),
   browserProfiles: browserProfilesSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
+  /** Loose on purpose: one bad server entry is skipped later, never fails the whole file. */
   mcpServers: z.record(z.string(), z.unknown()).optional(),
 });
 const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
+  /** Loose like mcpServers: a bad provider key is dropped later, never the whole file. */
   opencodeGo: z.object({
     apiKey: optionalText,
     providerKeys: z.record(z.string(), z.unknown()).catch({})
@@ -439,11 +474,13 @@ export type BrowserProfile = z.output<typeof browserProfileSchema> & {
 };
 export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
 
- export function browserProfilePartitionId(profile: BrowserProfile): string {
+/** Electron storage must use this, never the profile id. */
+export function browserProfilePartitionId(profile: BrowserProfile): string {
   return profile.partitionId ?? profile.id;
 }
 
- export function browserProfileRoutingConflict(
+/** A colliding id or partition could attach a bot to another account's retained session. */
+export function browserProfileRoutingConflict(
   profiles: readonly BrowserProfile[],
 ): string | null {
   const logicalOwner = new Map(profiles.map((profile, index) => [profile.id.toLowerCase(), index]));
@@ -464,7 +501,8 @@ export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
   return null;
 }
 
- export function browserProfileReplacementConflict(
+/** Electron erases a removed partition only after commit, so a new profile reusing its name would race the wipe. */
+export function browserProfileReplacementConflict(
   currentProfiles: readonly BrowserProfile[],
   nextProfiles: readonly BrowserProfile[],
 ): string | null {
@@ -504,7 +542,7 @@ export function parseStoredConfig(value: JsonValue): AppConfig {
   return parsed.data;
 }
 
- export function loadBrowserProfileIdAliases(): ReadonlyMap<string, string> {
+export function loadBrowserProfileIdAliases(): ReadonlyMap<string, string> {
   try {
     const document = z.object({ browserProfiles: legacyBrowserProfilesSchema.optional() }).safeParse(
       parseJson(readFileSync(join(DATA_DIR, "config.json"), "utf8")),
@@ -528,7 +566,8 @@ export function vpsSshAlias(cfg: AppConfig): string | null {
   return isValidSshAlias(cfg.vps?.sshAlias) ? cfg.vps.sshAlias : null;
 }
 
- export function browserEngineAttachCdpUrl(cfg: AppConfig): string | null {
+/** Revalidated because the value is forwarded into a child process environment. */
+export function browserEngineAttachCdpUrl(cfg: AppConfig): string | null {
   return isValidCdpTarget(cfg.browserEngine?.attachCdpUrl) ? cfg.browserEngine.attachCdpUrl : null;
 }
 
@@ -540,13 +579,13 @@ export function mcpCallTimeoutMinutes(cfg: AppConfig): number {
   return cfg.mcp?.callTimeoutMinutes ?? DEFAULT_MCP_CALL_TIMEOUT_MINUTES;
 }
 
- export function cacheKeepWarmSettings(cfg: AppConfig): { enabled: boolean; windowMinutes: number } {
+export function cacheKeepWarmSettings(cfg: AppConfig): { enabled: boolean; windowMinutes: number } {
   return { enabled: cfg.cacheKeepWarm?.enabled === true, windowMinutes: cfg.cacheKeepWarm?.windowMinutes ?? DEFAULT_WINDOW_MINUTES };
 }
 
 export const LIVE_IDLE_MINUTES_DEFAULT = 5;
 
- export function liveSettingsFor(cfg: AppConfig): LiveSettings {
+export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   const minutes = cfg.live?.idleMinutes;
   return {
     configured: Boolean(cfg.live?.key?.trim()),
@@ -560,12 +599,12 @@ export function maxConcurrentBotThreads(cfg: { threads?: { maxConcurrentPerBot?:
   return cfg.threads?.maxConcurrentPerBot ?? DEFAULT_MAX_CONCURRENT_BOT_THREADS;
 }
 
- export function threadEventLogMaxBytes(cfg: AppConfig): number | null {
+export function threadEventLogMaxBytes(cfg: AppConfig): number | null {
   const cap = cfg.threads?.eventLogMaxBytes;
   return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? cap : null;
 }
 
- export function threadEventLogRetentionDays(cfg: AppConfig): number | null {
+export function threadEventLogRetentionDays(cfg: AppConfig): number | null {
   return cfg.threads?.eventLogRetentionDays ?? null;
 }
 
@@ -581,7 +620,7 @@ export function localVmIdleTimeoutMinutes(cfg: AppConfig): number {
   return cfg.localVm?.idleTimeoutMinutes ?? DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES;
 }
 
- export function skillAuthoringEnabled(cfg: AppConfig): boolean {
+export function skillAuthoringEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillAuthoring !== false;
 }
 
@@ -589,21 +628,21 @@ export const DEFAULT_SKILL_REVIEW_STEPS = 10;
 export const MIN_SKILL_REVIEW_STEPS = 3;
 export const MAX_SKILL_REVIEW_STEPS = 100;
 
- export function skillReviewEnabled(cfg: AppConfig): boolean {
+export function skillReviewEnabled(cfg: AppConfig): boolean {
   return skillAuthoringEnabled(cfg) && cfg.features?.skillReview === true;
 }
 
- export function skillReviewSteps(cfg: AppConfig): number {
+export function skillReviewSteps(cfg: AppConfig): number {
   const raw = cfg.features?.skillReviewSteps;
   const value = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : DEFAULT_SKILL_REVIEW_STEPS;
   return Math.min(MAX_SKILL_REVIEW_STEPS, Math.max(MIN_SKILL_REVIEW_STEPS, value));
 }
 
- export function autoRecallEnabled(cfg: AppConfig): boolean {
+export function autoRecallEnabled(cfg: AppConfig): boolean {
   return cfg.features?.autoRecall !== false;
 }
 
- export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
+export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
   return cfg.features?.roomMemoryCapture === true;
 }
 
@@ -622,15 +661,16 @@ export function showToolCallsEnabled(cfg: AppConfig): boolean {
   return cfg.features?.showToolCalls === true;
 }
 
- export function routinesInConversationEnabled(cfg: AppConfig): boolean {
+export function routinesInConversationEnabled(cfg: AppConfig): boolean {
   return cfg.features?.routinesInConversation === true;
 }
 
- export function builtInBrowserEnabled(cfg: AppConfig, _env: NodeJS.ProcessEnv = process.env): boolean {
+export function builtInBrowserEnabled(cfg: AppConfig, _env: NodeJS.ProcessEnv = process.env): boolean {
   return cfg.features?.browser !== false;
 }
 
- export function sharedComputersEnabled(cfg: AppConfig): boolean {
+/** Security: off unless true because a read-only folder grant can still be escalated to a shell. */
+export function sharedComputersEnabled(cfg: AppConfig): boolean {
   return cfg.features?.sharedComputers === true;
 }
 
@@ -638,7 +678,7 @@ export function claudeUserMcpEnabled(cfg: Pick<AppConfig, "features">): boolean 
   return cfg.features?.claudeUserMcp === true;
 }
 
- export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
+export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
 
@@ -648,7 +688,7 @@ export function engineLaunches(configs: InstanceConfigMap, env: Record<string, s
     [id, { ...entry, fallbackEnv: Object.fromEntries(fallbackEnv(entry).map((name) => [name, env[name]])) }]));
 }
 
- function fallbackEnv(entry: InstanceConfigMap[string]): string[] {
+function fallbackEnv(entry: InstanceConfigMap[string]): string[] {
   const config = typeof entry.config === "object" && entry.config !== null && !Array.isArray(entry.config)
     ? entry.config as { apiKeyEnv?: unknown } : {};
   const named = typeof config.apiKeyEnv === "string" && config.apiKeyEnv ? config.apiKeyEnv : undefined;
@@ -664,12 +704,12 @@ export function engineLaunches(configs: InstanceConfigMap, env: Record<string, s
   }
 }
 
- export function changedInstanceIds(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+export function changedInstanceIds(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((id) => !isDeepStrictEqual(before[id], after[id]));
 }
 
- export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbot");
+export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbot");
 const LEGACY_DATA_DIR = join(homedir(), ".opengrokbot");
 export const EVENTS_DIR = join(DATA_DIR, "events");
 export const NATIVE_DIR = join(DATA_DIR, "native");
@@ -686,7 +726,7 @@ export function ensureDirs() {
   migrateLegacyFeatureFlags(DATA_DIR);
 }
 
- let lastIgnoredConfigWarning = "";
+let lastIgnoredConfigWarning = "";
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
@@ -695,6 +735,7 @@ export function loadConfig(): AppConfig {
     lastIgnoredConfigWarning = "";
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+      // JSON.parse errors can quote the input; a credential must never reach the log.
       const reason = error instanceof SyntaxError ? "invalid JSON"
         : error instanceof Error ? error.message : "unable to read configuration";
       const warning = `config: ignoring ${join(DATA_DIR, "config.json")} and using defaults: ${reason}`;
@@ -704,6 +745,7 @@ export function loadConfig(): AppConfig {
       lastIgnoredConfigWarning = "";
     }
   }
+  // Env wins over the file for every credential: the desktop shell injects them as env at spawn.
   cfg.mistral = { ...cfg.mistral };
   if (process.env.MISTRAL_API_KEY !== undefined) cfg.mistral.key = process.env.MISTRAL_API_KEY;
   cfg.cerebras = { ...cfg.cerebras };
@@ -714,6 +756,7 @@ export function loadConfig(): AppConfig {
   if (process.env.OMB_META_API_KEY !== undefined) cfg.meta.key = process.env.OMB_META_API_KEY;
   cfg.xai = { ...cfg.xai };
   if (process.env.XAI_API_KEY !== undefined) cfg.xai.key = process.env.XAI_API_KEY;
+  // Never ANTHROPIC_API_KEY: an operator's stray variable must not move every Claude bot onto API billing.
   cfg.anthropic = { ...cfg.anthropic };
   if (process.env.OMB_ANTHROPIC_API_KEY !== undefined) cfg.anthropic.key = process.env.OMB_ANTHROPIC_API_KEY;
   if (process.env.OMB_ANTHROPIC_API_URL !== undefined) cfg.anthropic.url = process.env.OMB_ANTHROPIC_API_URL;
@@ -754,7 +797,8 @@ export function loadConfig(): AppConfig {
   return cfg;
 }
 
- export function cacheUntilConfigChanges<T>(derive: (config: AppConfig) => T): () => T {
+/** Memoizes derive(loadConfig()) until config.json's stat changes; a file saved in the last two seconds is re-read every call, since its mtime may not tick. */
+export function cacheUntilConfigChanges<T>(derive: (config: AppConfig) => T): () => T {
   let cached: { stamp: string; value: T } | null = null;
   return () => {
     let stamp: string | null = null;
@@ -771,7 +815,7 @@ export function loadConfig(): AppConfig {
   };
 }
 
- export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "newBots" | "approvalReview">>): void {
+export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "newBots" | "approvalReview">>): void {
   const secrets: Array<[value: string | undefined, name: string]> = [
     [patch.xai?.key, "XAI_API_KEY"],
     [patch.mistral?.key, "MISTRAL_API_KEY"],
@@ -811,7 +855,8 @@ export function loadConfig(): AppConfig {
   }
 }
 
- export const WORKSPACE_CREDENTIAL_ENV = [
+/** Workspace credential env names; spawned engine CLIs must never inherit them. */
+export const WORKSPACE_CREDENTIAL_ENV = [
   "XAI_API_KEY",
   "MISTRAL_API_KEY",
   "CEREBRAS_API_KEY",
@@ -840,27 +885,31 @@ export function loadConfig(): AppConfig {
   "OMB_CLOUD_VOICE_TOKEN",
   "OMB_CLOUD_DECIDER_TOKEN",
   "OMB_CLOUD_AI_TOKEN",
+  // Not credentials, but they point a shell-capable agent at app-owned state.
   "OMB_BROWSER_CONNECTION",
   "OMB_USER_DATA",
   "OMB_BOAT_API",
 ] as const;
 
- export const CONTROL_PLANE_ENV = ["OMB_LICENSE_KEY", "OMB_INSTALLATION_CREDENTIAL"] as const;
+/** Operator secrets only this process reads, plus every `OMB_CLOUD_` var (the underscore leaves out OMB_CLOUDFLARED_PATH). */
+export const CONTROL_PLANE_ENV = ["OMB_LICENSE_KEY", "OMB_INSTALLATION_CREDENTIAL"] as const;
 export const CONTROL_PLANE_ENV_PREFIX = "OMB_CLOUD_";
 
- export function stripControlPlaneEnv(env: Record<string, string | undefined>): void {
+/** Names compare case-insensitively because Windows environments do. */
+export function stripControlPlaneEnv(env: Record<string, string | undefined>): void {
   for (const key of Object.keys(env)) {
     const name = key.toUpperCase();
     if (name.startsWith(CONTROL_PLANE_ENV_PREFIX) || (CONTROL_PLANE_ENV as readonly string[]).includes(name)) delete env[key];
   }
 }
 
- export function stripWorkspaceCredentialEnv(env: Record<string, string | undefined>): void {
+export function stripWorkspaceCredentialEnv(env: Record<string, string | undefined>): void {
   for (const key of WORKSPACE_CREDENTIAL_ENV) delete env[key];
   stripControlPlaneEnv(env);
 }
 
- export const PROVIDER_CREDENTIAL_ENV = [
+/** Env a provider CLI may read as its billing identity; a foreign key must never move a subscription CLI onto API billing. */
+export const PROVIDER_CREDENTIAL_ENV = [
   "CLINE_API_KEY",
   "ANTHROPIC_API_KEY",
   "FACTORY_API_KEY",
@@ -880,7 +929,8 @@ export const CONTROL_PLANE_ENV_PREFIX = "OMB_CLOUD_";
   "CURSOR_AUTH_TOKEN",
 ] as const;
 
- export const OPENCODE_PROVIDER_ENV = [
+/** Provider keys OpenCode reads from its environment (with ANTHROPIC_API_KEY set it lists Anthropic's models). */
+export const OPENCODE_PROVIDER_ENV = [
   "CLINE_API_KEY",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
@@ -892,11 +942,11 @@ export const CONTROL_PLANE_ENV_PREFIX = "OMB_CLOUD_";
   "GROQ_API_KEY",
 ] as const;
 
- export const OPENCODE_PROVIDER_KEY_LIMIT = 20;
+export const OPENCODE_PROVIDER_KEY_LIMIT = 20;
 const OPENCODE_PROVIDER_KEY_NAME = /^[A-Z][A-Z0-9_]{0,59}_(?:API_KEY|KEY|TOKEN)$/;
- const OPENCODE_PROVIDER_KEY_VALUE = /^[\x21-\x7e]{1,4096}$/;
+const OPENCODE_PROVIDER_KEY_VALUE = /^[\x21-\x7e]{1,4096}$/;
 
- function openCodeProviderKeyNameRefusal(name: string): string | undefined {
+function openCodeProviderKeyNameRefusal(name: string): string | undefined {
   if (!OPENCODE_PROVIDER_KEY_NAME.test(name)) {
     return "Use the name the provider reads its key from: capitals, ending in _API_KEY, _KEY or _TOKEN, such as VENICE_API_KEY.";
   }
@@ -907,7 +957,7 @@ const OPENCODE_PROVIDER_KEY_NAME = /^[A-Z][A-Z0-9_]{0,59}_(?:API_KEY|KEY|TOKEN)$
   return reserved ? `OpenMaus keeps ${name} for itself, so OpenCode can't be given it here. Put this key in opencode.json instead.` : undefined;
 }
 
- export function openCodeProviderKeys(cfg: Pick<AppConfig, "opencodeGo">): Record<string, string> {
+export function openCodeProviderKeys(cfg: Pick<AppConfig, "opencodeGo">): Record<string, string> {
   const saved = cfg.opencodeGo?.providerKeys ?? {};
   const usable = Object.keys(saved).sort()
     .filter((name) => !openCodeProviderKeyNameRefusal(name) && OPENCODE_PROVIDER_KEY_VALUE.test(saved[name] ?? ""))
@@ -915,7 +965,8 @@ const OPENCODE_PROVIDER_KEY_NAME = /^[A-Z][A-Z0-9_]{0,59}_(?:API_KEY|KEY|TOKEN)$
   return Object.fromEntries(usable.map((name) => [name, saved[name]!]));
 }
 
- export function mergeOpenCodeProviderKeys(
+/** "" removes a key; every other saved key stays. */
+export function mergeOpenCodeProviderKeys(
   cfg: Pick<AppConfig, "opencodeGo">,
   change: Record<string, string>,
 ): { ok: true; keys: Record<string, string> } | { ok: false; error: string } {
@@ -939,12 +990,14 @@ const OPENCODE_PROVIDER_KEY_NAME = /^[A-Z][A-Z0-9_]{0,59}_(?:API_KEY|KEY|TOKEN)$
 
 const configSaveListeners = new Set<(before: JsonObject, after: JsonObject) => void>();
 
- export function onConfigSaved(listener: (before: JsonObject, after: JsonObject) => void): () => void {
+/** Called synchronously after each saveConfig with the file before and after; a listener must not throw. */
+export function onConfigSaved(listener: (before: JsonObject, after: JsonObject) => void): () => void {
   configSaveListeners.add(listener);
   return () => { configSaveListeners.delete(listener); };
 }
 
- export function saveConfig(
+/** Secrets are never echoed back; callers report configured-or-not only. */
+export function saveConfig(
   patch: Partial<Omit<AppConfig, "threads" | "newBots" | "approvalReview">> & {
     threads?: z.output<typeof threadsPatchSchema>;
     newBots?: z.output<typeof newBotsPatchSchema>;
@@ -1035,6 +1088,7 @@ const configSaveListeners = new Set<(before: JsonObject, after: JsonObject) => v
     for (const [instanceId, entry] of Object.entries(checkedPatch.instances)) {
       const current = jsonObjectSchema.safeParse(storedInstances[instanceId]);
       const merged: JsonObject = current.success ? { ...current.data } : {};
+      // Shadow entries keep fields only a newer app or driver understands.
       if (options.replaceInstances) {
         for (const key of Object.keys(instanceConfigSchema.shape)) delete merged[key];
       }
@@ -1068,13 +1122,15 @@ const configSaveListeners = new Set<(before: JsonObject, after: JsonObject) => v
   }
 }
 
- export function withInstanceCli(
+/** The returned map must stay persistable: never one from instanceConfigs(), which carries injected secrets. */
+export function withInstanceCli(
   cfg: AppConfig,
   instanceId: string,
   cli: string,
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = persistableInstanceConfigs(next);
+  // hasOwn, not truthiness: instanceId comes off the URL, and "__proto__" would poison Object.prototype.
   if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
   const entry = map[instanceId];
   const cliKey = cli.trim();
@@ -1111,7 +1167,8 @@ interface InstanceCliUpdate {
   config: AppConfig;
 }
 
- const CLAUDE_ROUTING_ENV = [
+/** Claude Code env that picks its endpoint and sign-in; an instance setting any owns its routing. */
+const CLAUDE_ROUTING_ENV = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
@@ -1121,13 +1178,15 @@ interface InstanceCliUpdate {
   "CLAUDE_CODE_USE_FOUNDRY",
 ] as const;
 
- export function claudeInstanceOwnsRouting(environment: Record<string, string> | undefined): boolean {
+/** The workspace Anthropic key must never reach a Claude instance with its own routing: it would go as x-api-key to that host. */
+export function claudeInstanceOwnsRouting(environment: Record<string, string> | undefined): boolean {
   return CLAUDE_ROUTING_ENV.some((key) => typeof environment?.[key] === "string" && environment[key] !== "");
 }
 
 const sameUrl = (a: string, b: string) => a.trim().replace(/\/+$/u, "") === b.trim().replace(/\/+$/u, "");
 
- export function instanceOwnsRouting(
+/** An instance with its own endpoint or credential never gets the workspace key, which would go to its host. */
+export function instanceOwnsRouting(
   cfg: AppConfig,
   entry: { driver: string; config?: unknown; environment?: Record<string, string> },
   routingDefaults?: { url?: string; apiKeyEnv?: string },
@@ -1163,7 +1222,8 @@ const sameUrl = (a: string, b: string) => a.trim().replace(/\/+$/u, "") === b.tr
   }
 }
 
- function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string): Map<string, string> {
+/** Each secret goes only to the driver that reads it; the Boat token reaches no engine. */
+function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "mistral" && cfg.mistral?.key) environment.set("MISTRAL_API_KEY", cfg.mistral.key);
   if (driver === "cerebras" && cfg.cerebras?.key) environment.set("CEREBRAS_API_KEY", cfg.cerebras.key);
@@ -1191,7 +1251,7 @@ const sameUrl = (a: string, b: string) => a.trim().replace(/\/+$/u, "") === b.tr
   return environment;
 }
 
- export const OPENAI_API_INSTANCE = "openai";
+export const OPENAI_API_INSTANCE = "openai";
 export const OPENROUTER_API_INSTANCE = "openrouter";
 export const XAI_API_INSTANCE = "xaiApi";
 export const CLAUDE_API_INSTANCE = "claudeApi";
@@ -1211,7 +1271,9 @@ const API_KEY_FLEET: InstanceConfigMap = {
   },
 };
 
-     export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
+export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
+  // Google retired Gemini CLI for the free/Pro/Ultra tiers on 2026-06-18; enterprise licences restore it with
+  // `{"instances": {"gemini": {"driver": "geminiAgent"}}}`.
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
     kimi: { driver: "kimiAgent" },
@@ -1262,6 +1324,7 @@ const API_KEY_FLEET: InstanceConfigMap = {
       if (!Object.hasOwn(map, id)) map[id] = { ...entry };
     }
   }
+  // Re-applied on every load so the openai/openrouter instances never fall back to the shared key and URL.
   for (const [id, builtIn] of Object.entries(API_KEY_FLEET)) {
     const saved = map[id];
     if (!saved || saved.driver !== builtIn.driver) continue;
@@ -1273,6 +1336,7 @@ const API_KEY_FLEET: InstanceConfigMap = {
     if (typeof cli === "string" && cli) map.chatgpt = { ...map.chatgpt, config: { ...map.chatgpt.config as object, cli } };
   }
   for (const [id, sourceEntry] of Object.entries(map)) {
+    // Copy: writing into the caller's persisted entry would freeze the workspace URL into it.
     const entry = { ...sourceEntry };
     map[id] = entry;
     const environment = { ...entry.environment };
@@ -1302,6 +1366,7 @@ const API_KEY_FLEET: InstanceConfigMap = {
           typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
         const merged = { ...current };
         for (const [k, v] of Object.entries(defaults)) {
+          // An empty provider means "no upstream pin"; never fill it from the workspace.
           if (k === "provider" && typeof merged[k] === "string") continue;
           if (typeof merged[k] !== "string" || !(merged[k] as string).trim()) merged[k] = v;
         }
@@ -1312,6 +1377,8 @@ const API_KEY_FLEET: InstanceConfigMap = {
   return map;
 }
 
+// config.json: { "mcpServers": { "notes": { "command": "npx", "args": ["-y", "@x/notes-mcp"], "env": { "NOTES_TOKEN": "…" } },
+//                                "docs": { "type": "http", "url": "https://…/mcp", "headers": { "Authorization": "Bearer …" } } } }
 
 export type CustomMcpServer = McpServerSpec;
 
@@ -1323,7 +1390,7 @@ function skipMcpEntry(name: string, why: string): void {
   console.error(`mcpServers.${JSON.stringify(name)} skipped — ${why}`);
 }
 
- export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string, CustomMcpServer> {
+export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string, CustomMcpServer> {
   const out: Record<string, CustomMcpServer> = {};
   for (const [name, raw] of Object.entries(cfg.mcpServers ?? {})) {
     if (only && !only.includes(name)) continue;

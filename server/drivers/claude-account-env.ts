@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join, isAbsolute, normalize } from "node:path";
 
 
- export const CLAUDE_ACCOUNT_ENV_KEYS = [
+/** Parent-session credentials/routing a named account must not inherit. */
+export const CLAUDE_ACCOUNT_ENV_KEYS = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_SCOPES",
@@ -19,7 +20,7 @@ import { join, isAbsolute, normalize } from "node:path";
 ] as const;
 
 
- export function resolveClaudeConfigDir(configDir?: string, env: NodeJS.ProcessEnv = process.env): string {
+export function resolveClaudeConfigDir(configDir?: string, env: NodeJS.ProcessEnv = process.env): string {
   const home = env.HOME || env.USERPROFILE || homedir();
   const configured = configDir?.trim() || env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude");
   const expanded = configured === "~" ? home : configured.startsWith("~/") ? join(home, configured.slice(2)) : configured;
@@ -30,7 +31,9 @@ import { join, isAbsolute, normalize } from "node:path";
 }
 
 
- export function readClaudeAuthSettings(
+/** The selected CLI account's auth settings, without its hooks, permissions, MCP servers or
+ * personal instructions. */
+export function readClaudeAuthSettings(
   env: NodeJS.ProcessEnv,
   instanceEnvironment: NodeJS.ProcessEnv = {},
 ): { env?: Record<string, string>; apiKeyHelper?: string } {
