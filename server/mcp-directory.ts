@@ -314,6 +314,14 @@ function union(parts: string[]): string {
   return "unknown";
 }
 
+function signatureOmitsDetails(schema: unknown): boolean {
+  if (!isRecord(schema)) return true;
+  if (Object.keys(schema).some(key => !["type", "properties", "required", "additionalProperties"].includes(key))) return true;
+  if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) return true;
+  return isRecord(schema.properties) && Object.values(schema.properties).some(field => !isRecord(field) ||
+    Object.keys(field).some(key => key !== "type") || !["string", "number", "integer", "boolean", "null"].includes(String(field.type)));
+}
+
  export function inputSignature(schema: unknown, maxChars = SIGNATURE_CHARS): string {
   const root = schema;
   schema = deref(root, schema);
@@ -513,7 +521,7 @@ export interface DirectoryOptions {
       const annotations = isRecord(tool.annotations) ? tool.annotations : {};
       const description = tool.description ?? tool.title;
       const input = inputSignature(tool.inputSchema);
-      const abbreviated = oneLine(description, DESCRIPTION_CHARS + 1).length > DESCRIPTION_CHARS || input.includes("…");
+      const abbreviated = (typeof description === "string" && description.replace(/\s+/g, " ").trim().length > DESCRIPTION_CHARS) || input.includes("…") || signatureOmitsDetails(tool.inputSchema);
       return {
         name: tool.name,
         description: oneLine(description, DESCRIPTION_CHARS),

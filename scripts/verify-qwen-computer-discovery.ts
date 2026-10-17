@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { launchVerificationServer, runControlOmb } from "./control-omb.ts";
 import { localTokenizerUrl, measureChatRequests } from "./measure-chat-tokens.ts";
 
-const RUNNER = localTokenizerUrl(process.env.OMB_BENCHMARK_URL ?? "").href;
+const runnerUrl = process.env.OMB_BENCHMARK_URL;
+if (!runnerUrl?.trim()) throw new Error("Set OMB_BENCHMARK_URL to the local runner endpoint");
+const RUNNER = localTokenizerUrl(runnerUrl).href;
 const MODEL = process.env.OMB_BENCHMARK_MODEL;
 if (!MODEL?.trim()) throw new Error("Set OMB_BENCHMARK_MODEL to the exact local model ID");
 const CATALOG = process.env.OMB_COMPUTER_CATALOG_FILE;

@@ -263,6 +263,7 @@ describe("the directory's three tools", () => {
     expect(found).toHaveLength(SEARCH_LIMIT_DEFAULT);
     expect(found[0]).toEqual({
       name: "payments_list",
+      needsDescription: true,
       description: "List payments for a company, newest first. Supports pagination with first and after.",
       input: '{ company_id: string; first?: number; after?: string; order?: "created_at" | "updated_at" }',
       readOnly: true,
@@ -484,4 +485,19 @@ describe("describe_tool's last resort, whatever the names", () => {
     expect(Buffer.byteLength(text(outline))).toBeLessThanOrEqual(DESCRIBE_BYTES);
     for (const field of JSON.parse(text(outline)).fields) expect(field.path.length).toBeLessThanOrEqual(200);
   });
+});
+
+it.each([
+  { type: "object", properties: { filter: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } } },
+  { type: "object", properties: { limit: { type: "integer", minimum: 1 } } },
+  { type: "object", properties: { name: { type: "string", description: "Use the exact case." } } },
+])("requires full discovery for omitted schema semantics (%j)", async schema => {
+  const directory = new ToolDirectory([tool("frame_query", "Read frames.", schema)]);
+  expect((await matches(directory, { query: "frame" }))[0]!.needsDescription).toBe(true);
+});
+
+it("marks long instructions when truncation falls at whitespace", async () => {
+  const description = "x".repeat(DESCRIPTION_CHARS - 1) + " " + "suffix that must be read";
+  const directory = new ToolDirectory([tool("frame_query", description)]);
+  expect((await matches(directory, { query: "frame" }))[0]!.needsDescription).toBe(true);
 });

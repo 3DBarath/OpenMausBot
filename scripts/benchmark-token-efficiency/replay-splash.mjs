@@ -15,7 +15,7 @@ const model = process.env.OMB_BENCHMARK_MODEL;
 assert(model?.trim(), 'Set OMB_BENCHMARK_MODEL to the exact model ID on the selected local server');
 const namespace = existsSync(output) ? JSON.parse(readFileSync(output, 'utf8')).namespace : randomBytes(8).toString('hex');
 const report = existsSync(output) ? JSON.parse(readFileSync(output, 'utf8')) : { label: capture.label, workload: capture.workload, captureSha256, helperSha256, sourceRevision: capture.sourceRevision, sourceDirty: capture.sourceDirty, catalogHash: capture.catalogHash, benchmarkUrl: baseUrl.href, namespace, startedAt: new Date().toISOString(), model, latencyMethod: 'Fixed scripted request replay, one generated token per completion, no model-generated operation is executed. Unique constant namespace precedes the first tool description when tools exist, otherwise first message content; it reduces reuse without flushing the user cache, but template prefixes preceding that location may remain cached.', rows: [] };
-assert(report.model === model && report.benchmarkUrl === baseUrl.href && report.captureSha256 === captureSha256, 'Resume requires the same capture, model and endpoint');
+assert(report.model === model && report.benchmarkUrl === baseUrl.href && report.captureSha256 === captureSha256 && report.helperSha256 === helperSha256, 'Resume requires the same capture, model, endpoint and replay helper');
 const save = () => writeFileSync(output, JSON.stringify(report, null, 2));
 const health = async () => {
   try {

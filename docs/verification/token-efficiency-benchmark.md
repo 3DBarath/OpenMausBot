@@ -1,6 +1,6 @@
 # Refreshed OpenMausBot overnight comparison
 
-These historical inference benchmarks used upstream `978993c8` and proposed PR1 `f4e5f66a`. Submission code is now rebased on upstream `a00ded131` (0.1.108); [the current-source check](token-efficiency-upstream-refresh.md) measures tokens only. Current integration checks are separate from these older inference timings.
+These historical inference benchmarks used upstream `978993c8` and proposed PR1 `f4e5f66a`. The October 13 tokenizer check used upstream 0.1.108; it did not repeat inference timings. The submission was subsequently refreshed to upstream 0.1.114: [dated token counts](token-efficiency-upstream-refresh.md), [0.1.109 payload capture](token-efficiency-upstream-0109.md), and [0.1.114 payload capture and verified sources](token-efficiency-upstream-0114.md). Current branch checks are recorded in the submitted PR; the inference measurements below retain their original source revisions.
 
 Timing suite completed at 2026-10-11T08:26:19.605690+00:00. Quality checks: upstream passed, pr1 passed, latest passed.
 

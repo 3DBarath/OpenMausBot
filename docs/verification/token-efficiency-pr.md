@@ -1,8 +1,7 @@
 # Defer large tool catalogs and retain chat tool history
 
 This saved proposal records the earlier reconstruction and its historical measurements.
-The active submission packet was rebased onto upstream `a00ded131` (0.1.108) on 2026-10-13;
-its current branch checks are reported separately. The inference campaign was not repeated.
+The October 13 refresh used upstream `a00ded131` (0.1.108). Later submission work uses upstream 0.1.114; see [the dated current-base capture](token-efficiency-upstream-0114.md) and the submitted PR for current branch checks. All reconstruction bases and test counts below are historical; the inference campaign was not repeated.
 
 ## What changed
 

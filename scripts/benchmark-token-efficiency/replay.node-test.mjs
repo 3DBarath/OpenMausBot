@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-test('resume refuses a changed capture before contacting the selected server', async () => {
+for (const changed of ['capture', 'helper']) test(`resume refuses a changed ${changed} before contacting the selected server`, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'omb-replay-'));
   let requests = 0;
   const server = createServer(async (req, res) => {
@@ -23,8 +23,9 @@ test('resume refuses a changed capture before contacting the selected server', a
     const origin = `http://127.0.0.1:${server.address().port}/`;
     const input = join(directory, 'capture.json'), output = join(directory, 'latency.json');
     const model = randomUUID();
-    await writeFile(input, JSON.stringify({ label: 'fixture', workload: 'short', requests: [] }));
-    await writeFile(output, JSON.stringify({ model, benchmarkUrl: origin, captureSha256: randomUUID(), namespace: randomUUID(), rows: [] }));
+    const capture = JSON.stringify({ label: 'fixture', workload: 'short', requests: [] });
+    await writeFile(input, capture);
+    await writeFile(output, JSON.stringify({ model, benchmarkUrl: origin, captureSha256: changed === 'capture' ? randomUUID() : createHash('sha256').update(capture).digest('hex'), helperSha256: randomUUID(), namespace: randomUUID(), rows: [] }));
     let failed = false;
     try {
       await promisify(execFile)(process.execPath, [fileURLToPath(new URL('./replay-splash.mjs', import.meta.url)), input, output], {
