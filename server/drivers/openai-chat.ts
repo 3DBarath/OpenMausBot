@@ -27,7 +27,7 @@ const asError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value));
 
 
- const MAX_CHAT_ROUNDS = 64;
+const MAX_CHAT_ROUNDS = 64;
 const MAX_TURN_TOOL_CALLS = 200;
 const stoppedAfter = (count: string) =>
   `Stopped after ${count} without a final answer. The steps so far already ran, so ask only for what's left.`;
@@ -39,12 +39,12 @@ interface DeliveredUserMessage {
   after: string;
 }
 
- const MAX_REPLAY_EXTRA_BYTES = 24_000;
- const MAX_DELIVERED_THREADS = 256;
+const MAX_REPLAY_EXTRA_BYTES = 24_000;
+const MAX_DELIVERED_THREADS = 256;
 
 const fingerprint = (text: string) => createHash("sha256").update(text).digest("base64url");
 
- function replayDelivered(
+function replayDelivered(
   transcript: ReadonlyArray<{ role: "user" | "assistant"; text: string }>,
   records: readonly DeliveredUserMessage[],
 ): { content: Map<number, string>; matched: DeliveredUserMessage[]; volatile: string | undefined } {
@@ -79,7 +79,7 @@ const fingerprint = (text: string) => createHash("sha256").update(text).digest("
 const CORRECTIVE_ROUND = "[OpenMausBot: a tool call in this turn failed (its result is marked ok:false). Re-run the failed operations with corrected inputs where possible, check the results, then give your final answer. Do not report results you did not get.]";
 const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
 
- export function announcesAction(text: string): boolean {
+export function announcesAction(text: string): boolean {
   const reply = text.trim();
   if (!reply || reply.length > 400 || reply.includes("?")) return false;
   return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
@@ -89,7 +89,7 @@ const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no to
 const TEXT_ONLY_ATTACHMENT_NOTE = "[The person attached image(s), but this model cannot see images. Say so if the request depends on them.]";
 const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see images. Read the page with a snapshot or a text tool instead.]";
 
- export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
+export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
   const { input } = options;
   const listeners = new Set<RuntimeEventListener>();
   const active = new Map<string, {
@@ -97,10 +97,12 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
     turnId: string;
     done: Promise<void>;
     approval: ReturnType<typeof createChatToolApproval>;
+    /** Mid-turn input parked by adapter.steer, spliced in at the next round, never mid-tool-batch. */
     asides: string[];
   }>();
   const reasoningReplayRejected = new Set<string>();
   const delivered = new Map<string, DeliveredUserMessage[]>();
+  /** Not cleared on `sessionReset`: with no cursor the harness sends it on nearly every turn. */
   const sessionGrants = new Map<string, Set<string>>();
 
   const emit = (event: RuntimeEvent) => {
@@ -240,11 +242,13 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
         }
         const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
         let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
+          // An MCP server squatting ask_user cannot shadow it (dispatch intercepts the name); skip its definition.
         if (questionAllowed && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
           tools.definitions.push(ASK_USER_TOOL_DEFINITION);
         }
         for (let round = 0; round < MAX_CHAT_ROUNDS; round++) {
           abort.signal.throwIfAborted();
+            // Between rounds, never inside a tool batch.
           const parked = turnEntry.asides.splice(0);
           if (parked.length) messages.push({ role: "user", content: parked.join("\n\n") });
           native("out", options.nativeLog.outgoing(turn, messages, model, tools.definitions));
@@ -256,8 +260,10 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
             const pending = { assistant_text: "", reasoning_text: "" };
             const delta = (text: string, streamKind: keyof typeof pending, flush = false) => {
               let combined = pending[streamKind] + text;
+              // Mask whole matches before holding a suffix, or "abab" could split at its own repeated prefix.
               for (const secret of secrets) if (secret) combined = combined.split(secret).join("[redacted]");
               let hold = 0;
+              // A configured credential can straddle chunks: hold any suffix that could be its prefix.
               if (!flush) for (const secret of secrets) {
                 for (let length = Math.min(secret.length - 1, combined.length); length > hold; length--) {
                   if (combined.endsWith(secret.slice(0, length))) { hold = length; break; }
@@ -279,11 +285,13 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
             } catch (value) {
               const error = asError(value);
               const verdict = classifyError(error);
+              // A rejected reasoning echo executed nothing upstream, so the stripped resend repeats nothing.
               if (error instanceof UnsupportedReasoningReplayError && !streamed && !abort.signal.aborted) {
                 reasoningReplayRejected.add(model);
                 for (const message of messages) delete message.reasoning_content;
                 continue;
               }
+              // A refused tool call ran nothing, so the request goes again, but not once answer text streamed.
               if (error instanceof RejectedToolCallError) {
                 native("in", { refused: "tool_use_failed", attempt: attempt + 1, error: error.refusal });
                 if (!answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
@@ -292,6 +300,7 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
                 }
                 if (!abort.signal.aborted) throw new ChatProtocolError(refusedToolCallFailure(error, seenCalls.size > 0));
               }
+              // A structured parameter rejection executed nothing; never downgrade mounted tools or a handled call.
               if (optionalQuestionOnly && round === 0 && !streamed && !seenCalls.size && !abort.signal.aborted &&
                   error instanceof UnsupportedChatToolsError && verdict.reason === "invalid_request") {
                 optionalQuestionOnly = false;
@@ -372,6 +381,7 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
               const inputPreview = preview(args);
               if (call.function.name === ASK_USER_TOOL) {
                 if (!questionAllowed || !allowsTool(scope, { kind: "native", name: ASK_USER_TOOL })) throw new Error("Tool selection excludes this tool");
+                // A question goes before the gate: Full would auto-run an unanswered ask, Ask would show Allow/Deny.
                 const questions = parseAskQuestions(args);
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,

@@ -1,4 +1,5 @@
-   import { useEffect, useId, useRef, useState } from "react";
+// Security: secrets are write-only; GET /api/config returns configured flags, never values.
+import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -9,7 +10,7 @@ import { SECTION_PROVIDER, type KeyResult, type KeyVia } from "@/lib/analytics-a
 import { keyRemoved, keySaved, keySaveFailure, keyTestResult, savedKeyResult } from "@/lib/product-events";
 
 export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
- export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
+export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -45,7 +46,8 @@ const SECTIONS: Record<
   xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
 };
 
-  const ELECTRON_CREDENTIAL: Partial<Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey">> = {
+// Provider keys have no desktop-shell slot yet; they go to the server's own 0600 config.
+const ELECTRON_CREDENTIAL: Partial<Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey">> = {
   composio: "composioApiKey",
   box: "boxToken",
   opencodeGo: "opencodeGoApiKey",
@@ -244,7 +246,7 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
   );
 }
 
- export function looksLikeKey(value: string): boolean {
+export function looksLikeKey(value: string): boolean {
   return value.length > 0 && !/\s/.test(value);
 }
 
@@ -412,7 +414,8 @@ export function ApiKeyRow({
   );
 }
 
- export function OpenCodeProviderKeys() {
+/** Security: write-only; the server returns names, never keys, and hands the keys to OpenCode alone. */
+export function OpenCodeProviderKeys() {
   const { state, dispatch } = useStore();
   const names = state.config?.opencodeGo?.providerKeys ?? [];
   const [name, setName] = useState("");
@@ -511,7 +514,7 @@ export function ApiKeyRow({
   );
 }
 
- export function AnthropicEveryClaudeBot() {
+export function AnthropicEveryClaudeBot() {
   const { state, dispatch } = useStore();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -627,7 +630,7 @@ export function VpsConnection() {
   );
 }
 
- export function OpenAiCompatUrl() {
+export function OpenAiCompatUrl() {
   const { state, dispatch } = useStore();
   const saved = state.config?.openaiCompat?.url ?? "";
   const [value, setValue] = useState(saved);

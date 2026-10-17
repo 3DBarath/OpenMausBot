@@ -33,6 +33,7 @@ export function compactBudget(window: number, compactAt?: number, nativeCompactA
 export function shouldCompact(input: { contextTokens?: number; estimatedBytes: number; budget: number; floor?: number; window: number; nativeCompactAt?: number }): boolean {
   // Summed input across tool rounds is NOT a context-window measurement.
   const size = positive(input.contextTokens) ? input.contextTokens : Math.ceil(input.estimatedBytes / 4);
+  // Regrowth avoids refolding an irreducible prompt but never passes a known provider-native compaction boundary.
   const ceiling = compactBudget(input.window, input.window, input.nativeCompactAt);
   const threshold = Math.min(ceiling, positive(input.floor) ? Math.max(input.budget, input.floor * 1.25) : input.budget);
   return size >= threshold;

@@ -20,9 +20,11 @@ const DEFAULT_MODELS: ModelCatalog = {
 };
 
 const DEFAULT_KEY_ENV = "OPENAI_COMPAT_API_KEY";
- const OWN_KEY_ENVS = new Set(["OMB_OPENAI_API_KEY", "OMB_OPENROUTER_API_KEY"]);
+/** A provider's own key: such an instance never falls back to the workspace OpenAI-compatible key, URL,
+ * model or routing. */
+const OWN_KEY_ENVS = new Set(["OMB_OPENAI_API_KEY", "OMB_OPENROUTER_API_KEY"]);
 
- const OPENAI_MODELS: ModelCatalog = {
+const OPENAI_MODELS: ModelCatalog = {
   default: "gpt-5",
   options: [
     { id: "gpt-5", label: "gpt-5" },
@@ -30,7 +32,8 @@ const DEFAULT_KEY_ENV = "OPENAI_COMPAT_API_KEY";
   ],
 };
 
- export function isOpenAIChatModel(id: string): boolean {
+/** OpenAI's /models also lists embeddings, speech, images, moderation and Responses-only models. */
+export function isOpenAIChatModel(id: string): boolean {
   if (!/^(gpt-|chatgpt-|o\d)/i.test(id)) return false;
   return !/(audio|realtime|tts|transcribe|search|image|embedding|moderation|instruct|codex|computer-use|deep-research|-pro\b)/i.test(id);
 }
@@ -96,6 +99,7 @@ function decodeConfig(raw: unknown): OpenAICompatConfig {
     model: typeof config.model === "string" && config.model
       ? config.model
       : ownKey ? undefined : process.env.OPENAI_COMPAT_MODEL || undefined,
+    // An explicit empty override disables inherited routing; absent still inherits the global pin.
     provider: typeof config.provider === "string"
       ? config.provider || undefined
       : ownKey ? undefined : process.env.OPENAI_COMPAT_PROVIDER || undefined,
@@ -120,6 +124,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
   async create(input) {
     const { config } = input;
+    // An instance naming its own key variable reads only that one: the workspace key must not reach its host.
     const ownKeyVariable = config.apiKeyEnv !== DEFAULT_KEY_ENV;
     const apiKey =
       config.key ??
@@ -155,6 +160,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         type Row = Record<string, unknown>;
         const json = await response.json() as { data?: Row[] } | Row[];
         let rows = Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
+        // OpenAI lists its catalog unordered and mixed with non-chat models.
         if (config.catalog === "openai") {
           rows = rows
             .filter((row) => typeof row.id === "string" && isOpenAIChatModel(row.id))
@@ -196,9 +202,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           options.unshift({ id: config.model, label: config.model, custom: true });
         }
         catalog = { default: config.model ?? options[0].id, options };
-      } catch {
-        // Catalog refresh is opportunistic; keep the seeded options.
-      }
+      } catch {}
     };
     if (apiKey) void fetchModels();
 
