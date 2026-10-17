@@ -94,6 +94,15 @@ it.each(["branch", "reset", "policy"])("does not lend delivered notes across a %
   } finally { await f.instance.dispose(); }
 });
 
+it("does not carry a retained prefix across a model switch", async () => {
+  const f = await fixture((_body, count) => answer(`answer ${count}`));
+  try {
+    await f.seed();
+    expect(await f.send({ ...f.follow, model: "other-model" })).toMatchObject({ ok: true });
+    expect(f.bodies[2].model).toBe("other-model");
+    expect(JSON.stringify(f.bodies[2].messages)).not.toContain("first");
+  } finally { await f.instance.dispose(); }
+});
 
 it.each([
   [400, { error: { message: "Invalid schema" } }, 3],

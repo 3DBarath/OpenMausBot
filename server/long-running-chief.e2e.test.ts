@@ -41,19 +41,13 @@ async function chiefJob(test: (f: any) => Promise<void>) {
     const lastUserAt = sent.messages.map((message) => message.role).lastIndexOf("user");
     const request = { lastUser: lastUserAt < 0 ? "" : text(sent.messages[lastUserAt]!), toolsSinceUser: sent.messages.slice(lastUserAt + 1).filter((message) => message.role === "tool").length };
     requests.push(request);
-    // Large catalogs expose the same read through the agents directory. Keep
-    // one real operation per round; inventing a missing tool would make the
-    // implementation fail for a fixture transport assumption.
-    const directTool = sent.tools?.find((candidate) => candidate.function.name.endsWith("list_bots"))?.function.name;
-    const tool = directTool ?? sent.tools?.find((candidate) => candidate.function.name === "agents_call_tool")?.function.name;
-    expect(tool).toBeTruthy();
-    const callArguments = directTool ? {} : { name: "list_bots", arguments: {} };
+    const tool = sent.tools?.find((candidate) => candidate.function.name.endsWith("list_bots"))?.function.name ?? "missing_tool";
     const frame = (delta: unknown, finish: string | null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
     const reply = async (out: ServerResponse, given: ModelAnswer): Promise<void> => {
       if ("hold" in given) { await given.hold; return reply(out, given.after); }
       out.writeHead(200, { "content-type": "text/event-stream" });
       out.end("say" in given ? frame({ content: given.say }, "stop") + "data: [DONE]\n\n"
-        : frame({ tool_calls: [{ index: 0, id: `call_${++callSerial}`, type: "function", function: { name: tool, arguments: JSON.stringify(callArguments) } }] }, "tool_calls") + "data: [DONE]\n\n");
+        : frame({ tool_calls: [{ index: 0, id: `call_${++callSerial}`, type: "function", function: { name: tool, arguments: "{}" } }] }, "tool_calls") + "data: [DONE]\n\n");
     };
     await reply(res, answer(request)).catch(() => {});
   });

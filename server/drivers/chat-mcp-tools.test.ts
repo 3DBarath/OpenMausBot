@@ -503,22 +503,16 @@ describe("Chat MCP tool directory", () => {
     } finally { await remote.close(); }
   });
 
-  it("defers the real agent catalog while preserving complete tool instructions and schemas", async () => {
+  it("lists OpenMausBot's own agents catalog as its bridge built it, however large", async () => {
     const tools = availableTools(catalogProfileFromEnv({ OMB_SKILL_AUTHORING_ENABLED: "1" }));
+    expect(Buffer.byteLength(JSON.stringify(tools))).toBeGreaterThan(CHAT_LISTED_CATALOG_BYTES);
     const f = fixture(`if (message.method === "tools/list") { reply(message, {tools:${JSON.stringify(tools)}}); continue; }`);
     const session = await mountChatTools({ agents: f.server }, f.controller.signal);
     sessions.push(session);
-    expect(session.definitions.map((tool) => tool.function.name)).toEqual(["agents_search_tools", "agents_describe_tool", "agents_call_tool"]);
-    expect(Buffer.byteLength(JSON.stringify(session.definitions))).toBeLessThan(Buffer.byteLength(JSON.stringify(tools)) / 4);
-    const original = tools.find((tool) => tool.name === "propose_routine")!;
-    const found = JSON.parse((await session.execute("agents_search_tools", { query: original.name, limit: 1 }, f.controller.signal)).text);
-    expect(found.matches[0].name).toBe(original.name);
-    const described = JSON.parse((await session.execute("agents_describe_tool", { name: original.name }, f.controller.signal)).text);
-    expect(described).toMatchObject(original);
-    expect(session.view("agents_call_tool", { name: "list_bots", arguments: {} }))
-      .toEqual({ title: "agents_list_bots", input: {}, ask: false });
-    expect(f.read().calls.filter((call) => call.method === "tools/call")).toEqual([]);
-    await expect(session.execute(`agents_${original.name}`, {}, f.controller.signal)).rejects.toThrow("not advertised");
+    const names = session.definitions.map((tool) => tool.function.name);
+    expect(names).toEqual(tools.map((tool) => `agents_${tool.name}`));
+    expect(names).not.toContain("agents_search_tools");
+    expect(session.view("agents_list_bots", {})).toEqual({ title: "agents_list_bots", input: {}, ask: false });
   });
 
   it("fingerprints hidden descriptions and schemas without changing the offered discovery surface", async () => {

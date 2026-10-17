@@ -357,7 +357,8 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         catalogHash.update(JSON.stringify([server, fingerprintCatalog(server, catalog),
           searchable.has(server) ? client.catalogFingerprint : undefined]));
         const alreadySearched = searchable.has(server) && catalog.every((tool) => isDirectoryTool(tool.name));
-        const deferred = !alreadySearched && (direct.length > LISTED_TOOLS_MAX || Buffer.byteLength(JSON.stringify(direct)) > CHAT_LISTED_CATALOG_BYTES);
+        // The agents server already lists its hot tools and bridges the rest: a second directory would hide the hot ones.
+        const deferred = !agents && !alreadySearched && (direct.length > LISTED_TOOLS_MAX || Buffer.byteLength(JSON.stringify(direct)) > CHAT_LISTED_CATALOG_BYTES);
         if (deferred) {
           const directory = new ToolDirectory(catalog, { check: (tool, args) => {
             const entry = registered.get(byOriginal.get(tool.name)!)!;

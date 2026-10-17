@@ -105,7 +105,8 @@ it("discovers large mail/computer catalogs before guarded execution", async () =
     await send("Hello."); expect((await wait()).status).toBe("settled");
     const first = requests.at(-1)!;
     const offered = first.tools?.map((tool) => tool.function.name) ?? [];
-    expect(offered).toEqual(expect.arrayContaining(["agents_search_tools", "agents_describe_tool", "agents_call_tool", "mail_search_tools", "mail_describe_tool", "mail_call_tool", "desktop_fixture_search_tools", "desktop_fixture_describe_tool", "desktop_fixture_call_tool"]));
+    expect(offered).toEqual(expect.arrayContaining(["agents_coordinate_bots", "mail_search_tools", "mail_describe_tool", "mail_call_tool", "desktop_fixture_search_tools", "desktop_fixture_describe_tool", "desktop_fixture_call_tool"]));
+    expect(offered).not.toContain("agents_search_tools");
     expect(offered.some((name) => name === "mail_send" || name.startsWith("computer_action_"))).toBe(false);
     expect(offered.filter((name) => name.startsWith("desktop_fixture_"))).toEqual([
       "desktop_fixture_search_tools", "desktop_fixture_describe_tool", "desktop_fixture_call_tool",
