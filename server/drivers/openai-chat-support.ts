@@ -1,19 +1,8 @@
 import { createHash } from "node:crypto";
 import type { DriverCreateInput, ModelCatalog, SendTurnInput } from "../contracts.ts";
-
-
-
-
-
-import { type ChatToolDefinition } from "./chat-mcp-tools.ts";
-import { type ChatContentPart } from "./chat-images.ts";
-
-
+import type { ChatToolDefinition } from "./chat-mcp-tools.ts";
+import type { ChatContentPart } from "./chat-images.ts";
 import { ChatProtocolError, object, type ChatToolCall } from "./openai-chat-protocol.ts";
-
-
-
-
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -55,7 +44,8 @@ export interface CompletionJson {
   x_groq?: { usage?: CompletionJson["usage"] };
 }
 
- export function providerError(json: CompletionJson): string | null {
+/** MiniMax reports auth, balance and parameter failures as `base_resp` with HTTP 200. */
+export function providerError(json: CompletionJson): string | null {
   if (typeof json.error === "string") return json.error;
   const error = object(json.error);
   if (error) return typeof error.message === "string" ? error.message : "unknown error";
@@ -67,9 +57,10 @@ export interface CompletionJson {
   return null;
 }
 
- export const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
+export const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
 
- export function httpErrorDetail(body: string, limit = 500): string {
+/** A failed response's own error message, then its machine code (trial-credit.ts parses it), else the raw body. */
+export function httpErrorDetail(body: string, limit = 500): string {
   let json: CompletionJson | undefined;
   try { json = object(JSON.parse(body)); } catch { json = undefined; }
   const message = json ? providerError(json) : null;
@@ -145,6 +136,7 @@ export interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
+  /** Cerebras rejects `reasoning_content` and takes `reasoning`. */
   reasoningReplayField?: "reasoning_content" | "reasoning";
   contentText?: (content: unknown) => string;
   billing?: "metered";
@@ -153,7 +145,9 @@ export interface RuntimeOptions<Config> {
   retryScale?: number;
   tools?: boolean;
   computerUse?: boolean;
+  /** A text-only model keeps the computer and browser tools but never receives a screenshot or attachment. */
   imageInput?: (model: string) => boolean;
+  /** Smaller models announce a step and end the turn without calling a tool; such a reply gets one nudge. */
   nudgeAnnouncedAction?: boolean;
 }
 
@@ -188,7 +182,7 @@ export function rejectsContextLimit(status: number, body: string): boolean {
 
 export class UnsupportedChatToolsError extends Error {}
 
- export const MAX_CHAT_ROUNDS = 64;
+export const MAX_CHAT_ROUNDS = 64;
 export const MAX_TURN_TOOL_CALLS = 200;
 export const stoppedAfter = (count: string) =>
   `Stopped after ${count} without a final answer. The steps so far already ran, so ask only for what's left.`;
@@ -201,12 +195,12 @@ export interface DeliveredUserMessage {
   after: string;
 }
 
- export const MAX_REPLAY_EXTRA_BYTES = 24_000;
- export const MAX_DELIVERED_THREADS = 256;
+export const MAX_REPLAY_EXTRA_BYTES = 24_000;
+export const MAX_DELIVERED_THREADS = 256;
 
 export const fingerprint = (text: string) => createHash("sha256").update(text).digest("base64url");
 
- export function replayDelivered(
+export function replayDelivered(
   transcript: ReadonlyArray<{ id?: string; role: "user" | "assistant"; text: string }>,
   records: readonly DeliveredUserMessage[],
 ): { content: Map<number, string>; matched: DeliveredUserMessage[]; volatile: string | undefined } {
@@ -241,7 +235,7 @@ export const fingerprint = (text: string) => createHash("sha256").update(text).d
 
 export const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
 
- export function announcesAction(text: string): boolean {
+export function announcesAction(text: string): boolean {
   const reply = text.trim();
   if (!reply || reply.length > 400 || reply.includes("?")) return false;
   return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
@@ -267,7 +261,8 @@ export function rejectsToolsParameter(status: number, body: string): boolean {
 
 export class UnsupportedReasoningReplayError extends Error {}
 
- export function rejectsReasoningReplay(status: number, body: string): boolean {
+/** DeepSeek-style providers need `reasoning_content` echoed on a tool-call message; Groq rejects it. */
+export function rejectsReasoningReplay(status: number, body: string): boolean {
   if (status !== 400 && status !== 422) return false;
   let envelope: Record<string, unknown> | undefined;
   try { envelope = object(JSON.parse(body)); } catch { return false; }
@@ -276,7 +271,9 @@ export class UnsupportedReasoningReplayError extends Error {}
     /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
 }
 
- export class RejectedToolCallError extends ChatProtocolError {
+/** Groq fails a completion with `tool_use_failed` when a generated tool call is invalid: usually a
+ *  tool it was not offered (gpt-oss inventing a "json" tool), sometimes arguments missing the schema. */
+export class RejectedToolCallError extends ChatProtocolError {
   readonly refusal: Record<string, unknown>;
   constructor(message: string, refusal: Record<string, unknown>) {
     super(message);
@@ -303,7 +300,7 @@ export function completionError(json: CompletionJson, label: string): ChatProtoc
   return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
 }
 
- export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
+export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
   const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
   const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
   const what = tool ? `tried to use a tool it was not given ("${tool}")` : "made a tool call the provider rejected";

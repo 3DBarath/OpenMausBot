@@ -178,6 +178,7 @@ describe("Chat MCP session", () => {
   });
 
   it("starts servers with the widened PATH rather than the bare one the desktop shell inherits", async () => {
+    // Launched from Finder, the harness sees only the system directories.
     const widened = augmentedPath();
     vi.stubEnv("PATH", "/usr/bin:/bin");
     const f = fixture();
@@ -401,7 +402,7 @@ describe("Chat MCP session", () => {
   });
 });
 
- const grantFor = (server: string, tool: string) => expect.stringMatching(new RegExp(`^\\["${server}","[0-9a-f]{64}","${tool}"\\]$`));
+const grantFor = (server: string, tool: string) => expect.stringMatching(new RegExp(`^\\["${server}","[0-9a-f]{64}","${tool}"\\]$`));
 
 describe("Chat MCP approvals by server", () => {
   it("asks nothing for OpenMausBot's agents server, and grants no session-wide allow on the person's computer", async () => {
@@ -665,6 +666,7 @@ describe("Chat MCP startup budgets", () => {
     while (!condition() && Date.now() - started < 15_000) await new Promise((resolve) => setImmediate(resolve));
     expect(condition()).toBe(true);
   }
+  /** Past a deadline: steps the faked clock too, by at most `budgetMs`, pausing in real time so a process can exit. */
   async function settleWithin(budgetMs: number, condition: () => boolean): Promise<void> {
     for (let spent = 0; !condition() && spent < budgetMs; spent += 25) {
       const until = Date.now() + 20;

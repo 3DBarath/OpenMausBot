@@ -1,12 +1,11 @@
-
 type Json = Record<string, unknown>;
 
- export interface CatalogTool {
+export interface CatalogTool {
   name: string;
   [key: string]: unknown;
 }
 
- export interface DirectoryResult {
+export interface DirectoryResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: true;
 }
@@ -16,33 +15,35 @@ export const DESCRIBE_TOOL = "describe_tool";
 export const CALL_TOOL = "call_tool";
 const DIRECTORY_TOOLS = new Set([SEARCH_TOOL, DESCRIBE_TOOL, CALL_TOOL]);
 
- export const LISTED_TOOLS_MAX = 40;
- export const LISTED_CHARS_MAX = 100_000;
+/** The chat runtime's 128-tool cap is shared by every server of a turn plus the built-ins. */
+export const LISTED_TOOLS_MAX = 40;
+/** About 25k tokens, near where Claude Code turns on its own tool search (MCP tools past a tenth of a 200k context). */
+export const LISTED_CHARS_MAX = 100_000;
 export const SEARCH_LIMIT_DEFAULT = 8;
 export const SEARCH_LIMIT_MAX = 20;
- export const DESCRIPTION_CHARS = 200;
- export const SIGNATURE_CHARS = 300;
- const AREAS_CHARS = 2_000;
- const ABOUT_CHARS = 400;
- export const INSTRUCTIONS_CHARS = 2_000;
+export const DESCRIPTION_CHARS = 200;
+export const SIGNATURE_CHARS = 300;
+const AREAS_CHARS = 2_000;
+const ABOUT_CHARS = 400;
+export const INSTRUCTIONS_CHARS = 2_000;
 const QUERY_CHARS = 1_000;
 
 function isRecord(value: unknown): value is Json {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
- export function isDirectoryTool(name: unknown): boolean {
+export function isDirectoryTool(name: unknown): boolean {
   return typeof name === "string" && DIRECTORY_TOOLS.has(name);
 }
 
- export function directoryCallTarget(name: string, args: unknown): string | undefined {
+export function directoryCallTarget(name: string, args: unknown): string | undefined {
   if (name === SEARCH_TOOL || name === DESCRIBE_TOOL) return undefined;
   if (name !== CALL_TOOL) return name;
   const target = isRecord(args) ? args.name : undefined;
   return typeof target === "string" && target.trim() ? target : undefined;
 }
 
- export function searchesCatalog(tools: readonly CatalogTool[]): boolean {
+export function searchesCatalog(tools: readonly CatalogTool[]): boolean {
   if (tools.length > LISTED_TOOLS_MAX || tools.some((tool) => isDirectoryTool(tool.name))) return true;
   let chars = 0;
   for (const tool of tools) {
@@ -52,22 +53,23 @@ function isRecord(value: unknown): value is Json {
   return false;
 }
 
- function cut(text: string, chars: number): string {
+function cut(text: string, chars: number): string {
   const kept = text.slice(0, Math.max(0, chars));
   const last = kept.charCodeAt(kept.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? kept.slice(0, -1) : kept;
 }
 
- export function bounded(text: string, maxChars: number): string {
+export function bounded(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${cut(text, maxChars - 1).trimEnd()}…`;
 }
 
- export function oneLine(text: unknown, maxChars: number): string {
+export function oneLine(text: unknown, maxChars: number): string {
   return typeof text === "string" ? bounded(text.replace(/\s+/g, " ").trim(), maxChars) : "";
 }
 
+// Pydantic and FastMCP keep a tool's real fields in `$defs` behind local `$ref`s; only those are followed, never a URL.
 
- function resolveRef(root: unknown, ref: string): unknown {
+function resolveRef(root: unknown, ref: string): unknown {
   if (ref === "#") return root;
   if (!ref.startsWith("#/")) return undefined;
   let node = root;
@@ -80,7 +82,7 @@ function isRecord(value: unknown): value is Json {
   return node;
 }
 
- function deref(root: unknown, node: unknown, taken: Set<string> = new Set()): unknown {
+function deref(root: unknown, node: unknown, taken: Set<string> = new Set()): unknown {
   let current = node;
   for (let hop = 0; hop < 16 && isRecord(current); hop += 1) {
     if (typeof current.$ref === "string") {
@@ -99,7 +101,7 @@ function isRecord(value: unknown): value is Json {
 }
 
 
- const STOP_WORDS = new Set([
+const STOP_WORDS = new Set([
   "a", "about", "all", "am", "an", "and", "any", "are", "as", "at", "be", "been", "being", "but", "by",
   "can", "could", "did", "do", "does", "doing", "for", "from", "had", "has", "have", "having", "he", "her",
   "here", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its", "just", "like", "many", "me",
@@ -109,7 +111,7 @@ function isRecord(value: unknown): value is Json {
   "where", "which", "while", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ]);
 
- export function stem(word: string): string {
+export function stem(word: string): string {
   let w = word;
   if (w.length > 4 && w.endsWith("ies")) w = `${w.slice(0, -3)}y`;
   else if (w.length > 4 && w.endsWith("sses")) w = w.slice(0, -2);
@@ -121,7 +123,7 @@ function isRecord(value: unknown): value is Json {
   return w;
 }
 
- export function terms(text: string): string[] {
+export function terms(text: string): string[] {
   return text
     .normalize("NFKC")
     .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
@@ -132,10 +134,10 @@ function isRecord(value: unknown): value is Json {
     .map((word) => /^[a-z0-9]+$/.test(word) ? stem(word) : word);
 }
 
- const SCHEMA_TEXT_CHARS = 4_000;
+const SCHEMA_TEXT_CHARS = 4_000;
 const SUBSCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
 
- export function schemaText(schema: unknown, maxChars = SCHEMA_TEXT_CHARS): string {
+export function schemaText(schema: unknown, maxChars = SCHEMA_TEXT_CHARS): string {
   let text = "";
   const followed = new Set<string>();
   const add = (part: unknown) => {
@@ -164,7 +166,7 @@ const SUBSCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
   return text.trim();
 }
 
- export function toolArea(name: string): string {
+export function toolArea(name: string): string {
   const prefix = name.slice(0, Math.max(0, name.indexOf("_")));
   if (prefix.trim()) return cut(prefix.toLowerCase(), 40);
   const head = name.split(/[\s_./:-]+/).find(Boolean) ?? name;
@@ -172,15 +174,15 @@ const SUBSCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
   return cut(word.toLowerCase(), 40);
 }
 
- export type ToolRanker = (query: string, tools: readonly CatalogTool[], limit: number) => readonly CatalogTool[] | Promise<readonly CatalogTool[]>;
+export type ToolRanker = (query: string, tools: readonly CatalogTool[], limit: number) => readonly CatalogTool[] | Promise<readonly CatalogTool[]>;
 
 const K1 = 1.2;
 const B = 0.75;
- const FIELD_WEIGHTS = { name: 2, text: 1, schema: 0.5 } as const;
+const FIELD_WEIGHTS = { name: 2, text: 1, schema: 0.5 } as const;
 type Field = keyof typeof FIELD_WEIGHTS;
 const FIELDS = Object.keys(FIELD_WEIGHTS) as Field[];
- const AREA_WEIGHT = FIELD_WEIGHTS.name;
- const LIST_INTENT = new Set(["who", "which", "what", "show", "list", "recent", "newest", "latest", "all"]);
+const AREA_WEIGHT = FIELD_WEIGHTS.name;
+const LIST_INTENT = new Set(["who", "which", "what", "show", "list", "recent", "newest", "latest", "all"]);
 const LIST_WEIGHT = 0.5;
 
 // Catalogs often call a screenshot a capture or webpage navigation a URL
@@ -212,7 +214,7 @@ function counted(text: string): { counts: Map<string, number>; length: number } 
   return { counts, length: words.length };
 }
 
- function fields(tool: CatalogTool): Record<Field, { counts: Map<string, number>; length: number }> {
+function fields(tool: CatalogTool): Record<Field, { counts: Map<string, number>; length: number }> {
   const text = [tool.title, tool.description].filter((part): part is string => typeof part === "string").join(" ");
   return {
     name: counted(tool.name),
@@ -221,7 +223,7 @@ function counted(text: string): { counts: Map<string, number>; length: number } 
   };
 }
 
- function lists(name: { counts: Map<string, number> }, description: unknown): boolean {
+function lists(name: { counts: Map<string, number> }, description: unknown): boolean {
   return name.counts.has("list") || (typeof description === "string" && terms(description.slice(0, 40))[0] === "list");
 }
 
@@ -232,7 +234,7 @@ function byName(a: CatalogTool, b: CatalogTool): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
- export const bm25Ranker: ToolRanker = (query, tools, limit) => {
+export const bm25Ranker: ToolRanker = (query, tools, limit) => {
   const weighted = weightedQuery(query);
   const wanted = [...weighted.keys()];
   const exact = query.trim().toLowerCase();
@@ -284,7 +286,7 @@ function union(parts: string[]): string {
   return [...new Set(parts)].join(" | ");
 }
 
- function typeText(schema: unknown, depth: number, root?: unknown, hops = 0): string {
+function typeText(schema: unknown, depth: number, root?: unknown, hops = 0): string {
   if (!isRecord(schema)) return "unknown";
   if (typeof schema.$ref === "string") {
     return hops < 4 && root !== undefined ? typeText(resolveRef(root, schema.$ref), depth, root, hops + 1) : "unknown";
@@ -322,7 +324,7 @@ function signatureOmitsDetails(schema: unknown): boolean {
     Object.keys(field).some(key => key !== "type") || !["string", "number", "integer", "boolean", "null"].includes(String(field.type)));
 }
 
- export function inputSignature(schema: unknown, maxChars = SIGNATURE_CHARS): string {
+export function inputSignature(schema: unknown, maxChars = SIGNATURE_CHARS): string {
   const root = schema;
   schema = deref(root, schema);
   const properties = isRecord(schema) && isRecord(schema.properties) ? schema.properties : {};
@@ -348,7 +350,7 @@ function signatureOmitsDetails(schema: unknown): boolean {
 }
 
 
- export function areaSummary(tools: readonly CatalogTool[], maxChars = AREAS_CHARS): string {
+export function areaSummary(tools: readonly CatalogTool[], maxChars = AREAS_CHARS): string {
   const counts = new Map<string, number>();
   for (const tool of tools) {
     const area = toolArea(tool.name);
@@ -371,26 +373,28 @@ function result(payload: unknown): DirectoryResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
- function guidance(text: string): DirectoryResult {
+/** Not isError: a failed tool call ends the chat turn as failed, and these ran nothing. */
+function guidance(text: string): DirectoryResult {
   return { content: [{ type: "text", text }] };
 }
 
- export const SELECTION_EXCLUDES = "Tool selection excludes this tool. Check the bot's Access settings.";
+export const SELECTION_EXCLUDES = "Tool selection excludes this tool. Check the bot's Access settings.";
 function excluded(): DirectoryResult {
   return { content: [{ type: "text", text: SELECTION_EXCLUDES }], isError: true };
 }
 
 const HOW_TO_SEARCH = `Find tool names with ${SEARCH_TOOL}({ "query": "what you want to do" }), then run one with ${CALL_TOOL}({ "name": "...", "arguments": {...} }).`;
 
- export const DESCRIBE_BYTES = 40_000;
+/** Chat engines and Pi keep 50 KiB of one tool result, so a bigger schema is compacted, not cut. */
+export const DESCRIBE_BYTES = 40_000;
 const encoder = new TextEncoder();
 const byteLength = (text: string) => encoder.encode(text).length;
 
- const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
 const SCHEMA_LISTS = new Set(["anyOf", "oneOf", "allOf", "prefixItems"]);
 const SCHEMA_CHILDREN = new Set(["items", "additionalProperties", "not", "if", "then", "else", "contains", "propertyNames", "unevaluatedItems", "unevaluatedProperties"]);
 
- function withoutKeywords(schema: unknown, keywords: ReadonlySet<string>, depth: number, at = 0): unknown {
+function withoutKeywords(schema: unknown, keywords: ReadonlySet<string>, depth: number, at = 0): unknown {
   if (Array.isArray(schema)) return schema.map((child) => withoutKeywords(child, keywords, depth, at));
   if (!isRecord(schema)) return schema;
   const copy: Json = {};
@@ -407,7 +411,7 @@ const SCHEMA_CHILDREN = new Set(["items", "additionalProperties", "not", "if", "
   return copy;
 }
 
- function schemaFields(schema: unknown): Array<{ path: string; type: string; required?: true }> {
+function schemaFields(schema: unknown): Array<{ path: string; type: string; required?: true }> {
   const fields: Array<{ path: string; type: string; required?: true }> = [];
   const visit = (start: unknown, prefix: string, depth: number, taken: Set<string>) => {
     const node = deref(schema, start, taken);
@@ -433,7 +437,7 @@ const COMPACTIONS = [
   { note: "Examples, defaults and every field description were left out of the schema to fit.", keywords: ANNOTATIONS_AND_WORDS, depth: 0 },
 ];
 
- export interface DirectoryContext {
+export interface DirectoryContext {
   server: string;
   title?: string;
   instructions?: string;
@@ -445,7 +449,7 @@ export interface DirectoryOptions {
   check?: (tool: CatalogTool, args: Json) => readonly string[] | undefined;
 }
 
- export class ToolDirectory {
+export class ToolDirectory {
   readonly tools: readonly CatalogTool[];
   private readonly index = new Map<string, CatalogTool>();
   private readonly ranker: ToolRanker;

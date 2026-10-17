@@ -1,4 +1,4 @@
-     import { createServer } from "node:http";
+import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -144,3 +144,4 @@ it("keeps a client abort a quiet stop and retries the room request it stopped", 
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
 }, 180_000);
+

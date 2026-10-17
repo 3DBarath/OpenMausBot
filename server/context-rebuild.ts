@@ -7,7 +7,6 @@ import type { Message } from "./store.ts";
 import { nameIsCommand } from "../shared/tool-name.ts";
 
 /** For sessions that need history rebuilt; native resumes still receive deltas. */
-import type { WireMessage } from "../shared/wire.ts";
 export interface ReplayEntry {
   id: string;
   role: "user" | "assistant";
@@ -199,6 +198,7 @@ export function selectReplay(
   const foldedThrough = record ? history.findIndex((entry) => entry.id === record.foldedThroughId) : -1;
   const cut = record ? (record.firstKeptId ? history.findIndex((entry) => entry.id === record.firstKeptId) : foldedThrough + 1) : -1;
   const recordAt = record ? history.findIndex((entry) => entry.id === record.id) : -1;
+  // Both anchors must still belong to this branch in order: a stale record must never hide a rewritten or other fork.
   const applies = Boolean(record && cut > foldedThrough && foldedThrough >= 0 && recordAt >= cut);
   const representedIds = applies ? history.slice(0, cut).map((entry) => entry.id) : [];
   const entries = history.slice(applies ? cut : 0).filter((entry) =>
@@ -236,14 +236,14 @@ export function selectReplay(
   return { transcript, inline, representedIds: history.filter(entry => represented.has(entry.id)).map(entry => entry.id), dropped, compacted: applies ? cut : 0, shortened };
 }
 
-       export const EXTERNAL_CONTEXT_MARKER_PREFIX = "__openmaus_external_context__:";
+// Provider sessions only know their own turns' messages, so a harness-appended result marks the task for one replay; the unique suffix keeps a newer marker through a racing replay.
+export const EXTERNAL_CONTEXT_MARKER_PREFIX = "__openmaus_external_context__:";
 
 export function isExternalContextMarker(value: string | undefined): boolean {
   return Boolean(value?.startsWith(EXTERNAL_CONTEXT_MARKER_PREFIX));
 }
 
-
-export function latestCompaction(messages: readonly WireMessage[]) {
+export function latestCompaction(messages: readonly Message[]) {
   const record = messages.findLast(message => message.kind === "compaction" && message.compaction);
   return record?.compaction ? { ...record.compaction, id: record.id } : undefined;
 }

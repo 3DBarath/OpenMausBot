@@ -1,4 +1,5 @@
-  import { randomUUID } from "node:crypto";
+// Real HTTP + stdio MCP contract tests; tools write only in a fresh temporary directory.
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -56,7 +57,8 @@ function answer(response: ServerResponse, text = "The operation is complete.") {
   sse(response, [chunk({ content: text }, "stop")]);
 }
 
-  const MCP_SCRIPT = `
+// MCP on the wire, without the production transport or a fake execution callback.
+const MCP_SCRIPT = `
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -728,6 +730,7 @@ describe("structured tool execution boundaries", () => {
     expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
   });
 
+  // Groq's wording, truncated in the runtime error but not in the body.
   const reasoningRejection = { error: {
     message: "'messages.2' : for 'role:assistant' the following must be satisfied[('messages.2' : property 'reasoning_content' is unsupported)]",
     type: "invalid_request_error",

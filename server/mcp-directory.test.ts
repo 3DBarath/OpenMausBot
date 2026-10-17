@@ -369,6 +369,7 @@ describe("the directory's three tools", () => {
 describe("describe_tool on a huge schema", () => {
   const bytes = (value: string) => Buffer.byteLength(value);
   const groups = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+  /** About 51 KB, like Whop's largest tool. */
   const described = () => {
     const leaf = (index: number) => ({ type: "string", description: `Filter ${index}: ${"narrows the results to matching records. ".repeat(5)}`, examples: ["first example", "second example"], default: "first example" });
     const group = (name: string) => ({ type: "object", description: `${name} filters.`, properties: Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`${name}_${index}`, leaf(index)])) });

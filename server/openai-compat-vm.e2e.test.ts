@@ -1,4 +1,5 @@
-     import { spawn, type ChildProcess } from "node:child_process";
+// The container boundary is the group-local-vm fixture; the provider is an in-process stub recording the tool list per request.
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,12 +71,13 @@ async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolea
   }
 }
 const toolNames = (request: ChatRequest | undefined) => (request?.tools ?? []).map(tool => tool.function.name);
+// The native tee is what a person pastes into a bug report, so its "out" line must carry the request's tool names.
 const canSelectComputer = (request: ChatRequest | undefined) => {
   const names = toolNames(request);
   return names.includes("agents_select_computer") ||
     ["agents_search_tools", "agents_call_tool"].every(name => names.includes(name));
 };
-   const nativeToolNames = (threadId: string): string[] => {
+const nativeToolNames = (threadId: string): string[] => {
   const file = join(nativeDir, `${threadId}.ndjson`);
   if (!existsSync(file)) return [];
   const names = new Set<string>();
@@ -138,6 +140,7 @@ beforeAll(async () => {
   writeFileSync(join(ui, "index.html"), "<title>openai-compat VM tools</title>");
   writeFileSync(join(ui, "assets", "test.css"), "body{}");
   writeFileSync(join(data, "config.json"), JSON.stringify({
+    // Per-bot isolation: a fresh bot's VM is unseen until touched, so the strict pin cannot hide behind a warm cache entry.
     localVm: { mode: "per-bot" },
     instances: { claude: {
       driver: "claudeAgent",

@@ -9,7 +9,7 @@ import { BUILT_IN_DRIVERS } from "../drivers/builtIn.ts";
 import { ENGINE_KINDS, engineCapabilities, replaysTranscriptNatively, type EngineCapabilities } from "./capabilities.ts";
 
 const chat: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, stepCap: 64, subagents: false };
- const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: true, edits: false, subagents: false };
+const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: true, edits: false, subagents: false };
 
 const EXPECTED: Record<string, EngineCapabilities> = {
   claudeAgent: { resume: true, nativeReviewer: true, full: true, edits: true, subagents: false },

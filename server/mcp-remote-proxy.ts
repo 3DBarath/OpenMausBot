@@ -1,4 +1,6 @@
-             import { createInterface } from "node:readline";
+// The upstream handshake is OMB's own, never the engine's: an engine's client adds capability fields a strict server
+// refuses. stdout carries only protocol frames.
+import { createInterface } from "node:readline";
 import { redactSecretsInText } from "../shared/redact.ts";
 import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
@@ -43,7 +45,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
- const CREDENTIALS_REFUSED = "This MCP server refused its credentials (HTTP 401). If it uses a sign-in, send the message again: "
+const CREDENTIALS_REFUSED = "This MCP server refused its credentials (HTTP 401). If it uses a sign-in, send the message again: "
   + "OpenMausBot refreshes sign-ins when a message starts. If it still fails, open Plugins → MCP servers and sign in to it again, "
   + "or check its header values.";
 
@@ -57,7 +59,8 @@ class Refusal extends Error {
 }
 
 const SETTINGS = ["OMB_REMOTE_MCP_SERVER", "OMB_REMOTE_MCP_DIRECTORY"];
- function privateSettings(): Record<string, string | undefined> {
+/** Codex hands every MCP child one shared environment, so a mount names its own record; settings leave this env once read. */
+function privateSettings(): Record<string, string | undefined> {
   if (process.argv.length === 2) {
     const settings = Object.fromEntries(SETTINGS.map((name) => [name, process.env[name]]));
     for (const name of SETTINGS) delete process.env[name];
@@ -72,16 +75,17 @@ const SETTINGS = ["OMB_REMOTE_MCP_SERVER", "OMB_REMOTE_MCP_DIRECTORY"];
     if (isRecord(value) && Object.entries(value).every(([name, setting]) => SETTINGS.includes(name) && typeof setting === "string")) {
       return value as Record<string, string>;
     }
-  } catch { /* invalid private config */ }
+  } catch {}
   return {};
 }
 
 const settings = privateSettings();
 let spec;
-try { spec = remoteMcpSpec(JSON.parse(settings.OMB_REMOTE_MCP_SERVER ?? "")); } catch { /* invalid private config */ }
+try { spec = remoteMcpSpec(JSON.parse(settings.OMB_REMOTE_MCP_SERVER ?? "")); } catch {}
 if (!spec) fail("invalid remote MCP configuration");
 
- function directorySettings(raw: string | undefined): { server: string; scope: ToolScope | undefined } | undefined {
+/** A selection that cannot be read must never widen to all tools. */
+function directorySettings(raw: string | undefined): { server: string; scope: ToolScope | undefined } | undefined {
   if (raw === undefined) return undefined;
   try {
     const value: unknown = JSON.parse(raw);
@@ -90,13 +94,14 @@ if (!spec) fail("invalid remote MCP configuration");
       const parsed = parseToolScope(value.toolScope);
       if (parsed.ok) return { server: value.name, scope: parsed.scope };
     }
-  } catch { /* reported below */ }
+  } catch {}
   return fail("invalid tool directory configuration");
 }
 const directory = directorySettings(settings.OMB_REMOTE_MCP_DIRECTORY);
 
- const REMOTE_ERROR_CHARS = 1_000;
- const configured: string[] = (() => {
+const REMOTE_ERROR_CHARS = 1_000;
+/** Configured values (address parts, header values) a remote error must never echo. */
+const configured: string[] = (() => {
   const values = new Set<string>([spec.url]);
   try {
     const url = new URL(spec.url);
@@ -105,14 +110,14 @@ const directory = directorySettings(settings.OMB_REMOTE_MCP_DIRECTORY);
     if (url.pathname.length > 1) values.add(url.pathname);
     for (const segment of url.pathname.split("/")) if (segment.length >= 16) values.add(segment);
     for (const value of url.searchParams.values()) if (value.length >= 4) values.add(value);
-  } catch { /* checked by remoteMcpSpec */ }
+  } catch {}
   for (const value of Object.values(spec.headers)) {
     if (value.trim().length >= 4) values.add(value.trim());
     for (const word of value.split(/\s+/)) if (word.length >= 8) values.add(word);
   }
   return [...values].filter((value) => value.length >= 4).sort((a, b) => b.length - a.length);
 })();
- function remoteErrorText(detail: string): string {
+function remoteErrorText(detail: string): string {
   let text = detail.slice(0, REMOTE_ERROR_CHARS * 8);
   for (const value of configured) text = text.split(value).join("«redacted»");
   text = redactSecretsInText(text).trim();
@@ -121,18 +126,18 @@ const directory = directorySettings(settings.OMB_REMOTE_MCP_DIRECTORY);
 }
 const allowed = (name: string) => !directory?.scope || allowsTool(directory.scope, { kind: "mcp", server: directory.server, name });
 
-
- interface Catalog { tools: ToolDirectory; searched: boolean }
+interface Catalog { tools: ToolDirectory; searched: boolean }
 const CATALOG_PAGES = 100;
 const CATALOG_MS = 120_000;
 let catalog: Catalog | undefined;
 let loading: Promise<Catalog> | undefined;
 let generation = 0;
- let searching = false;
+/** Once searched, always searched: the engine was handed call_tool, and a tool it found must stay reachable. */
+let searching = false;
 const context: DirectoryContext = { server: directory?.server ?? "" };
 
 const closed = new AbortController();
- const viaProxy = plainHttpProxyFetch(process.env);
+const viaProxy = plainHttpProxyFetch(process.env);
 const client = new RemoteMcpClient(spec, {
   maxBytes: MAX_REMOTE_MCP_BYTES,
   ...(viaProxy ? { fetch: viaProxy } : {}),
@@ -150,7 +155,8 @@ const tasks = new Set<Promise<void>>();
 let initialized = false;
 let closing = false;
 
- async function readCatalog(): Promise<CatalogTool[]> {
+/** Under its own deadline, so a cancelled first request does not cancel the read for the next one. */
+async function readCatalog(): Promise<CatalogTool[]> {
   const signal = AbortSignal.any([closed.signal, AbortSignal.timeout(CATALOG_MS)]);
   const tools: CatalogTool[] = [];
   const cursors = new Set<string>();
@@ -170,7 +176,7 @@ let closing = false;
   throw new Error("tool catalog has too many pages");
 }
 
- const validators = new WeakMap<CatalogTool, ValidateFunction | null>();
+const validators = new WeakMap<CatalogTool, ValidateFunction | null>();
 function argumentProblems(tool: CatalogTool, args: Json): string[] | undefined {
   let validate = validators.get(tool);
   if (validate === undefined) {
@@ -182,7 +188,7 @@ function argumentProblems(tool: CatalogTool, args: Json): string[] | undefined {
   catch { return undefined; }
 }
 
- function raced<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+function raced<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error("aborted"));
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(new Error("aborted"));
@@ -262,12 +268,13 @@ async function handle(message: Json): Promise<void> {
   if (!id) {
     if (message.method === "notifications/initialized" && initialized) return;
     try { await client.notify(message.method, message.params, AbortSignal.timeout(30_000)); }
-    catch { /* notifications have no reply and must not print remote details */ }
+    catch {}
     return;
   }
   if (pending.has(id)) { error(message.id, -32600, "Duplicate request ID"); return; }
   const controller = new AbortController();
   pending.set(id, controller);
+  // Engines keep their own tool-call deadline (Gemini CLI and Qwen Code wait ten minutes) and cancel through this proxy.
   const deadline = message.method !== "tools/call" ? 30_000 : directory ? 120_000 : undefined;
   const signal = deadline === undefined ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(deadline)]);
   try {
@@ -279,6 +286,7 @@ async function handle(message: Json): Promise<void> {
     if (message.method === "initialize") initialized = true;
     send({ jsonrpc: "2.0", id: message.id, result });
   } catch (failure) {
+    // Transport failures may carry URLs or header values: never relayed.
     if (failure instanceof Refusal) error(message.id, failure.code, failure.message);
     else if (failure instanceof McpRpcError) error(message.id, failure.code ?? -32603, remoteErrorText(failure.detail));
     else if (failure instanceof McpHttpError && failure.status === 401) error(message.id, -32603, CREDENTIALS_REFUSED);
