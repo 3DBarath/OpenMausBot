@@ -16,7 +16,7 @@ import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntime
 import { z } from "zod";
 import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES, EXTERNAL_CONTEXT_MARKER_PREFIX, isExternalContextMarker, latestCompaction } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
-import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
+import { compactBudget, compactionContextWindow, compactionReading, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
@@ -188,7 +188,7 @@ import {
   persistableInstanceConfigs,
   type AppConfig,
   vpsSshAlias,
-  DATA_DIR, EVENTS_DIR,
+  DATA_DIR, EVENTS_DIR, openaiCompatConnectionUrl,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
@@ -7650,7 +7650,7 @@ async function compactConversation(input: {
   const history = selected.transcript.filter(entry => entry.id);
   if (!history.length) return;
   const measurement = compactionReading(instance.adapter.capabilities, task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined);
-  const window = contextWindowFor(model, instance.models, measurement?.window);
+  const window = compactionContextWindow(model, instance, measurement?.window);
   const bytes = history.reduce((n, entry) => n + Buffer.byteLength(entry.text), 0);
   let floor = task.contextFloor;
   if (record && record.id === task.appliedCompactionId && floor === undefined && measurement?.tokens) {
@@ -13076,7 +13076,7 @@ function configStatus() {
     billing: { currency: cfg.billing?.currency ?? "USD", prices: cfg.billing?.prices ?? {} },
     decisions: { retentionDays: decisionRetentionDays(cfg.decisions?.retentionDays) },
     safetyFloor: { enabled: safetyFloorOn() },
-    openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "" },
+    openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "", resolvedUrl: openaiCompatConnectionUrl(cfg), contextWindows: cfg.openaiCompat?.contextWindows ?? {} },
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),

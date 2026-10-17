@@ -388,9 +388,9 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       { index: 1, id: "withheld", type: "function", function: { name: "ask_user", arguments: JSON.stringify({ questions: [{ question: "Must not be shown" }] }) } },
     ];
     const first = `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: calls } }] })}\n\n`
-      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n';
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":4}}\n\n';
     const last = 'data: {"choices":[{"index":0,"delta":{"content":"Finished."}}]}\n\n'
-      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":2}}\n\n';
     const bodies: any[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: unknown, init?: RequestInit) => {
       if (!String(input).endsWith("/chat/completions")) return new Response(JSON.stringify({ data: [] }));
@@ -409,6 +409,10 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       expect(bodies[0].tools.map((tool: any) => tool.function.name)).toEqual(["fx_write"]);
       await vi.waitFor(() => expect(events.some((event) => event.type === "turn.completed")).toBe(true), { timeout: 10_000 });
       expect(events.filter((event) => event.type === "request.opened")).toEqual([]);
+      expect(events.filter(event => event.type === "thread.token-usage.updated")).toMatchObject([
+        { input: 100, output: 4, contextTokens: 104 },
+        { input: 300, output: 6, contextTokens: 202 },
+      ]);
       expect(readFileSync(receipt, "utf8")).toBe("write\n");
       const withheld = bodies[1].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "withheld");
       expect(JSON.parse(withheld.content)).toMatchObject({ ok: false });
