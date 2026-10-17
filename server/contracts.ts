@@ -110,7 +110,11 @@ export interface SendTurnInput {
   /** The turn with the conversation replayed inline, sent once on a fresh session when the provider refuses resumeCursor before reading the prompt. */
   recoveryText?: string;
   /** Prior turns for transcript-replay providers (API-backed drivers). */
-  transcript?: Array<{ role: "user" | "assistant"; text: string }>;
+  transcript?: Array<{ id?: string; role: "user" | "assistant"; text: string }>;
+  /** Canonical stored user message before clock and recall notes. */
+  sourceMessage?: { id: string; role: "user"; text: string };
+  /** Branch rewinds and newly applied compaction invalidate retained replay. */
+  replayReset?: boolean;
   /** Bot persona (name/title/description) as a system prompt. */
   system?: string;
   /** `system` without its volatile sections (systemVolatile). A per-thread CLI process keys on this half; request-per-turn drivers
@@ -185,6 +189,9 @@ export interface TurnStartResult {
 }
 
 export interface ProviderAdapter {
+  /** Driver-owned standing instructions included in prompt previews and
+   * dispatches. Legacy direct callers may omit them; the driver adds them. */
+  readonly systemPromptSuffix?: string;
   readonly provider: DriverKind;
   readonly capabilities: {
     sessionModelSwitch: "in-session" | "unsupported";

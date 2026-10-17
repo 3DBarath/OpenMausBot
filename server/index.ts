@@ -14,7 +14,7 @@ import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
-import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
+import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES, EXTERNAL_CONTEXT_MARKER_PREFIX, isExternalContextMarker, latestCompaction } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
@@ -3306,6 +3306,7 @@ function previewSystemPrompt(bot: BotRecord) {
     teamAvailabilityPart(agentsMounted && coordination ? peers : []),
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsHost.skillsIndex(bot, undefined, instance) : "" },
+    { id: "engine-instructions", label: "Tool discovery", text: instance?.adapter.systemPromptSuffix ?? "" },
   ], agentsMounted ? { env: agentsToolBridgeEnv(cfg, bot, instance && turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), bot.cwd ?? undefined)) } : undefined, { replyStyle: bot.replyStyle });
   const totalBytes = built.sections.reduce((n, s) => n + s.bytes, 0);
   return {
@@ -7589,13 +7590,6 @@ function turnAnswers(threadId: string, opts?: {
   };
 }
 
-// Provider sessions only know their own turns' messages, so a harness-appended result marks the task for one replay; the unique suffix keeps a newer marker through a racing replay.
-const EXTERNAL_CONTEXT_MARKER_PREFIX = "__openmaus_external_context__:";
-
-function isExternalContextMarker(value: string | undefined): boolean {
-  return Boolean(value?.startsWith(EXTERNAL_CONTEXT_MARKER_PREFIX));
-}
-
 function markTaskContextExternallyUpdated(bot: BotRecord, threadId: string): void {
   const task = store.taskByThread(bot.id, threadId);
   if (!task) return;
@@ -7612,11 +7606,6 @@ function markTaskContextExternallyUpdated(bot: BotRecord, threadId: string): voi
     lastInstanceId: `${EXTERNAL_CONTEXT_MARKER_PREFIX}${randomUUID()}`,
     unread: true,
   });
-}
-
-function latestCompaction(messages: readonly Message[]) {
-  const record = messages.findLast(message => message.kind === "compaction" && message.compaction);
-  return record?.compaction ? { ...record.compaction, id: record.id } : undefined;
 }
 
 function directContext(bot: BotRecord, threadId: string, messages: Message[]): ContextMessage[] {
@@ -8509,10 +8498,11 @@ async function startTurn(
       }
       const context = directContext(bot, threadId, activeMessages);
       const contextOrder = context.map(m => m.id);
+      const sourceContext = context.find((message) => message.id === userMessage.id && message.role === "user");
       const replayable = context.filter(m => !skipTranscript.has(m.id));
       const record = latestCompaction(activeMessages);
       const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record, tools: replayToolCalls(activeMessages, cfg.context) });
-      const transcript = selection.transcript.map(({ role, text }) => ({ role, text }));
+      const transcript = selection.transcript.map(({ id, role, text }) => ({ id, role, text }));
       const contextReset = selection.compacted > 0 && record?.id !== task.appliedCompactionId;
       if (contextReset) store.patchTask(bot.id, threadId, { resumeCursors: {} });
 
@@ -9083,6 +9073,7 @@ async function startTurn(
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
         { id: "mentions", label: "Mentions", text: tagged.length ? `The user named these existing teammates: ${tagged.map(b => `${peerName(b.name)} (${b.id})`).join(", ")}. Use coordinate_bots when their contribution is needed; do not substitute native helper agents for these bots.` : "" },
+        { id: "engine-instructions", label: "Tool discovery", text: instance.adapter.systemPromptSuffix ?? "" },
       ], integrations.agents, { replyStyle: liveBot?.replyStyle ?? bot.replyStyle });
       turnPromptBytes.set(threadId, { stable: Buffer.byteLength(prompt.stable), volatile: Buffer.byteLength(prompt.volatile) });
       // Recall rides in front of this turn's message, never the system prompt, whose volatile half is re-sent whole on any change.
@@ -9123,6 +9114,8 @@ async function startTurn(
         sessionReset: dispatchContext.sessionReset,
         ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText + shareNote.text) } : {}),
         transcript,
+        sourceMessage: sourceContext ? { id: sourceContext.id, role: "user", text: sourceContext.text } : undefined,
+        replayReset: rewound || contextReset,
         system: prompt.text,
         systemStable: prompt.stable,
         systemVolatile: prompt.volatile,
@@ -11038,6 +11031,7 @@ async function runClaimedGroupMemberTurn(
     { id: "skills", label: "Skills index", text: workspace ? skillsHost.skillsIndex(bot, threadId, instance) : "" },
     { id: "skill-instructions", label: "Skill instructions", text: renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) },
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
+    { id: "engine-instructions", label: "Tool discovery", text: instance.adapter.systemPromptSuffix ?? "" },
   ], integrations.agents);
 
   // The startup engine read is part of setup: wait for it before the claim below.
