@@ -80,6 +80,7 @@ export interface RuntimeOptions<Config> {
   apiKey: string;
   apiUrl: string;
   models: () => ModelCatalog;
+  completionTokenLimit?(model: string, tokens: number): Record<string, number>;
   requestBody(model: string, messages: OpenAIChatMessage[], stream: boolean): Record<string, unknown>;
   httpErrorLabel: string;
   missingKeyError: string;
@@ -209,7 +210,7 @@ export function createChatCompletion<Config>(options: RuntimeOptions<Config>) {
         body: JSON.stringify({
           ...options.requestBody(model, messages, stream),
           ...(tools.length ? { tools } : {}),
-          ...(checkpoint ? { max_tokens: checkpoint.maxTokens, stream_options: { include_usage: true },
+          ...(checkpoint ? { ...(options.completionTokenLimit?.(model, checkpoint.maxTokens) ?? { max_tokens: checkpoint.maxTokens }), stream_options: { include_usage: true },
             ...(checkpoint.effort ? { reasoning_effort: checkpoint.effort } : {}) } : {}),
         }),
         signal: activeSignal,

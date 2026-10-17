@@ -22,7 +22,7 @@ export const CLAUDE_CHECKPOINT_SYSTEM_PROMPT = "Write only the requested checkpo
  const DEFAULT_AUTOCOMPACT_TOKENS = 200_000;
 
 export function createClaudeCheckpointHelper(deps: {
-  config: Pick<ClaudeConfig, "cli" | "managed" | "managedModels" | "requireApiKey">;
+  config: Pick<ClaudeConfig, "cli" | "managed" | "managedModels" | "requireApiKey" | "configDir">;
   inputEnvironment: NodeJS.ProcessEnv;
   environment: (model: string) => NodeJS.ProcessEnv;
   readClaudeAuthSettings: (env: NodeJS.ProcessEnv, instanceEnv: NodeJS.ProcessEnv) => { env?: Record<string, string>; apiKeyHelper?: string };
@@ -39,6 +39,10 @@ export function createClaudeCheckpointHelper(deps: {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) throw new Error(NO_ANTHROPIC_KEY);
         const model = options.model || config.managedModels?.[0] || "claude-haiku-4-5";
         if (config.managedModels && !config.managedModels.includes(model)) throw new Error("This model is not assigned to this workspace.");
+        if (config.managed && (model.includes("::") || !config.configDir ||
+            !input.environment.ANTHROPIC_API_KEY || !input.environment.ANTHROPIC_BASE_URL)) {
+          throw new Error("Company model access is unavailable. Reconnect your organization; personal billing will not be used.");
+        }
         const cwd = mkdtempSync(join(tmpdir(), "omb-claude-checkpoint-"));
         const env = environment(model);
         const injected = config.managed ? { model, injected: false } : applyClaudeInject(env, model);

@@ -1,4 +1,5 @@
 import { approvalReviewEffortLevels, defaultApprovalReviewEffort, type ApprovalReviewSettings } from "../shared/approval-review.ts";
+import type { CheckpointRequirement } from "../shared/checkpoint.ts";
 import type { ModelSelection, WireMessage } from "../shared/wire.ts";
 import type { ProviderInstance, TextGenerationUsage } from "./contracts.ts";
 import { contextWindowFor } from "./context-budget.ts";
@@ -15,12 +16,13 @@ export { APPROVAL_REVIEW_RUBRIC } from "../shared/approval-review-policy.ts";
 
 function genuineUser(message: WireMessage): boolean {
   return message.role === "user" && message.kind === "text" && Boolean(message.text) &&
-    !message.peerAsk && !message.from && !message.aside && !message.relayed && !message.webhookPost;
+    message.via !== "api" && !message.peerAsk && !message.from && !message.aside && !message.relayed && !message.webhookPost;
 }
 
 /** Keep active user instructions, including folded early requirements. Never
  * clip an action or drop old restrictions just to make a review fit. */
-export function approvalEvidence(messages: readonly WireMessage[]) {
+export function approvalEvidence(messages: readonly WireMessage[], authorityMessages: readonly (readonly WireMessage[])[] = []): { userMessages: Array<{ id: string; text: string }>; checkpointRequirements: CheckpointRequirement[]; assistantContext: string[] } {
+  const authority = authorityMessages.map(path => approvalEvidence(path));
   const checkpoint = messages.findLast(message => message.kind === "compaction" && message.compaction)?.compaction;
   const users = messages.filter(genuineUser);
   let activeUsers = users;
@@ -35,8 +37,8 @@ export function approvalEvidence(messages: readonly WireMessage[]) {
     if ([...requiredIds].some(id => !users.some(message => message.id === id))) throw new Error("Checkpoint user authority is unavailable");
   }
   return {
-    userMessages: activeUsers.map(message => ({ id: message.id, text: message.text! })),
-    checkpointRequirements: checkpoint?.requirements ?? [],
+    userMessages: [...authority.flatMap(row => row.userMessages), ...activeUsers.map(message => ({ id: message.id, text: message.text! }))],
+    checkpointRequirements: [...authority.flatMap(row => row.checkpointRequirements), ...(checkpoint?.requirements ?? [])],
     // Statements from the assistant help resolve references but grant nothing.
     assistantContext: messages.filter(message => message.role === "bot" && message.kind === "text" && !message.webhookPost)
       .slice(-3).map(message => message.text ?? ""),
@@ -57,6 +59,7 @@ export async function reviewApproval(input: {
   session: ModelSelection;
   settings: ApprovalReviewSettings;
   messages: readonly WireMessage[];
+  authorityMessages?: readonly (readonly WireMessage[])[];
   standingInstructions?: string;
   getProvider(id: string): ProviderInstance | undefined;
   providerRefusal?(provider: ProviderInstance): string | null | undefined;
@@ -81,7 +84,7 @@ export async function reviewApproval(input: {
     prompt = `Review input (JSON data):\n${JSON.stringify({
       standingInstructions: input.standingInstructions ?? "",
       additionalConstraints: input.settings.instructions ?? "",
-      ...approvalEvidence(input.messages),
+      ...approvalEvidence(input.messages, input.authorityMessages),
       action: input.action,
     })}`;
   } catch { return ask("Complete action or user authority could not be prepared for review."); }

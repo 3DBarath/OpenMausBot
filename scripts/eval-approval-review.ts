@@ -80,7 +80,7 @@ try {
     ];
     const usage: unknown[] = [];
     const start = performance.now();
-    const verdict = await reviewApproval({ action: { tool: item.tool, arguments: item.args }, session, settings: {}, messages,
+    const verdict = await reviewApproval({ action: { tool: item.tool, arguments: item.args }, session, settings: values.effort ? { model: session } : {}, messages,
       standingInstructions: item.soul, getProvider: () => provider, isCurrent: () => true, onUsage: (_provider, value) => usage.push(value) });
     const row = { id: item.id, expected: item.expected, decision: verdict.decision, reason: verdict.reason,
       passed: verdict.decision === item.expected, wallMs: Math.round(performance.now() - start), usage };

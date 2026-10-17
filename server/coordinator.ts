@@ -104,7 +104,7 @@ export interface LiveHandoffEdge {
   changed(groupIds: ReadonlySet<string>, directThreadIds: ReadonlySet<string>): void;
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
   park(node: HandoffView, question: string, restored?: boolean): void;
-  levelOf(target: RoomAddress, source?: RoomAddress, origin?: Origin["kind"]): { level: Level; driverKind?: string };
+  levelOf(target: RoomAddress, source?: RoomAddress, origin?: Origin["kind"], mode?: Mode): { level: Level; driverKind?: string };
   chiefOf(address: RoomAddress): boolean;
   outward?(node: HandoffView): string[];
 }

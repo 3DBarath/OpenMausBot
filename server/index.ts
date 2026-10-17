@@ -1,7 +1,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { delegationOriginKind } from "./host/delegation-origin.ts";
 import { createRoomApprovalModes } from "./host/room-approval.ts";
-import { createDelegatedLevel, DELEGATED_LEVEL_NAMES } from "./host/delegated-level.ts";
+import { createDelegatedLevel } from "./host/delegated-level.ts";
 import { createModelSelectionCheck } from "./host/model-selection.ts";
 import { createApprovalReviewService } from "./host/approval-review.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -3272,7 +3272,8 @@ function previewSystemPrompt(bot: BotRecord) {
   const owner = connectorThread(botId, threadId);
   if (!owner) return "ask";
   const bot = store.projectBotForTask(botId, threadId) ?? owner.bot;
-  return approvalModeForTurn(bot, false, threadId);
+  const active = coordinator.active().find(node => node.botId === botId && node.threadId === threadId && node.parentId && node.status === "running");
+  return active ? roomTurnApprovalMode(bot, threadId, { roomHandoffId: active.id }) : approvalModeForTurn(bot, false, threadId);
 }
 
 function fullAccessForSource(botId: string, threadId: string): boolean {
@@ -3302,22 +3303,6 @@ const delegatedLevel = createDelegatedLevel({
   driverKind: instanceId => registry.cliTarget(instanceId)?.driverKind,
 });
 
- function ownThreadLevel(target: BotRecord, threadId: string): ApprovalMode {
-  return approvalModeForTurn(store.projectBotForTask(target.id, threadId) ?? target, false, threadId);
-}
-
- function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string, origin: "person" | "routine" | "outside" = "person"): void {
-  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId), origin);
-  if (!level || store.taskByThread(target.id, threadId)?.approvalMode === level) return;
-  store.patchTask(target.id, threadId, { approvalMode: level, autoApprove: false, alwaysAllow: [] });
-  const name = DELEGATED_LEVEL_NAMES[level] ?? level;
-  store.appendMessage(threadId, {
-    role: "bot",
-    kind: "activity",
-    tool: { name: `${name} — delegated by ${from.name}, a Chief of Staff on ${name}`, ok: true },
-  });
-}
-
 const { roomTurnApprovalMode, roomTurnLevel } = createRoomApprovalModes({
   node: id => coordinator.node(id), bot: id => store.bot(id),
   cloudGuestDriven, approvalModeForTurn, delegatedLevel,
@@ -3328,7 +3313,7 @@ function connectorTurnApprovalMode(capability: InternalCapability): ApprovalMode
   const owner = connectorThread(capability.botId, capability.threadId);
   if (!owner) return "ask";
   const bot = store.projectBotForTask(capability.botId, capability.threadId) ?? owner.bot;
-  return owner.group ? roomTurnApprovalMode(bot, capability.threadId, capability) : sourceApprovalMode(capability.botId, capability.threadId);
+  return owner.group || capability.roomHandoffId ? roomTurnApprovalMode(bot, capability.threadId, capability) : sourceApprovalMode(capability.botId, capability.threadId);
 }
 
  function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
@@ -4373,13 +4358,12 @@ function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined 
       else store.patchTask(bot.id, node.threadId, { unread: true });
       notify(buildNotification("delegation-settled", bot, node.threadId, question, { avatarUrl: bot.avatarUrl }));
     },
-    levelOf: (target, source, origin) => {
+    levelOf: (target, source, origin, mode) => {
       const bot = store.bot(target.botId);
       if (!bot) return { level: "ask" };
       const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
       const driverKind = registry.cliTarget(running.modelSelection.instanceId)?.driverKind;
-      if (target.groupId) return { level: roomTurnLevel(bot, target.threadId, source, origin), driverKind };
-      return { level: approvalModeForTurn(running, true, target.threadId), driverKind };
+      return { level: roomTurnLevel(running, target.threadId, source, origin, mode), driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
     outward: node => {
@@ -5318,6 +5302,11 @@ const approvalReviews = createApprovalReviewService({
   store: () => store, config: () => cfg, watchdog: () => watchdog,
   getProvider: id => registry.get(id) ?? undefined, providerRefusal: policyModelRefusal,
   assertBudget: () => assertWithinBudget(cfg, DATA_DIR), bookUsage: bookTurnUsage, dataDir: DATA_DIR,
+  authoritySources: (botId, threadId) => {
+    const active = coordinator.active().find(node => node.botId === botId && node.threadId === threadId && ["running", "source"].includes(node.status));
+    const root = active?.parentId ? coordinator.node(active.rootId) : undefined;
+    return root && delegationOriginKind(root) === "person" ? [{ botId: root.botId, threadId: root.threadId, turnId: active!.id }] : [];
+  },
   sourceApprovalMode, roomApprovalMode: (threadId, botId) => roomTurnLevels.forRequest(threadId, botId, () => "ask"),
 });
 const { reviewToolForTurn, approvedToolForTurn } = approvalReviews;
@@ -6844,7 +6833,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       const unattended = permission && asker && event.requestId ? isUnattended(asker.id, event.threadId) : false;
       const guestDriven = cloudGuestDriven(event.threadId);
-      const ownApprovalMode = (who: BotRecord) => approvalModeForTurn(who, isInternalTurn(event.threadId), event.threadId);
+      const ownApprovalMode = (who: BotRecord) => approvalModeForOrigin(sourceApprovalMode(who.id, event.threadId), { peerInitiated: isInternalTurn(event.threadId) });
       const effectiveApprovalMode = !asker || guestDriven ? "ask"
         : group && speaker?.botId === asker.id ? roomTurnLevels.forRequest(event.threadId, asker.id, () => ownApprovalMode(asker))
           : ownApprovalMode(asker);
@@ -8874,10 +8863,10 @@ function shownScreenHash(threadId: string): string | undefined {
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
         images: dispatchContext.images,
-        approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
+        approvalMode: coordinationNode?.parentId ? roomTurnApprovalMode(bot, threadId, { roomHandoffId: coordinationNode.id }) : approvalModeForTurn(bot, commsDepth > 0, threadId),
         reviewTool: reviewToolForTurn(bot.id, threadId, { instanceId: instance.instanceId, model, effort, variant },
           () => directTurnGenerationByThread.get(threadId) === dispatchClaimId && threadBusy(bot.id, threadId) && sourceApprovalMode(bot.id, threadId) === "auto"),
-        toolApproved: approvedToolForTurn(threadId,
+        toolApproved: approvedToolForTurn(bot.id, threadId,
           () => directTurnGenerationByThread.get(threadId) === dispatchClaimId && threadBusy(bot.id, threadId)),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
@@ -10961,7 +10950,7 @@ async function runClaimedGroupMemberTurn(
         approvalMode: turnApprovalMode,
         reviewTool: reviewToolForTurn(readyBot.id, threadId, reviewSession,
           () => !abandoned && !isCancelled?.() && roomTurnApprovalMode(store.bot(readyBot.id) ?? readyBot, threadId, orchestration) === "auto"),
-        toolApproved: approvedToolForTurn(threadId, () => !abandoned && !isCancelled?.()),
+        toolApproved: approvedToolForTurn(readyBot.id, threadId, () => !abandoned && !isCancelled?.()),
         toolScope: roomToolScope,
         ...(roomGuestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         system: roomSystem.text,
@@ -14906,7 +14895,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
             const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
             if (lane?.created) createdThread = lane.threadId;
-            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId, delegationOriginKind(coordinator.node(internalCapability.roomHandoffId ?? generation)));
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -14915,7 +14903,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!task) throw new Error("The recipient no longer exists");
               target.threadId = task.threadId;
               if (!continued) createdThread = task.threadId;
-              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId, delegationOriginKind(coordinator.node(internalCapability.roomHandoffId ?? generation)));
             }
             const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
             const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {
@@ -15671,6 +15658,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const fullAccess = outboundTool !== null && sendsFreely();
         let outboundApproved = false;
         let outboundModelReviewed = false;
+        let outboundAuthorityCurrent: (() => boolean) | undefined;
         let outboundReviewReason: string | undefined;
         const outboundReviewSettings = JSON.stringify(cfg.approvalReview ?? {});
         const outboundPolicy = currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY;
@@ -15681,6 +15669,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const grant = approvalReviews.takeConnectorGrant(internalCapability.threadId, rpcParams.name, args);
           if (grant && grant.settings === outboundReviewSettings && grant.expiresAt > Date.now()) {
             outboundModelReviewed = true;
+            outboundAuthorityCurrent = grant.current;
           } else {
             const controller = new AbortController();
             const disconnect = () => { if (!res.writableEnded) controller.abort(); };
@@ -15688,12 +15677,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             try {
               const selected = approvalReviews.session(internalCapability.threadId) ??
                 (store.projectBotForTask(currentSender.id, internalCapability.threadId) ?? currentSender).modelSelection;
+              const reviewedAuthority = approvalReviews.authorizationCurrent(currentSender.id, internalCapability.threadId,
+                () => internalCapabilityIsActive(internalCapability));
               const review = await reviewToolForTurn(currentSender.id, internalCapability.threadId, selected,
                 () => internalCapabilityIsActive(internalCapability) && connectorTurnApprovalMode(internalCapability) === "auto")(
                   { tool: rpcParams.name, arguments: args }, controller.signal);
               requireActiveInternalCapability();
               if (review.decision === "deny") return refuseOutbound(`OpenMausBot did not run this: ${review.reason}`);
               outboundModelReviewed = review.decision === "allow";
+              outboundAuthorityCurrent = reviewedAuthority;
               outboundReviewReason = review.reason;
             } finally { res.removeListener("close", disconnect); }
           }
@@ -15797,7 +15789,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             } else if (outboundTool) {
               const policy = fresh.outbound ?? DEFAULT_OUTBOUND_POLICY;
               if (outboundModelReviewed) {
-                if (connectorTurnApprovalMode(internalCapability) !== "auto" || JSON.stringify(cfg.approvalReview ?? {}) !== outboundReviewSettings) {
+                if (!outboundAuthorityCurrent?.() || connectorTurnApprovalMode(internalCapability) !== "auto" || JSON.stringify(cfg.approvalReview ?? {}) !== outboundReviewSettings) {
                   refuseDispatch("Approval settings changed before this call ran. Ask for approval again.");
                 }
               } else if (policy.policy === "allow" && !opaque) {

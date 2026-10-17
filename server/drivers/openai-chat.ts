@@ -591,7 +591,7 @@ const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see 
     reviewPermission: async (prompt, review) => {
       if (typeof review?.model !== "string" || !review.model.trim()) throw new Error("Permission review requires an explicit model.");
       const result = await generateCheckpoint(prompt, { ...review, signal: review.signal ?? new AbortController().signal,
-        maxTokens: PERMISSION_REVIEW_MAX_TOKENS, prefillTimeoutMs: null, idleTimeoutMs: PERMISSION_REVIEW_IDLE_TIMEOUT_MS }, PERMISSION_REVIEW_SYSTEM_PROMPT);
+        maxTokens: PERMISSION_REVIEW_MAX_TOKENS, prefillTimeoutMs: PERMISSION_REVIEW_IDLE_TIMEOUT_MS, idleTimeoutMs: PERMISSION_REVIEW_IDLE_TIMEOUT_MS }, PERMISSION_REVIEW_SYSTEM_PROMPT);
       if (result.stopReason === "length") throw new Error("Permission review exceeded its output limit.");
       return result.text;
     },

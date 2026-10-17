@@ -20,29 +20,54 @@ export function createApprovalReviewService(deps: {
   bookUsage(row: Omit<UsageRow, "at" | "costSource">, countsKnown: boolean, threadId: string): void;
   sourceApprovalMode(botId: string, threadId: string): ApprovalMode;
   roomApprovalMode(threadId: string, botId: string): ApprovalMode;
+  authoritySources?(botId: string, threadId: string): Array<{ botId: string; threadId: string; turnId: string }>;
   dataDir: string;
 }) {
   const reviewSessionSelections = new Map<string, ModelSelection>();
   const approvalReviewControllers = new Map<string, Set<AbortController>>();
-  const connectorReviewGrants = new Map<string, { settings: string; expiresAt: number }>();
+  const connectorReviewGrants = new Map<string, { settings: string; expiresAt: number; current(): boolean }>();
 function reviewGrantKey(threadId: string, tool: string, args: Record<string, unknown>): string {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
     : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, part]) => [key, canonical(part)])) : value;
   return `${threadId}:${JSON.stringify([tool.toLowerCase(), canonical(args)])}`;
 }
 
-function carryConnectorApproval(threadId: string, action: ReviewAction) {
-  if (!action.tool.startsWith("composio_")) return;
+function authority(botId: string, threadId: string) {
+  const sources = deps.authoritySources?.(botId, threadId) ?? [];
+  const messages = deps.store().activePath(threadId);
+  const authorityMessages = sources.map(source => deps.store().activePath(source.threadId));
+  const standingInstructions = sources.length ? JSON.stringify([...sources.map(source => ({
+    botId: source.botId, soul: deps.store().bot(source.botId)?.soul,
+  })), { botId, soul: deps.store().bot(botId)?.soul }]) : deps.store().bot(botId)?.soul;
+  return { messages, authorityMessages, standingInstructions, identity: JSON.stringify({
+    sources: sources.map(source => ({ ...source, mode: deps.sourceApprovalMode(source.botId, source.threadId) })),
+    standingInstructions, evidence: approvalEvidence(messages, authorityMessages),
+  }) };
+}
+function authorizationCurrent(botId: string, threadId: string, isCurrent: () => boolean) {
+  const identity = authority(botId, threadId).identity;
+  const settings = JSON.stringify(deps.config().approvalReview ?? {});
+  return () => {
+    try { return isCurrent() && settings === JSON.stringify(deps.config().approvalReview ?? {}) && authority(botId, threadId).identity === identity; }
+    catch { return false; }
+  };
+}
+function carryConnectorApproval(threadId: string, action: ReviewAction, current: () => boolean) {
+  const tool = /^(?:mcp__composio__|composio_)(.+)$/i.exec(action.tool)?.[1];
+  if (!tool) return;
   for (const [key, grant] of connectorReviewGrants) if (grant.expiresAt <= Date.now()) connectorReviewGrants.delete(key);
-  connectorReviewGrants.set(reviewGrantKey(threadId, action.tool.slice("composio_".length), action.arguments),
-    { settings: JSON.stringify(deps.config().approvalReview ?? {}), expiresAt: Date.now() + 60_000 });
+  const expiresAt = Date.now() + 60_000;
+  connectorReviewGrants.set(reviewGrantKey(threadId, tool, action.arguments),
+    { settings: JSON.stringify(deps.config().approvalReview ?? {}), expiresAt, current: () => Date.now() < expiresAt && current() });
 }
 
-function approvedToolForTurn(threadId: string, isCurrent: () => boolean) {
+function approvedToolForTurn(botId: string, threadId: string, isCurrent: () => boolean) {
   return (action: ReviewAction, signal: AbortSignal) => {
     signal.throwIfAborted();
     if (!isCurrent()) throw new Error("The execution changed before approval could be used.");
-    carryConnectorApproval(threadId, action);
+    const tool = /^(?:mcp__composio__|composio_)(.+)$/i.exec(action.tool)?.[1];
+    if (tool && connectorReviewGrants.has(reviewGrantKey(threadId, tool, action.arguments))) return;
+    carryConnectorApproval(threadId, action, authorizationCurrent(botId, threadId, isCurrent));
   };
 }
 
@@ -62,25 +87,21 @@ function reviewToolForTurn(botId: string, threadId: string, session: ModelSelect
     const beforeReview = floorVerdict(action);
     if (beforeReview) return beforeReview;
     const settings = deps.config().approvalReview ?? {};
-    const settingsIdentity = JSON.stringify(settings);
-    const messages = deps.store().activePath(threadId);
-    let evidenceIdentity: string;
-    try { evidenceIdentity = JSON.stringify(approvalEvidence(messages)); }
+    let context: ReturnType<typeof authority>;
+    let current: () => boolean;
+    try { context = authority(botId, threadId); current = authorizationCurrent(botId, threadId, isCurrent); }
     catch { return { decision: "ask", reason: "The complete authorization evidence is unavailable; your approval is required." }; }
-    const standingInstructions = deps.store().bot(botId)?.soul;
     const controller = new AbortController();
     const controllers = approvalReviewControllers.get(threadId) ?? new Set<AbortController>();
     controllers.add(controller);
     approvalReviewControllers.set(threadId, controllers);
     deps.watchdog().setCheckpointOwnsDeadline(threadId, true);
-    const current = () => isCurrent() && JSON.stringify(deps.config().approvalReview ?? {}) === settingsIdentity &&
-      deps.store().bot(botId)?.soul === standingInstructions && JSON.stringify(approvalEvidence(deps.store().activePath(threadId))) === evidenceIdentity;
     try {
       deps.assertBudget();
       const bot = deps.store().bot(botId);
       if (!bot) return { decision: "ask", reason: "The requesting bot is no longer available." };
       const verdict = await reviewApproval({
-        action, session: reviewSessionSelections.get(threadId) ?? session, settings, messages, standingInstructions,
+        action, session: reviewSessionSelections.get(threadId) ?? session, settings, ...context,
         getProvider: deps.getProvider, providerRefusal: deps.providerRefusal,
         signal: AbortSignal.any([signal, controller.signal]), isCurrent: current,
         onUsage: (provider, usage) => deps.bookUsage({ botId, botName: bot.name, threadId: `approval-${threadId}-${randomUUID()}`,
@@ -102,7 +123,7 @@ function reviewToolForTurn(botId: string, threadId: string, session: ModelSelect
         tool: { name: `${verdict.decision === "allow" ? "Approved" : verdict.decision === "deny" ? "Denied" : "Approval needed"} ${action.tool}: ${reason}`, ok: verdict.decision !== "deny" } });
       // A connector execution has an inner outbound gate. Carry only this
       // exact allow through it once, rather than calling the reviewer twice.
-      if (verdict.decision === "allow") carryConnectorApproval(threadId, action);
+      if (verdict.decision === "allow") carryConnectorApproval(threadId, action, current);
       return { decision: verdict.decision, reason: verdict.decision === "deny"
         ? `${reason} Do not repackage this denied outcome or bypass review; use a materially safer alternative or ask the user.` : reason };
     } catch { return { decision: "ask", reason: "Automatic review is unavailable; your approval is required." }; }
@@ -123,7 +144,7 @@ function reviewToolForTurn(botId: string, threadId: string, session: ModelSelect
         store.bots.some(bot => bot.tasks?.some(task => task.busy && deps.sourceApprovalMode(bot.id, task.threadId) === "auto")) ||
         store.groups.some(group => group.busyBotId && deps.roomApprovalMode(group.threadId, group.busyBotId) === "auto");
     },
-    reviewToolForTurn, approvedToolForTurn,
+    reviewToolForTurn, approvedToolForTurn, authorizationCurrent,
     setSession(threadId: string, session: ModelSelection) { reviewSessionSelections.set(threadId, session); },
     session(threadId: string) { return reviewSessionSelections.get(threadId); },
     updateSessionModel(threadId: string, model: string) {
@@ -135,7 +156,7 @@ function reviewToolForTurn(botId: string, threadId: string, session: ModelSelect
       const key = reviewGrantKey(threadId, tool, args);
       const grant = connectorReviewGrants.get(key);
       connectorReviewGrants.delete(key);
-      return grant;
+      return grant?.current() ? grant : undefined;
     },
     finishThread(threadId: string) {
       for (const controller of approvalReviewControllers.get(threadId) ?? []) controller.abort();

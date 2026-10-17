@@ -199,7 +199,7 @@ export class RuntimeCoordinator implements Coordinator {
     const reply: Reply = wanted === "none" ? "none" : root.reply === "poll" ? "poll" : wanted;
     const requester: Requester = { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId,
       chief: this.host.chiefOf(address(parent)), ...(parent.id === root.id && root.requester.runId !== undefined ? { runId: root.requester.runId } : {}) };
-    const level = this.host.levelOf(target, address(parent), parent.origin.kind);
+    const level = this.host.levelOf(target, address(parent), parent.origin.kind, mode);
     const result = this.runtime.enqueue({
       parentId: parent.id,
       origin: parent.origin,

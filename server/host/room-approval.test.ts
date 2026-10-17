@@ -13,7 +13,7 @@ function fixture(origin?: WorkOrigin) {
   const chief = { id: "chief", chiefOfStaff: true, approvalMode: "full", modelSelection: { instanceId: "native", model: "fixture" } } as BotRecord;
   const member = { id: "member", approvalMode: "ask", modelSelection: { instanceId: "native", model: "fixture" } } as BotRecord;
   const root = { id: "root", rootId: "root", botId: chief.id, threadId: "source", origin } as HandoffView;
-  const handoff = { id: "child", parentId: root.id, rootId: root.id, botId: member.id, threadId: "room" } as HandoffView;
+  const handoff = { id: "child", parentId: root.id, rootId: root.id, botId: member.id, threadId: "room", level: "full", mode: "work" } as HandoffView;
   const nodes = new Map([[root.id, root], [handoff.id, handoff]]);
   const delegatedLevel = vi.fn(createDelegatedLevel({ sourceApprovalMode: () => "full", driverKind: () => "claudeAgent" }));
   const modes = createRoomApprovalModes({ node: id => nodes.get(id), bot: id => id === chief.id ? chief : member,
@@ -65,4 +65,12 @@ describe("room approval lineage", () => {
     expect(f.roomTurnApprovalMode(custom, "room", { roomHandoffId: f.handoff.id })).toBe("auto");
     expect(f.delegatedLevel).toHaveBeenCalledWith(f.chief, "source", custom, "auto", "person");
   });
+});
+
+it("keeps execution within the recorded ceiling and consultations within the recipient grant", () => {
+  const f = fixture({ kind: "user", request: "Do scoped work." });
+  f.handoff.level = "auto";
+  expect(f.roomTurnApprovalMode(f.member, "room", { roomHandoffId: f.handoff.id })).toBe("auto");
+  f.handoff.mode = "consult";
+  expect(f.roomTurnApprovalMode(f.member, "room", { roomHandoffId: f.handoff.id })).toBe("ask");
 });
