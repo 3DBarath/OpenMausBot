@@ -546,6 +546,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             usage.output += completion.usage.output;
             hasUsage = true;
             const contextWindow = options.models().options.find((entry) => entry.id === model)?.contextWindow;
+            // Accounting sums the turn; context occupancy is the latest round only.
             emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...usage,
               contextTokens: completion.usage.input + completion.usage.output,
               ...(contextWindow ? { contextWindow } : {}) });
