@@ -88,7 +88,6 @@ type AssertSameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [ke
 export type TaskWireProjectionIsExact = AssertExact<WireTask, TaskWireProjection> & AssertSameKeys<WireTask, TaskWireProjection>;
 export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 
-
 const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow: [] as string[] };
 
 const TASK_PATCH_FIELDS = [
