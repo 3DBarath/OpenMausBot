@@ -2,7 +2,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { delegationOriginKind } from "./host/delegation-origin.ts";
 import { createRoomApprovalModes } from "./host/room-approval.ts";
-import { createDelegatedLevel } from "./host/delegated-level.ts";
+import { createDelegatedLevel, DELEGATED_LEVEL_NAMES } from "./host/delegated-level.ts";
 import { createModelSelectionCheck } from "./host/model-selection.ts";
 import { createApprovalReviewService } from "./host/approval-review.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -3355,6 +3355,22 @@ const delegatedLevel = createDelegatedLevel({
   driverKind: instanceId => registry.cliTarget(instanceId)?.driverKind,
 });
 
+function ownThreadLevel(target: BotRecord, threadId: string): ApprovalMode {
+  return approvalModeForTurn(store.projectBotForTask(target.id, threadId) ?? target, false, threadId);
+}
+
+function applyDelegatedLevel(from: BotRecord, fromThreadId: string, target: BotRecord, threadId: string): void {
+  const level = delegatedLevel(from, fromThreadId, target, ownThreadLevel(target, threadId));
+  if (!level || store.taskByThread(target.id, threadId)?.approvalMode === level) return;
+  store.patchTask(target.id, threadId, { approvalMode: level, autoApprove: false, alwaysAllow: [] });
+  const name = DELEGATED_LEVEL_NAMES[level] ?? level;
+  store.appendMessage(threadId, {
+    role: "bot",
+    kind: "activity",
+    tool: { name: `${name} — delegated by ${from.name}, a Chief of Staff on ${name}`, ok: true },
+  });
+}
+
 const { roomTurnApprovalMode, roomTurnLevel } = createRoomApprovalModes({
   node: id => coordinator.node(id), bot: id => store.bot(id),
   cloudGuestDriven, approvalModeForTurn, delegatedLevel,
@@ -4430,12 +4446,12 @@ const coordinator: Coordinator = createCoordinator({
       else store.patchTask(bot.id, node.threadId, { unread: true });
       notify(buildNotification("delegation-settled", bot, node.threadId, question, { avatarUrl: bot.avatarUrl }));
     },
-    levelOf: (target, source, origin, mode) => {
+    levelOf: (target, source, mode) => {
       const bot = store.bot(target.botId);
       if (!bot) return { level: "ask" };
       const running = store.projectBotForTask(bot.id, target.threadId) ?? bot;
       const driverKind = registry.cliTarget(running.modelSelection.instanceId)?.driverKind;
-      return { level: roomTurnLevel(running, target.threadId, source, origin, mode), driverKind };
+      return { level: roomTurnLevel(running, target.threadId, source, mode), driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
     // A person's cut root never reruns after a follow-up in its thread: that would hand the person's words to a model again, or redo an older request.
@@ -15133,6 +15149,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
             const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
             if (lane?.created) createdThread = lane.threadId;
+            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId);
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -15141,6 +15158,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!task) throw new Error("The recipient no longer exists");
               target.threadId = task.threadId;
               if (!continued) createdThread = task.threadId;
+              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
             }
             const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
             const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {

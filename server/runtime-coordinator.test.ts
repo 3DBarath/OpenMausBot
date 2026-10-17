@@ -1251,24 +1251,3 @@ describe("RuntimeCoordinator: outward restart policy, answerNode, continuation o
     expect(w.host.runs[0]!.composed.turn).toBe("continued");
   });
 });
-
-describe("host approval origin propagation", () => {
-  it.each([
-    [{ kind: "user" as const, request: "Do scoped room work." }, "person"],
-    [{ kind: "outside" as const }, "outside"],
-    [undefined, "outside"],
-  ] as const)("passes root origin %j to the room level resolver", (origin, expected) => {
-    const w = world(() => "hold");
-    const calls: Array<{ target: RoomAddress; source?: RoomAddress; origin?: Assignment["origin"]["kind"] }> = [];
-    w.host.levelOf = (target, source, sourceOrigin) => {
-      calls.push({ target, source, origin: sourceOrigin });
-      return { level: "ask", driverKind: "claudeAgent" };
-    };
-    const target = inRoom(builder.botId);
-    try {
-      w.coordinator.beginTurn({ id: "origin-source", address: chief, brief: "Scoped work", level: "ask", origin });
-      w.coordinator.enqueue(chief, "origin-source", undefined, target, "Do scoped room work", {});
-      expect(calls).toEqual([{ target, source: chief, origin: expected }]);
-    } finally { w.coordinator.close(); }
-  });
-});

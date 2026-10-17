@@ -199,7 +199,7 @@ export class RuntimeCoordinator implements Coordinator {
     const reply: Reply = wanted === "none" ? "none" : root.reply === "poll" ? "poll" : wanted;
     const requester: Requester = { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId,
       chief: this.host.chiefOf(address(parent)), ...(parent.id === root.id && root.requester.runId !== undefined ? { runId: root.requester.runId } : {}) };
-    const level = this.host.levelOf(target, address(parent), parent.origin.kind, mode);
+    const level = this.host.levelOf(target, address(parent), mode);
     const result = this.runtime.enqueue({
       parentId: parent.id,
       origin: parent.origin,
@@ -441,7 +441,7 @@ export class RuntimeCoordinator implements Coordinator {
       approvalLevel: a => {
         if (!a.parentId) return { level: a.level, source: a.levelSource };
         const parent = a.parentId ? this.store.get(a.parentId) : undefined;
-        const selected = host.levelOf(address(a), parent && address(parent), a.origin.kind).level;
+        const selected = host.levelOf(address(a), parent && address(parent), a.mode).level;
         return { level: runningApprovalMode(a.level, selected, false), source: a.levelSource };
       },
       run: (a, input, signal) => this.run(a, input, signal),
