@@ -111,3 +111,18 @@ it("does not expand a managed model allowlist with manual context entries", asyn
     expect(fetcher).not.toHaveBeenCalled();
   } finally { await inst.dispose(); }
 });
+
+it("discovers each llama.cpp model's serving capacity without autoloading", async () => {
+  const selected: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/models")) return new Response(JSON.stringify({ data: [MODEL, "second-model"].map(id => ({ id, owned_by: "llamacpp", context_length: 131072 })) }));
+    expect(url.searchParams.get("autoload")).toBe("false");
+    const model = url.searchParams.get("model")!; selected.push(model);
+    return new Response(JSON.stringify({ default_generation_settings: { n_ctx: model === MODEL ? 8192 : 16384 } }));
+  }));
+  const inst = await OpenAICompatDriver.create({ instanceId: "multi-llama", displayName: "Fixture", enabled: true,
+    config: { url: "http://127.0.0.1:9999/v1", apiKeyEnv: "TEST_KEY", model: MODEL }, environment: { TEST_KEY: KEY } });
+  try { await inst.refreshModels!(); expect(selected).toContain("second-model"); expect(contextWindowFor("second-model", inst.models)).toBe(16384); }
+  finally { await inst.dispose(); }
+});

@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "./schema.ts";
+import { openaiCompatConnectionUrl } from "./openai-compat-settings.ts";
 
 import { cacheUntilConfigChanges,
   changedInstanceIds,
@@ -2211,4 +2212,10 @@ it("scopes compatible context overrides to their endpoint and default connection
     instances: { openaiCompat: { driver: "openai-compat", config: { url: "" } } } }).openaiCompat.config)
     .toMatchObject({ contextWindows: { [model]: 32768 } });
   for (const value of [0, -1, 1.5, "262144"]) expect(() => parseConfigPatch({ openaiCompat: { contextWindows: { [endpoint]: { [model]: value } } } })).toThrow();
+});
+
+it("resolves context-limit edits against the instance endpoint before workspace defaults", () => {
+  expect(openaiCompatConnectionUrl({ instances: { openaiCompat: { driver: "openai-compat", config: { url: "https://instance.invalid/v1" } } },
+    openaiCompat: { url: "https://workspace.invalid/v1" } })).toBe("https://instance.invalid/v1");
+  expect(openaiCompatConnectionUrl({ openaiCompat: { url: "https://workspace.invalid/v1" } })).toBe("https://workspace.invalid/v1");
 });

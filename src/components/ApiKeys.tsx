@@ -676,7 +676,7 @@ export function VpsConnection() {
 export function OpenAiCompatContextWindow() {
   const { state, dispatch, refreshModels, refreshInstances } = useStore();
   const instance = state.instances.find(item => item.instanceId === "openaiCompat");
-  const endpoint = (state.config?.openaiCompat?.url || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+  const endpoint = (state.config?.openaiCompat?.resolvedUrl || state.config?.openaiCompat?.url || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
   const overrides = state.config?.openaiCompat?.contextWindows ?? {};
   useEffect(() => { void refreshInstances(); }, [endpoint, refreshInstances]);
   const [model, setModel] = useState(instance?.models.default ?? "");
@@ -700,7 +700,7 @@ export function OpenAiCompatContextWindow() {
     const windows = { ...overrides[endpoint] };
     if (trimmed) windows[model] = Number(trimmed); else delete windows[model];
     try {
-      const config = await api("/api/config", { method: "PUT", body: JSON.stringify({ openaiCompat: { contextWindows: { ...overrides, [endpoint]: windows } } }) }) as ConfigStatus;
+      const config = await api("/api/config", { method: "PUT", body: JSON.stringify({ expectedContextWindows: overrides, openaiCompat: { contextWindows: { ...overrides, [endpoint]: windows } } }) }) as ConfigStatus;
       dispatch({ type: "configStatus", config });
       setDone(true);
       await Promise.allSettled([refreshModels("openaiCompat"), refreshInstances()]);

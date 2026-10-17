@@ -1,4 +1,5 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
+import { openaiCompatConnectionUrl } from "./openai-compat-settings.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -1492,7 +1493,6 @@ function adminAuditRows(
   }
   return rows;
 }
-
 
  function usageTriggerFor(auth: RequestAuth): UsageTrigger {
   return auth.kind === "session"
@@ -12876,7 +12876,7 @@ function configStatus() {
     billing: { currency: cfg.billing?.currency ?? "USD", prices: cfg.billing?.prices ?? {} },
     decisions: { retentionDays: decisionRetentionDays(cfg.decisions?.retentionDays) },
     safetyFloor: { enabled: safetyFloorOn() },
-    openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "", contextWindows: cfg.openaiCompat?.contextWindows ?? {} },
+    openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "", resolvedUrl: openaiCompatConnectionUrl(cfg), contextWindows: cfg.openaiCompat?.contextWindows ?? {} },
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),

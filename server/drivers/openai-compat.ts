@@ -177,8 +177,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         if (!options.length) return;
         // llama.cpp's training window can exceed its configured slot size.
         // Query the active model without autoloading another model.
-        const selected = rows.find(row => row.id === (config.model ?? options[0].id));
-        if (selected?.owned_by === "llamacpp") {
+        for (const selected of rows.filter(row => row.owned_by === "llamacpp" && typeof row.id === "string")) {
           try {
             const url = new URL(config.url);
             url.pathname = url.pathname.replace(/\/v1\/?$/, "").replace(/\/$/, "") + "/props";

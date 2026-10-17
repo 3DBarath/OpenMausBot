@@ -57,7 +57,13 @@ it("uses a changed compatible capacity for the next compaction decision rather t
     expect((await messages()).filter(message => message.kind === "compaction")).toHaveLength(0);
     const usage = (await api("/api/bots?messages=0")).bots.find((entry: any) => entry.id === bot.id).tasks.find((entry: any) => entry.threadId === thread).usage;
     expect(usage.context).toMatchObject({ tokens: tokens + 2, window: capacity });
-    await api("/api/config", { openaiCompat: { contextWindows: { [endpoint]: { [model]: 16384 } } } }, "PUT");
+    const before = (await api("/api/config", undefined, "GET")).openaiCompat.contextWindows;
+    await api("/api/config", { expectedContextWindows: before, openaiCompat: { contextWindows: { [endpoint]: { [model]: 16384 } } } }, "PUT");
+    const stale = await fetch(fixture.info.url + "/api/config", { method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedContextWindows: before, openaiCompat: { contextWindows: { [endpoint]: { other: 32768 } } } }) });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: expect.stringContaining("Context limits changed") });
+    expect((await api("/api/config", undefined, "GET")).openaiCompat.contextWindows).toEqual({ [endpoint]: { [model]: 16384 } });
     await refresh();
     await send("Continue after the capacity setting changes.");
     await expect.poll(async () => (await messages()).filter(message => message.kind === "compaction")).toHaveLength(1);
