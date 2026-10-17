@@ -17,11 +17,12 @@ createInterface({input:process.stdin}).on('line',line=>{
 });`;
 
 it.each([
-  ["ask", "full", false],
-  ["ask", "auto", true],
-  ["auto", "full", false],
-  ["full", "ask", true],
-] as const)("saves %s to %s during a held model response and uses upstream tool gates", async (initial, selected, cardExpected) => {
+  ["ask", "full", false, false],
+  ["ask", "full", false, true],
+  ["ask", "auto", true, false],
+  ["auto", "full", false, false],
+  ["full", "ask", true, false],
+] as const)("saves %s to %s during a held model response and uses upstream tool gates", async (initial, selected, cardExpected, allThreads) => {
   let release: (() => void) | undefined;
   let entered = false;
   let requests = 0;
@@ -56,7 +57,9 @@ it.each([
     await api("PATCH", `/api/bots/${bot.id}`, { mcpServers: ["livefx"], approvalMode: initial, acknowledgeLocalAuto: initial === "auto" });
     await runControlOmb(["send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Run the fixture write.", "--url", url]);
     await expect.poll(() => entered, { timeout: 15_000 }).toBe(true);
-    await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.activeTaskId}`, { approvalMode: selected, acknowledgeLocalAuto: selected === "auto" });
+    await api("PATCH", allThreads ? `/api/bots/${bot.id}` : `/api/bots/${bot.id}/tasks/${bot.activeTaskId}`, {
+      approvalMode: selected, acknowledgeLocalAuto: selected === "auto", ...(allThreads ? { applyToAllThreads: true } : {}),
+    });
     const saved = { bot: (await api("GET", "/api/bots?messages=0")).bots.find((row: { id: string }) => row.id === bot.id) };
     expect(saved.bot.tasks.find((task: { threadId: string }) => task.threadId === bot.activeTaskId).approvalMode).toBe(selected);
     release!();
