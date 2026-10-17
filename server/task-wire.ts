@@ -2,7 +2,7 @@ import type { TaskRecord } from "./store.ts";
 import type { ModelSelection } from "./contracts.ts";
 import type { WireTask } from "../shared/wire.ts";
 
- export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
+export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
     surfaceSource, askedAt: _askedAt, ...stored } = task;

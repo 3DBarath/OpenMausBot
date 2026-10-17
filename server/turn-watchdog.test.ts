@@ -1,4 +1,4 @@
-  import { readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -123,7 +123,8 @@ describe("TurnWatchdog", () => {
   });
 });
 
-   describe("the stall handler", () => {
+// The harness's stall handler (index.ts), run without starting a server.
+describe("the stall handler", () => {
   function load() {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     const from = /^[ \t]*const TURN_STALL_MS\b/m.exec(source)?.index ?? -1;

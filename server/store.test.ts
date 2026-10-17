@@ -1,4 +1,4 @@
-   import { createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -600,6 +600,7 @@ describe("Store", () => {
       store.appendMessage(bot.threadId, { role: "user", kind: "text", text: `message ${i}` });
     }
 
+    // A brand-new Store has never cached this thread, so this exercises the SQL LIMIT path, not an in-memory slice.
     const reloaded = new Store(selection);
     const tail = reloaded.messagesTail(bot.threadId, 3);
     expect(tail.messages.map((m) => m.text)).toEqual(["message 7", "message 8", "message 9"]);
@@ -788,6 +789,7 @@ describe("Store", () => {
     });
     store.addTaskUsage(bot.id, bot.threadId, { input: 800, output: 100, costUsd: null });
     store.addTaskUsage(bot.id, bot.threadId, { input: Number.NaN, output: -20, cachedInput: -5, costUsd: null });
+    // Providers occasionally report a cache count larger than input.
     store.addTaskUsage(bot.id, bot.threadId, { input: 10, output: 0, cachedInput: 20, costUsd: null });
     expect(store.addTaskUsage(bot.id, "no-such-thread", { input: 5, output: 5, costUsd: null })).toBeNull();
 
@@ -1504,7 +1506,6 @@ describe("Store", () => {
     expect(new Store(selection).messagesFor(bot.threadId).find((message) => message.id === card.id)?.card?.answered).toBeUndefined();
   });
 
-
   it("setResumeCursor persists per-instance continuations", () => {
     const store = new Store(selection);
     const bot = store.createBot();
@@ -1612,7 +1613,6 @@ describe("Store", () => {
     expect(reloaded.activePath(bot.threadId).map((m) => m.text)).not.toContain("v1");
   });
 
-
   it("tolerates a corrupt bots.json by starting empty", () => {
     const store = new Store(selection);
     store.createBot();
@@ -1662,6 +1662,7 @@ describe("Store", () => {
   });
   it("migrates a pre-branching flat transcript file", () => {
     const store = new Store(selection);
+    // seedMessages:false: a legacy thread's history is only in the JSON file, and any DB rows would take precedence.
     const bot = store.createBot({}, { seedMessages: false });
     const legacy = [
       { id: "m1", role: "bot", kind: "text", text: "hello", at: 1 },
@@ -2576,6 +2577,7 @@ describe("soul", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     const folder = join(DATA_DIR, "bots", bot.id);
+    // A *file* at the bot's folder path makes writeSoulMirror's mkdirSync fail with ENOTDIR.
     rmSync(folder, { recursive: true, force: true });
     writeFileSync(folder, "not a directory");
     try {

@@ -202,6 +202,7 @@ export function selectReplay(
   const foldedThrough = record ? history.findIndex((entry) => entry.id === record.foldedThroughId) : -1;
   const cut = record ? (record.firstKeptId ? history.findIndex((entry) => entry.id === record.firstKeptId) : foldedThrough + 1) : -1;
   const recordAt = record ? history.findIndex((entry) => entry.id === record.id) : -1;
+  // Both anchors must still belong to this branch in order: a stale record must never hide a rewritten or other fork.
   const applies = Boolean(record && cut > foldedThrough && foldedThrough >= 0 && recordAt >= cut);
   const representedIds = applies ? history.slice(0, cut).map((entry) => entry.id) : [];
   const entries = history.slice(applies ? cut : 0).filter((entry) =>

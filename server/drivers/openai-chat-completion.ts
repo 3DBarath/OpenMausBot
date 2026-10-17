@@ -44,7 +44,8 @@ interface CompletionJson {
   x_groq?: { usage?: CompletionJson["usage"] };
 }
 
- function providerError(json: CompletionJson): string | null {
+/** MiniMax reports auth, balance and parameter failures as `base_resp` with HTTP 200. */
+function providerError(json: CompletionJson): string | null {
   if (typeof json.error === "string") return json.error;
   const error = object(json.error);
   if (error) return typeof error.message === "string" ? error.message : "unknown error";
@@ -56,9 +57,10 @@ interface CompletionJson {
   return null;
 }
 
- const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
+const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
 
- function httpErrorDetail(body: string, limit = 500): string {
+/** A failed response's own error message, then its machine code (trial-credit.ts parses it), else the raw body. */
+function httpErrorDetail(body: string, limit = 500): string {
   let json: CompletionJson | undefined;
   try { json = object(JSON.parse(body)); } catch { json = undefined; }
   const message = json ? providerError(json) : null;
@@ -90,6 +92,7 @@ export interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
+  /** Cerebras rejects `reasoning_content` and takes `reasoning`. */
   reasoningReplayField?: "reasoning_content" | "reasoning";
   contentText?: (content: unknown) => string;
   billing?: "metered";
@@ -98,7 +101,9 @@ export interface RuntimeOptions<Config> {
   retryScale?: number;
   tools?: boolean;
   computerUse?: boolean;
+  /** A text-only model keeps the computer and browser tools but never receives a screenshot or attachment. */
   imageInput?: (model: string) => boolean;
+  /** Smaller models announce a step and end the turn without calling a tool; such a reply gets one nudge. */
   nudgeAnnouncedAction?: boolean;
 }
 
@@ -127,7 +132,8 @@ function rejectsToolsParameter(status: number, body: string): boolean {
 
 export class UnsupportedReasoningReplayError extends Error {}
 
- function rejectsReasoningReplay(status: number, body: string): boolean {
+/** DeepSeek-style providers need `reasoning_content` echoed on a tool-call message; Groq rejects it. */
+function rejectsReasoningReplay(status: number, body: string): boolean {
   if (status !== 400 && status !== 422) return false;
   let envelope: Record<string, unknown> | undefined;
   try { envelope = object(JSON.parse(body)); } catch { return false; }
@@ -136,7 +142,9 @@ export class UnsupportedReasoningReplayError extends Error {}
     /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
 }
 
- export class RejectedToolCallError extends ChatProtocolError {
+/** Groq fails a completion with `tool_use_failed` when a generated tool call is invalid: usually a
+ *  tool it was not offered (gpt-oss inventing a "json" tool), sometimes arguments missing the schema. */
+export class RejectedToolCallError extends ChatProtocolError {
   readonly refusal: Record<string, unknown>;
   constructor(message: string, refusal: Record<string, unknown>) {
     super(message);
@@ -162,7 +170,7 @@ function completionError(json: CompletionJson, label: string): ChatProtocolError
   return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
 }
 
- export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
+export function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
   const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
   const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
   const what = tool ? `tried to use a tool it was not given ("${tool}")` : "made a tool call the provider rejected";
@@ -299,6 +307,7 @@ export function createChatCompletion<Config>(options: RuntimeOptions<Config>) {
         try {
           chunk = JSON.parse(data) as CompletionJson;
         } catch {
+          // A tail left when the socket closed is an incomplete frame (stop, abort, drop), not a malformed one.
           if (!atEof) malformedFrame = true;
           return false;
         }
