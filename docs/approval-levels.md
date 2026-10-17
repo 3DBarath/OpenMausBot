@@ -67,11 +67,12 @@ or grant another bot access to a different workspace.
 
 Explicit connected-app scopes and tool grants still apply in Full access.
 Opaque Composio code cannot run against a restricted tool grant because its
-targets cannot be verified. The source thread's Full grant is checked again
-immediately before dispatch; revoking it while session setup waits stops the
-call. Below Full, sending still needs approval or a counted daily allowance,
+targets cannot be verified. The source thread's Full grant, or a Chief's level
+carried by a room hand-off, is checked again immediately before dispatch: a
+grant revoked while session setup waits falls back to the bot's outbound
+policy, so an Ask policy or opaque code stops the call. Below Full, sending still needs approval or a counted daily allowance,
 and opaque code always needs explicit approval. Full actions do not consume
-that allowance, and are recorded in the decision log with `source: full-access`.
+that allowance, and are recorded in the decision log with `rule: full-access`.
 
 The effective setting belongs to the source conversation. An existing Ask
 thread remains Ask even if the bot default is Full; a Full thread works

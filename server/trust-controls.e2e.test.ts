@@ -202,7 +202,7 @@ it("honors Full for direct sends, batches and opaque code without cards or daily
   await api("PATCH", `/api/bots/${fullBot.id}`, { connectorScopes: null, outbound: { policy: "allow", dailyCap: 1 } });
   const token = await mint(fullBot.id, fullBot.threadId);
   const fullDecisions = async () => ((await api("GET", "/api/decisions?limit=100")).body.decisions as any[])
-    .filter(row => row.botId === fullBot.id && row.threadId === fullBot.threadId && row.source === "full-access" && row.decision === "auto-approved").length;
+    .filter(row => row.botId === fullBot.id && row.threadId === fullBot.threadId && row.rule === "full-access" && row.decision === "auto-approved").length;
   const decisionsBefore = await fullDecisions();
   const operations = [
     ["COMPOSIO_REMOTE_WORKBENCH", { code_to_execute: "print('synthetic fixture')" }],
