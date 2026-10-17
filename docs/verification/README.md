@@ -55,6 +55,8 @@ Use only mapped, tested commands:
 - [Token efficiency: component benchmarks and limitations](token-efficiency-benchmark.md)
 - [Token efficiency: current-upstream tokenizer check](token-efficiency-upstream-refresh.md)
 - [Token efficiency: proposed upstream change](token-efficiency-pr.md)
+- [Token efficiency: upstream 0.1.109 comparison](token-efficiency-upstream-0109.md)
+- [Token efficiency: upstream 0.1.114 comparison](token-efficiency-upstream-0114.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
 - [OpenCode model variants through ACP](opencode-variants.md)
 - [Bot setup, model scope, and file continuity](bot-continuity.md)
