@@ -1,7 +1,7 @@
-  // publishing, inviting, sharing, refunding, charging. Below Full access,
-// these need confirmation or an optional daily allowance per bot. Full
-// access supplies standing approval; connector scopes and tool grants
-// still apply.
+// Outbound actions: calls that reach a person outside the app or move money.
+// Below Full access they need a confirmation or the bot's optional daily
+// allowance; Full access approves them, and connector scopes and tool grants
+// still apply. Shared by the harness (which enforces it) and the app.
 
 export type OutboundPolicy = {
   /** ask: every outbound call waits for a tap. allow: up to dailyCap a day. */

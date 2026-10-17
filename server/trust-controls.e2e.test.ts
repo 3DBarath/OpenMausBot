@@ -1,4 +1,4 @@
-  import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
@@ -90,6 +90,7 @@ beforeAll(async () => {
   const address = broker.address() as { port: number };
   brokerOrigin = `http://127.0.0.1:${address.port}`;
   fixture = await launchVerificationServer();
+  // Seed an already-granted Full task here only: the public API refuses operator grants outside the desktop channel.
   const created = await fetch(fixture.info.url + "/api/bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Existing Full grant" }) });
   expect(created.status).toBe(201);
   fullBot = (await created.json() as any).bot;
@@ -151,7 +152,7 @@ beforeAll(async () => {
   closeSync(log);
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    try { if ((await fetch(fixture.info.url + "/api/health")).ok) return; } catch { /* starting */ }
+    try { if ((await fetch(fixture.info.url + "/api/health")).ok) return; } catch {}
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error("isolated trust server did not start");
