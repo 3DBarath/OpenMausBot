@@ -1092,7 +1092,7 @@
   "settings.sendKey.title": "Enviar mensagens com",
   "settings.sendKey.subtitle": "Escolha Shift+Enter ou {key} para que Enter comece uma nova linha, útil quando seu método de entrada confirma o texto com Enter, como na digitação em japonês. {key} envia em qualquer opção. Só neste dispositivo.",
   "settings.userBubbles.title": "Colorir minhas mensagens",
-  "settings.userBubbles.subtitle": "Em uma conversa individual, suas mensagens são preenchidas com um degradê da cor daquele bot. Os grupos mantêm o balão neutro.",
+  "settings.userBubbles.subtitle": "Em uma conversa individual, suas mensagens são preenchidas com a cor daquele bot. Os grupos mantêm o balão neutro.",
   "settings.userBubbles.aria": "Colorir minhas mensagens com a cor do bot",
   "settings.sidebarDensity.subtitle": "Quanto espaço cada bot e conversa ocupa na barra lateral, só neste dispositivo. “Só avatares” é o mesmo que recolher a barra lateral pelo cabeçalho dela.",
   "settings.advancedMode.title": "Modo avançado",

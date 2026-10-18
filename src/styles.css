@@ -2222,9 +2222,6 @@ button:disabled.bg-danger {
 .bot-identity[data-bot-color="teal"] { color: var(--identity-teal); }
 .bot-identity[data-bot-color="coral"] { color: var(--identity-coral); }
 
-.user-bubble-colored {
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
-}
 .user-bubble-colored .mention-highlight {
   color: var(--color-ink);
   background: color-mix(in srgb, var(--mention-color) 22%, var(--color-inset));

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { contrastRatio, relativeLuminance, toOklch } from "./color-contrast";
+import { contrastRatio, toOklch } from "./color-contrast";
 import { MAUS_COLORS, MAUS_COLOR_NAMES } from "./mascot";
 import { SKIN_IDS } from "./skins";
 import {
@@ -31,14 +31,11 @@ function hueDistance(a: number, b: number): number {
 }
 
 describe("user bubble tone", () => {
-  it.each(MAUS_COLOR_NAMES)("fills %s with a gradient that stays on the bot's hue", (color) => {
+  it.each(MAUS_COLOR_NAMES)("fills %s with a solid shade that stays on the bot's hue", (color) => {
     const tone = userBubbleTone(color);
     expect(tone.ink).toBe(color === "yellow" ? "#101410" : "#ffffff");
-    expect(tone.gradient).toBe(`linear-gradient(to bottom left, ${tone.background}, ${tone.deep})`);
-    expect(tone.deep).not.toBe(tone.background);
-    expect(relativeLuminance(tone.deep)).toBeLessThan(relativeLuminance(tone.background));
+    expect(contrastRatio(tone.ink, tone.background)).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
     expect(hueDistance(toOklch(tone.background).h, toOklch(MAUS_COLORS[color]).h)).toBeLessThanOrEqual(8);
-    expect(hueDistance(toOklch(tone.deep).h, toOklch(MAUS_COLORS[color]).h)).toBeLessThanOrEqual(20);
     if (tone.ink === "#ffffff" && contrastRatio("#ffffff", MAUS_COLORS[color]) >= BUBBLE_TEXT_MIN) {
       expect(tone.background).toBe(MAUS_COLORS[color]);
     }
@@ -47,7 +44,7 @@ describe("user bubble tone", () => {
   it("keeps yellow bright with dark text instead of darkening it to olive", () => {
     const tone = userBubbleTone("yellow");
     expect(toOklch(tone.background).l).toBeGreaterThan(toOklch(MAUS_COLORS.yellow).l);
-    expect(contrastRatio(tone.ink, tone.deep)).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+    expect(contrastRatio(tone.ink, tone.background)).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
   });
 
   it.each(SKIN_IDS.flatMap((id) => MAUS_COLOR_NAMES.map((color) => [id, color] as const)))(
@@ -56,19 +53,18 @@ describe("user bubble tone", () => {
       const tone = userBubbleTone(color);
       const page = skin(id)["--color-app"];
       expect(page, id).toMatch(/^#[0-9a-f]{6}$/i);
-      for (const [end, fill] of [["light end", tone.background], ["deep end", tone.deep]] as const) {
-        expect(contrastRatio(tone.ink, fill), `body, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.secondary, fill), `secondary, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.tertiary, fill), `tertiary, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.accent, fill), `link, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.danger, fill), `danger, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.success, fill), `success, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.hairline, fill), `hairline, ${end}`).toBeGreaterThanOrEqual(3);
-        expect(contrastRatio(tone.focus, fill), `focus, ${end}`).toBeGreaterThanOrEqual(3);
-        const quote = quoteSurface(tone.inset, fill);
-        expect(contrastRatio(tone.accent, quote), `quote name, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-        expect(contrastRatio(tone.secondary, quote), `quote snippet, ${end}`).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-      }
+      const fill = tone.background;
+      expect(contrastRatio(tone.ink, fill), "body").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.secondary, fill), "secondary").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.tertiary, fill), "tertiary").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.accent, fill), "link").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.danger, fill), "danger").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.success, fill), "success").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.hairline, fill), "hairline").toBeGreaterThanOrEqual(3);
+      expect(contrastRatio(tone.focus, fill), "focus").toBeGreaterThanOrEqual(3);
+      const quote = quoteSurface(tone.inset, fill);
+      expect(contrastRatio(tone.accent, quote), "quote name").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
+      expect(contrastRatio(tone.secondary, quote), "quote snippet").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
       expect(contrastRatio(tone.tertiary, tone.background)).toBeLessThanOrEqual(contrastRatio(tone.secondary, tone.background));
       expect(contrastRatio(tone.ink, tone.inset), "code").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
       expect(contrastRatio(tone.secondary, tone.inset), "code secondary").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
