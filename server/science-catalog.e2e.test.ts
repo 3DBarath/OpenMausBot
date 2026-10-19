@@ -41,7 +41,7 @@ describe("science catalog connectors", () => {
 
   it("a relay refusal after Max ends leaves the entry stored and not needing sign-in", async () => {
     relay.setLocked(true);
-    expect(await api("POST", "/api/mcp/servers/pubmed/test")).toMatchObject({ ok: false });
+    expect(await api("POST", "/api/mcp/servers/pubmed/test")).toMatchObject({ ok: false, status: 402 });
     expect((await api("GET", "/api/mcp/servers")).servers.find((s: { name: string }) => s.name === "pubmed")).toMatchObject({ auth: "signed-in" });
   });
 });

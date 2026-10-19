@@ -147,6 +147,18 @@ describe("ScienceCatalog", () => {
     expect(callbacks.onServersChanged).toHaveBeenCalled();
   });
 
+  it("Connect the public databases carries on past a failure and marks the tile that failed", async () => {
+    await mount();
+    const base = fixture.api.getMockImplementation()!;
+    fixture.api.mockImplementation(async (path: string, init?: RequestInit) => (path === "/api/mcp/servers/chembl/test" ? { ok: false, error: "down" } : base(path, init)));
+    await act(async () => button("Connect the 5 public databases")!.click());
+    await settle();
+    const enabled = mutations().filter(([m, , b]) => m === "PATCH" && b.enabled === true).map(([, p]) => p.split("/").pop());
+    expect(enabled).toEqual(["pubmed", "biorxiv", "opentargets", "clinicaltrials"]);
+    expect(tile("chembl").querySelector('[role="alert"]')!.textContent).toContain("down.");
+    expect(button("Connect the last public database")!.disabled).toBe(false);
+  });
+
   it("switches from teaser to served without remounting", async () => {
     catalog = SCIENCE_TEASER;
     await mount({ search: "pub" });

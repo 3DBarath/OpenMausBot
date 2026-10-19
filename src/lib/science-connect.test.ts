@@ -127,17 +127,39 @@ describe("science connect flows", () => {
     expect(updateMcpServers).toHaveBeenCalledTimes(1);
   });
 
-  it("Connect the public databases goes one at a time, skips connected ones and stops at a failure", async () => {
-    const entries = ["pubmed", "chembl", "clinicaltrials"].map(pub);
-    const order: string[] = [];
-    const { deps } = setup({
+  it("Connect the public databases goes one at a time, skips connected ones and carries on after a failure", async () => {
+    const entries = ["pubmed", "chembl", "opentargets", "clinicaltrials"].map(pub);
+    const { deps, calls } = setup({
       servers: [{ name: "pubmed", url: `${base}/pubmed/mcp/`, enabled: true, catalog: { id: "pubmed", auth: "cloud" } }],
-      handlers: { "POST /api/mcp/servers/chembl/test": () => { order.push("chembl"); return { ok: false, error: "down" }; } },
+      handlers: { "POST /api/mcp/servers/chembl/test": () => ({ ok: false, error: "down", status: 503 }) },
     });
     const result = await connectPublic(entries, deps);
-    expect(result.pubmed).toEqual({ ok: true, error: null });
-    expect(result.chembl!.ok).toBe(false);
-    expect(result.clinicaltrials).toBeUndefined();
-    expect(order).toEqual(["chembl"]);
+    expect(result).toEqual({
+      pubmed: { ok: true, error: null },
+      chembl: { ok: false, error: t("science.testFailed", { reason: "down." }) },
+      opentargets: { ok: true, error: null },
+      clinicaltrials: { ok: true, error: null },
+    });
+    expect(calls.filter(([m]) => m === "POST" || m === "PATCH").map(([m, p]) => `${m} ${p}`)).toEqual([
+      "POST /api/mcp/servers", "POST /api/mcp/servers/chembl/test",
+      "POST /api/mcp/servers", "POST /api/mcp/servers/opentargets/test", "PATCH /api/mcp/servers/opentargets",
+      "POST /api/mcp/servers", "POST /api/mcp/servers/clinicaltrials/test", "PATCH /api/mcp/servers/clinicaltrials",
+    ]);
+  });
+
+  it.each([
+    [402, "science.needsMax"],
+    [401, "science.relaySignInEnded"],
+  ] as const)("a relay %i stops Connect the public databases, since every database would fail", async (status, key) => {
+    const entries = ["pubmed", "chembl", "clinicaltrials"].map(pub);
+    const { deps, calls } = setup({ handlers: { "POST /api/mcp/servers/pubmed/test": () => ({ ok: false, error: `The server answered HTTP ${status}.`, status }) } });
+    const result = await connectPublic(entries, deps);
+    expect(result).toEqual({ pubmed: { ok: false, error: t(key) } });
+    expect(calls.some(([, p]) => p.includes("chembl") || p.includes("clinicaltrials"))).toBe(false);
+  });
+
+  it("a 401 from a vendor's own server is that server's alone", async () => {
+    const { deps } = setup({ handlers: { "POST /api/mcp/servers/someoauth/test": () => ({ ok: false, error: "The server answered HTTP 401.", status: 401 }) } });
+    expect(await connectEntry(oauthEntry, deps)).toEqual({ ok: false, error: t("science.testFailed", { reason: "The server answered HTTP 401." }) });
   });
 });

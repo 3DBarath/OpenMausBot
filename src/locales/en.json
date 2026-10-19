@@ -5979,6 +5979,7 @@
   "science.getMax": "Get Max · {price}/month",
   "science.getMaxNoPrice": "Get Max",
   "science.needsMax": "Needs Max",
+  "science.relaySignInEnded": "MausBot Cloud didn’t accept this computer’s sign-in. Check Settings → MausBot Cloud.",
   "science.upgradeFailed": "Your payment didn't go through, so your plan hasn't changed. Check your card on your Plan page.",
   "science.upgradeError": "Max couldn't be added right now. Your plan hasn't changed. Try again.",
   "science.upgradeUnknown": "Max couldn’t be confirmed yet. Check your plan in Settings → MausBot Cloud.",

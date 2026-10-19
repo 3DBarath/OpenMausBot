@@ -1,4 +1,5 @@
 import { benchlingTenantUrl, type CatalogEntry } from "../../shared/connector-catalog";
+import type { LocaleKey } from "@/locales";
 import { t } from "./i18n";
 import { updateMcpServers } from "./mcp-servers";
 import { runMcpSignIn, type McpSignInStatus } from "./mcp-sign-in";
@@ -13,7 +14,9 @@ export interface ConnectDeps {
   onSignIn(status: McpSignInStatus | null, complete?: (result: McpSignInStatus) => void): void;
 }
 
-export type ConnectResult = { ok: true } | { ok: false; error: string | null };
+export type ConnectResult = { ok: true } | { ok: false; error: string | null; relayRefused?: true };
+
+const RELAY_REFUSALS: Partial<Record<number, LocaleKey>> = { 401: "science.relaySignInEnded", 402: "science.needsMax" };
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 const serverPath = (name: string) => `/api/mcp/servers/${encodeURIComponent(name)}`;
@@ -63,7 +66,7 @@ export async function connectEntry(entry: CatalogEntry, deps: ConnectDeps, tenan
       if (signedIn.phase !== "succeeded") return { ok: false, error: signedIn.message || t("mcp.auth.failed") };
     }
 
-    let tested: { ok?: boolean; error?: string };
+    let tested: { ok?: boolean; error?: string; status?: number };
     try {
       tested = await deps.api(`${serverPath(name)}/test`, { method: "POST", signal: deps.signal });
     } catch (cause) {
@@ -71,6 +74,8 @@ export async function connectEntry(entry: CatalogEntry, deps: ConnectDeps, tenan
       tested = { ok: false, error: message(cause) };
     }
     if (!tested.ok) {
+      const refusal = entry.auth === "cloud" && tested.status ? RELAY_REFUSALS[tested.status] : undefined;
+      if (refusal) return { ok: false, error: t(refusal), relayRefused: true };
       const reason = (tested.error ?? "").trim();
       return { ok: false, error: t("science.testFailed", { reason: reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason }) };
     }
@@ -98,8 +103,8 @@ export async function connectPublic(
       continue;
     }
     const result = await connectEntry(entry, deps);
-    results[entry.id] = result.ok ? { ok: true, error: null } : result;
-    if (!result.ok) break;
+    results[entry.id] = result.ok ? { ok: true, error: null } : { ok: false, error: result.error };
+    if (!result.ok && result.relayRefused) break;
   }
   return results;
 }
