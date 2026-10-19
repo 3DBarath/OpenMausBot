@@ -58,15 +58,15 @@ in production (derived from the Admin's public origin).
 
 ## 2. Admin routes
 
-All JSON. Errors are `{ "error": <code>, "message"?: string }`.
+All JSON. Desktop routes (`/api/cloud/desktop/*`) answer errors in the house shape `{ "error": <code>, "errorDescription"?: string }` and use `invalid_token` for 401. Relay routes (`{scienceRelayBase}/*`) answer `{ "error": <code> }` and use `unauthorized` for 401.
 
 | Route | Auth | Result |
 |---|---|---|
-| `GET /api/cloud/desktop/catalog` | `Bearer omc_…` (desktop account token) | 200 `CatalogResponse` for any signed-in account (locked unless the account tier allows science). 401 `unauthorized`. |
-| `POST /api/cloud/desktop/services/science` | `Bearer omc_…` | 200 `{ "url": scienceRelayBase, "token": "omb_sd_…", "expiresAt": ISO }` when allowed. 402 `subscription_inactive` otherwise. Same per-device issue limit as `services/x`. |
+| `GET /api/cloud/desktop/catalog` | `Bearer omc_…` (desktop account token) | 200 `CatalogResponse` for any signed-in account (locked unless the account tier allows science). 401 `invalid_token`. |
+| `POST /api/cloud/desktop/services/science` | `Bearer omc_…` | 200 `{ "url": scienceRelayBase, "token": "omb_sd_…", "expiresAt": <epoch ms> }` when allowed. 402 `subscription_inactive` otherwise. Same per-device issue limit as `services/x`. |
 | `GET {scienceRelayBase}/catalog` | `Bearer omb_sd_…` or the Cloud home's science token | 200 `CatalogResponse` (locked by the tier at request time). |
 | `POST\|GET\|DELETE {scienceRelayBase}/{db}/mcp` | `Bearer omb_sd_…` or the Cloud home's science token | Streamable HTTP MCP, forwarded to PR B. 401 `unauthorized`; 402 `subscription_inactive` (no science allowance); 404 `unknown_server`; 429 `quota_exceeded`; 502 `upstream_unavailable`. |
-| `POST /api/cloud/desktop/upgrade` | `Bearer omc_…`, body `{ "plan": "max", "source": "science" }` | 200 `{ "status": "upgraded", "tier": "max", "trial": boolean }`; 402 `payment_failed` (plan unchanged); 409 `not_subscribed` (use checkout); 409 `already_on_plan`. |
+| `POST /api/cloud/desktop/upgrade` | `Bearer omc_…`, body `{ "plan": "max", "source": "science" }` | 200 `{ "status": "upgraded", "tier": "max", "trial": boolean }`; 202 `{ "status": "pending" }` (Dodo is still taking the payment; poll the session); 402 `payment_failed` (plan unchanged); 409 `not_subscribed` (use checkout); 409 `already_on_plan`; 409 `plan_change_unavailable` (renewal off, payment on hold, or trial past its end). |
 
 `{db}` ∈ `pubmed | biorxiv | chembl | opentargets | clinicaltrials`.
 
@@ -82,9 +82,9 @@ Route details:
 - `"science"` is added to the Admin's known checkout/upgrade `source` values
   (funnel tracking).
 
-Cloud homes: the Admin sets the Fly secrets `OMB_CLOUD_SCIENCE_URL`
-(= `scienceRelayBase`) and `OMB_CLOUD_SCIENCE_TOKEN` on every paid home, the
-same way it sets `OMB_CLOUD_X_URL` / `OMB_CLOUD_X_TOKEN`. The tier is checked
+Cloud homes: the Admin sets `OMB_CLOUD_SCIENCE_URL` (= `scienceRelayBase`,
+machine environment) and the secret `OMB_CLOUD_SCIENCE_TOKEN` on every paid
+home, the same way it sets `OMB_CLOUD_X_URL` / `OMB_CLOUD_X_TOKEN`. The tier is checked
 per request, so a home that is not on Max gets a locked catalog and 402 from
 the relay.
 

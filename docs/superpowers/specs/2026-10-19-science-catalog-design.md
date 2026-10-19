@@ -207,8 +207,8 @@ no sign-in was completed):
 - New Admin routes, following `cloud-desktop.ts` / `cloud-services.ts`:
   - desktop: `GET /api/cloud/desktop/catalog`, account token (`omc_…`) held by
     Electron main, as `xResearchAccess()` does
-  - Cloud home: `GET /api/cloud/services/catalog`, machine token, resolved with
-    `serviceAccess`
+  - Cloud home: `GET {OMB_CLOUD_SCIENCE_URL}/catalog` with the home's science
+    token, resolved with `serviceAccess` (see the contracts doc)
 - Response: sections, each `{ id, title, locked, entries }`. An entry carries
   `id, name, group, tag, description, domain, auth ("cloud" | "oauth" |
   "tenant"), docsUrl` and, **only when the section is unlocked**, `url` (or
