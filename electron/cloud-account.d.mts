@@ -54,6 +54,8 @@ export interface CloudHomeLook { name: string; color: import("./cloud-buy.mjs").
  * again); `rate-limited`; or `failed` (nothing was opened). */
 export type CloudCheckoutOutcome = "opened" | "signing-in" | "conflict" | "rate-limited" | "failed";
 export interface CloudCheckoutResult { outcome: CloudCheckoutOutcome; state: CloudAccountState }
+export type CloudUpgradeOutcome = "upgraded" | "pending" | "payment-failed" | "unavailable" | "not-subscribed" | "already-on-plan" | "rate-limited" | "failed";
+export type CloudUpgradeResult = { outcome: CloudUpgradeOutcome; state: CloudAccountState } | CloudCheckoutResult;
 export interface CloudAccountBridge {
   state(): Promise<CloudAccountState>;
   begin(): Promise<CloudAccountState>;
@@ -166,6 +168,11 @@ export interface CloudAccountClient {
   growDisk(sizeGb: number): Promise<{ supported: false } | { supported: true; refused: true } | { supported: true; disk: { gb: number; maxGb: number } }>;
   /** This sign-in's own X research relay access while its plan is paid; null without one. */
   xResearchAccess(): Promise<{ url: string; token: string } | null>;
+  /** The Admin's science catalog; null with no sign-in. */
+  scienceCatalog(): Promise<unknown | null>;
+  /** This sign-in's own science relay access; null without a sign-in, an active plan or the service. */
+  scienceAccess(): Promise<{ url: string; token: string; expiresAt: number } | null>;
+  upgrade(plan: string, source: string): Promise<CloudUpgradeResult>;
   close(): void;
 }
 export declare function createCloudAccountClient(options: {

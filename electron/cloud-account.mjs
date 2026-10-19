@@ -15,6 +15,7 @@ export function cloudTarget(env = process.env) {
 const TOKEN = /^omc_[A-Za-z0-9_-]{43}$/;
 const CODE = /^[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/;
 const PRIVATE_CODE = /^[A-Za-z0-9_-]{43}$/;
+const SCIENCE_TOKEN = /^omb_sd_[A-Za-z0-9_-]{43}$/;
 const TIER = /^[a-z][a-z0-9-]{0,23}$/;
 const REFRESH_MS = 60_000;
 const STEADY_MS = 15 * 60_000;
@@ -25,7 +26,7 @@ const CHECKING_AFTER = 2;
 const MAX_ENROLL_SECONDS = 1800;
 const OFFER_MS = 10 * 60_000, OFFER_RETRY_MS = 30_000;
 const CHECKOUT_WATCH_MS = 30 * 60_000, CHECKOUT_KEPT_MS = 24 * 3600_000;
-export const CHECKOUT_SOURCES = Object.freeze(["app_card", "app_howto", "app_menu", "app_settings", "app_routines", "update_popup", "app_onboarding"]);
+export const CHECKOUT_SOURCES = Object.freeze(["app_card", "app_howto", "app_menu", "app_settings", "app_routines", "update_popup", "app_onboarding", "science"]);
 const CHECKOUT_ORIGIN = "https://checkout.dodopayments.com", TEST_CHECKOUT_ORIGIN = "https://test.checkout.dodopayments.com";
 /** Only Dodo's own HTTPS checkout origin, with no credentials and no fragment; anything else is never opened. Staging's
  * Admin sells in Dodo's test mode, so its checkouts are only Dodo's test page. */
@@ -352,6 +353,34 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     schedule(refresh, WATCH_REFRESH_MS);
     return { outcome: "opened", state: state() };
   }
+  /** Runs a signed-in desktop request; a 401 `invalid_token` means the sign-in ended, so the session is read again and the error still surfaces. */
+  async function signedRequest(signedIn, route, options) {
+    try { return await request(route, { ...options, token: signedIn.token }); }
+    catch (error) { if (signInEnded(error)) await refresh().catch(() => {}); throw error; }
+  }
+  /** Choosing Max from a paid plan: every answer of the Admin's upgrade route becomes one outcome; only `not_subscribed` goes on to checkout. */
+  async function upgrade(plan, source) {
+    if (typeof plan !== "string" || !TIER.test(plan) || !CHECKOUT_SOURCES.includes(source)) throw new Error("Invalid Cloud upgrade.");
+    if (state().status !== "connected" || !grant) throw new Error("Sign in to MausBot Cloud before choosing a plan.");
+    const signedIn = grant;
+    const done = async outcome => (grant === signedIn ? { outcome, state: await refresh() } : { outcome: "failed", state: state() });
+    let result;
+    try { result = await request("upgrade", { method: "POST", body: { plan, source }, token: signedIn.token }); }
+    catch (error) {
+      if (error?.opaque) return { outcome: "failed", state: state() };
+      if (error?.status === 402 && error.code === "payment_failed") return { outcome: "payment-failed", state: state() };
+      if (error?.status === 409 && error.code === "not_subscribed") return openCheckout(plan, source).catch(() => ({ outcome: "not-subscribed", state: state() }));
+      if (error?.status === 409 && error.code === "already_on_plan") return done("already-on-plan");
+      if (error?.status === 409 && error.code === "plan_change_unavailable") return { outcome: "unavailable", state: state() };
+      if (error?.status === 429) return { outcome: "rate-limited", state: state() };
+      if (signInEnded(error)) return { outcome: "failed", state: await refresh() };
+      return { outcome: "failed", state: state() };
+    }
+    if (result?.cloudContractVersion !== 1) return { outcome: "failed", state: state() };
+    if (result.status === "upgraded") return done("upgraded");
+    if (result.status === "pending") return done("pending");
+    return { outcome: "failed", state: state() };
+  }
   /** Reopen checkout: the same page again, never a new one from the Admin; only with none kept here (the browser
    * sign-in led to it, or the app restarted) is the Admin asked, and it reopens the open one. Watches 30 minutes more. */
   async function reopenCheckout(plan, source) {
@@ -484,6 +513,29 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       }
       return { url: result.url, token: result.token };
     },
+    /** The science catalog as the Admin serves it (never kept); null with no sign-in. */
+    async scienceCatalog() {
+      const current = grant;
+      if (!current) return null;
+      const result = await signedRequest(current, "catalog");
+      if (result?.cloudContractVersion !== 1 || !Number.isSafeInteger(result.version) || !Array.isArray(result.sections)) throw new Error("Invalid Cloud catalog.");
+      const { cloudContractVersion: _version, ...catalog } = result;
+      return catalog;
+    },
+    /** This sign-in's own science relay access while its plan allows it: `{ url, token, expiresAt }` for the local server,
+     * or null with no sign-in, no active plan (402) or no science service (404). The relay is only the Cloud's own exact
+     * route and the token goes nowhere else. Never kept on disk or logged. */
+    async scienceAccess() {
+      const current = grant;
+      if (!current) return null;
+      let result;
+      try { result = await signedRequest(current, "services/science", { method: "POST", body: {} }); }
+      catch (error) { if (error?.status === 402 || error?.status === 404) return null; throw error; }
+      if (result?.cloudContractVersion !== 1 || result.url !== `${origin}/api/cloud/services/science` || typeof result.token !== "string" ||
+        !SCIENCE_TOKEN.test(result.token) || !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= now()) throw new Error("Invalid Cloud science response.");
+      return { url: result.url, token: result.token, expiresAt: result.expiresAt };
+    },
+    upgrade,
     close() { closed = true; reset(); },
   };
 }
