@@ -26,8 +26,10 @@ import {
 } from "@/lib/connector-status";
 import { BotAvatar } from "./Avatar";
 import { SidebarPopoverMenu } from "./SidebarPopoverMenu";
-import { appCategoryLabel, CATEGORY_SECTION_SIZE, catalogSections, connectorDescription, inCategory, rankCategories } from "@/lib/app-catalog";
+import { appCategoryLabel, CATEGORY_SECTION_SIZE, catalogSections, connectorDescription, inCategory, rankCategories, withSciencePill } from "@/lib/app-catalog";
 import { McpServersPanel } from "./McpServersPanel";
+import { AppsNotices } from "./AppsNotices";
+import { ScienceCatalog, type ScienceConnection } from "./ScienceCatalog";
 import { HighLevelCard } from "./HighLevelCard";
 import { openBotSettings } from "./bot-panel/panel-link";
 import { ServiceIcon } from "./ServiceIcon";
@@ -182,7 +184,7 @@ export interface CatalogPagination {
   reason?: string;
 }
 
-export type AppsFilter = "all" | "connected" | "mcp";
+export type AppsFilter = "all" | "connected" | "mcp" | "science";
 
 export const APPS_PREVIEW_COUNT = 48;
 
@@ -224,13 +226,14 @@ export function PluginsPanel() {
   );
   const [error, setError] = useState<string | { key: LocaleKey } | null>(null);
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState<"marketplace" | "connected">("marketplace");
+  const [tab, setTab] = useState<"marketplace" | "connected" | "science">("marketplace");
   const [showAllApps, setShowAllApps] = useState(false);
   const [whopConnected, setWhopConnected] = useState<boolean | null>(null);
   const [whopRefresh, setWhopRefresh] = useState(0);
   const [category, setCategory] = useState<string | null>(null);
   // Appended after the older state so tests that seed state by call order keep their indices.
   const [highLevelConnected, setHighLevelConnected] = useState<boolean | null>(null);
+  const [scienceConnected, setScienceConnected] = useState<ScienceConnection[]>([]);
 
   const polls = useRef(new Map<string, () => void>());
   const statusGenerations = useRef(new Map<string, number>());
@@ -486,7 +489,7 @@ export function PluginsPanel() {
     (c) => !search || `${c.label} ${c.slug} ${connectorDescription(c)}`.toLowerCase().includes(search.toLowerCase()),
   );
   const isConnected = (slug: string) => Boolean(status[slug]?.connected || status[slug]?.accounts?.length);
-  const filter: AppsFilter = surface === "mcp" ? "mcp" : tab === "connected" ? "connected" : "all";
+  const filter: AppsFilter = surface === "mcp" ? "mcp" : tab === "marketplace" ? "all" : tab;
   const whopMatches = !search || `whop ${t("whop.description")}`.toLowerCase().includes(search.toLowerCase().trim());
   const showWhop = whopMatches && (filter === "all" || (filter === "connected" && whopConnected !== false));
   const highLevelMatches = !search || `highlevel high level growably crm ${t("highlevel.description")}`.toLowerCase().includes(search.toLowerCase().trim());
@@ -495,7 +498,7 @@ export function PluginsPanel() {
     .map((card, index) => ({ card, index }))
     .sort((a, b) => Number(isConnected(b.card.slug)) - Number(isConnected(a.card.slug)) || a.index - b.index)
     .map(({ card }) => card);
-  const connectedCount = Object.values(status).filter(hasActiveConnection).length + Number(whopConnected === true) + Number(highLevelConnected === true);
+  const connectedCount = Object.values(status).filter(hasActiveConnection).length + Number(whopConnected === true) + Number(highLevelConnected === true) + scienceConnected.length;
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
   const close = () => dispatch({ type: "togglePlugins", open: false });
   const setupNotice = connectorSetupNotice({ configured, stale, setup, remoteClient });
@@ -508,11 +511,11 @@ export function PluginsPanel() {
       dispatch({ type: "togglePlugins", open: true, surface: "mcp" });
       return;
     }
-    setTab(next === "connected" ? "connected" : "marketplace");
+    setTab(next === "connected" || next === "science" ? next : "marketplace");
     if (surface !== "apps") dispatch({ type: "togglePlugins", open: true, surface: "apps" });
   };
 
-  const ranked = rankCategories(cards ?? []);
+  const ranked = withSciencePill(rankCategories(cards ?? []));
   const moreCategories = ranked.more;
   const categoryInMore = category !== null && moreCategories.includes(category);
   const inCategoryView = filter === "all" && category !== null;
@@ -524,7 +527,10 @@ export function PluginsPanel() {
   const allCards = sectioned ? allSection?.cards ?? [] : categoryCards;
   const allCapped = sectioned && !showAllApps && allCards.length > APPS_PREVIEW_COUNT;
   const allShown = allCapped ? allCards.slice(0, APPS_PREVIEW_COUNT) : allCards;
-  const connectedCards = (cards ?? []).filter((card) => hasActiveConnection(status[card.slug]));
+  const connectedIcons = [
+    ...(cards ?? []).filter((card) => hasActiveConnection(status[card.slug])),
+    ...scienceConnected.map((entry) => ({ slug: entry.id, label: entry.name, logo: null, domain: entry.domain })),
+  ].slice(0, 4);
   const pickCategory = (next: string | null) => {
     setCategory(next);
     setTab("marketplace");
@@ -572,9 +578,9 @@ export function PluginsPanel() {
                   filter === "connected" ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink",
                 )}
               >
-                {connectedCards.length > 0 && (
+                {connectedIcons.length > 0 && (
                   <span aria-hidden="true" className="flex -space-x-1.5 rtl:space-x-reverse">
-                    {connectedCards.slice(0, 4).map((card) => (
+                    {connectedIcons.map((card) => (
                       <span key={card.slug} className="flex size-5 items-center justify-center overflow-hidden rounded-md bg-menu ring-2 ring-menu">
                         <ServiceIcon card={card} className="size-5 rounded-md" />
                       </span>
@@ -639,6 +645,15 @@ export function PluginsPanel() {
             >
               {t("apps.filter.all")}
             </button>
+            <button
+              type="button"
+              data-apps-filter="science"
+              aria-pressed={filter === "science"}
+              onClick={() => chooseFilter("science")}
+              className={cn(pill, pillTone(filter === "science"))}
+            >
+              {t("apps.filter.science")}
+            </button>
             {ranked.inline.map((name) => (
               <button
                 key={name}
@@ -676,65 +691,27 @@ export function PluginsPanel() {
               </span>
             </div>
           )}
-          {setupNotice && filter !== "mcp" && (
-            <div
-              className={cn(
-                "mb-3 rounded-xl px-4 py-3 text-[13px]",
-                setupNotice.tone === "warning" ? "bg-warning/10 text-warning" : "bg-control/50 text-ink-secondary",
-              )}
-            >
-              {t(whopConnected ? "whop.otherAppsSetup" : setupNotice.key)}{" "}
-              <button
-                className={cn(
-                  "font-medium underline underline-offset-2",
-                  setupNotice.tone === "info" && "text-ink",
-                  remoteClient && "hidden",
-                )}
-                onClick={() => {
-                  close();
-                  dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
-                }}
-              >
-                {t("connectors.openSettings")}
-              </button>
-            </div>
-          )}
-          {botsWithoutApps.length > 0 && (
-            <div className="mb-3 rounded-xl bg-control/50 px-4 py-3 text-[12.5px] leading-relaxed text-ink-secondary">
-              <span className="font-medium text-ink">{t("connectors.perBot.title")}</span>{" "}
-              {t("connectors.perBot.body")}
-              <div className="mt-2 flex flex-wrap gap-2">
-                {botsWithoutApps.map((candidate) => (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    onClick={() => dispatch({ type: "updateBot", botId: candidate.id, patch: { composio: true } })}
-                    className={cn(pill, "bg-control text-ink hover:bg-raised-hover")}
-                  >
-                    {t("connectors.perBot.allow", { name: candidate.name })}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {configured && !remoteClient && source === "curated" && mode === "self-hosted" && filter !== "mcp" && (
-            <div className="mb-3 text-[12px] text-ink-secondary">
-              {t("connectors.featuredBefore")}{" "}
-              <button
-                className="underline underline-offset-2 hover:text-ink"
-                onClick={() => {
-                  close();
-                  dispatch({ type: "toggleAppSettings", open: true });
-                }}
-              >
-                {t("connectors.updateKey")}
-              </button>{" "}
-              {t("connectors.featuredAfter")}
-            </div>
-          )}
+          <AppsNotices
+            filter={filter}
+            setupNotice={setupNotice}
+            botsWithoutApps={botsWithoutApps}
+            remoteClient={remoteClient}
+            whopConnected={whopConnected}
+            featured={configured && !remoteClient && source === "curated" && mode === "self-hosted"}
+            pillClass={pill}
+            close={close}
+            dispatch={dispatch}
+          />
           {error && <div role="alert" className="mb-3 rounded-xl bg-danger/10 px-3 py-2 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</div>}
 
-          {filter !== "mcp" && (
+          <ScienceCatalog
+            view={filter === "science" ? "science" : filter === "connected" ? "connected" : filter === "all" && category === null ? "all" : "hidden"}
+            search={search}
+            onViewAll={() => chooseFilter("science")}
+            onConnections={setScienceConnected}
+            onServersChanged={() => setWhopRefresh((value) => value + 1)}
+          />
+          {filter !== "mcp" && filter !== "science" && (
             <div data-apps-grid className="@container flex flex-col gap-7 pt-1">
               {sections.filter((section) => section.kind !== "all").map((section) => section.kind === "connected" ? (
                 <AppsSection
@@ -788,7 +765,7 @@ export function PluginsPanel() {
                         </button>
                       </div>
                     )}
-                    {cards !== null && allShown.length === 0 && !nativeCardsShown && sections.length <= 1 && (
+                    {cards !== null && allShown.length === 0 && !nativeCardsShown && sections.length <= 1 && !(filter === "connected" && scienceConnected.length > 0) && (
                       <div className="flex min-h-40 flex-col items-center justify-center text-center">
                         <div className="text-[14px] font-medium text-ink">
                           {filter === "connected" ? connectedEmptyCopy.title : t("connectors.noAppsFound")}
@@ -823,9 +800,9 @@ export function PluginsPanel() {
             </div>
           )}
 
-          {filter !== "connected" && category === null && (
+          {filter !== "connected" && filter !== "science" && category === null && (
             <div className={cn(filter === "all" && "mt-8 border-t border-hairline/30 pt-6", filter === "mcp" && "pt-1")}>
-              <McpServersPanel embedded hideWhop={filter === "all"} />
+              <McpServersPanel embedded hideWhop={filter === "all"} refreshKey={whopRefresh} />
             </div>
           )}
         </div>

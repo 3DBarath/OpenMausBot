@@ -22,7 +22,7 @@ vi.mock("@/lib/mcp-servers", () => ({ updateMcpServers: vi.fn() }));
 vi.mock("./bot-panel/panel-link", () => ({ openBotSettings: fixture.openBotSettings }));
 vi.mock("./GetMaxButton", () => ({ GetMaxButton: () => createElement("button", { "data-get-max": "" }, "Get Max") }));
 
-import { ScienceCatalog } from "./ScienceCatalog";
+import { ScienceCatalog, forgetServedScience } from "./ScienceCatalog";
 
 const cloud = (id: string, name: string, group: string, domain: string): CatalogEntry => ({
   id, name, group, tag: "no-account", description: `${name} description`, domain, auth: "cloud", url: `https://relay.example/${id}/mcp`,
@@ -102,6 +102,7 @@ async function mount(props: Props = {}) {
 
 beforeEach(() => {
   setLocale("en");
+  forgetServedScience();
   servers = [];
   catalog = served;
   calls = [];
@@ -263,5 +264,65 @@ describe("ScienceCatalog", () => {
     await mount();
     expect(button("Connect", tile("pubmed"))!.disabled).toBe(true);
     expect(button("Connect the 4 public databases")).toBeDefined();
+  });
+
+  it("shows no upsell before the first response, and keeps the served catalog across mounts", async () => {
+    let release!: () => void;
+    fixture.api.mockImplementation(async (path: string) => {
+      if (path === "/api/mcp/servers") return { servers };
+      await new Promise<void>((resolve) => { release = resolve; });
+      return served;
+    });
+    await mount();
+    expect(host.textContent).not.toContain("Science sources come with Max.");
+    expect(host.querySelector("[data-get-max]")).toBeNull();
+    await act(async () => release());
+    await settle();
+    expect(host.textContent).toContain("public databases run on MausBot Cloud");
+    await act(async () => root.unmount());
+    host.remove();
+    fixture.api.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    expect(host.textContent).toContain("public databases run on MausBot Cloud");
+    expect(host.textContent).not.toContain("Science sources come with Max.");
+  });
+
+  it("keeps the shown catalog when a refetch fails", async () => {
+    await mount();
+    fixture.api.mockImplementation(async () => { throw new Error("offline"); });
+    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    await act(async () => root.render(element({})));
+    await settle();
+    expect(host.textContent).toContain("public databases run on MausBot Cloud");
+  });
+
+  it("disables Turn off while the PATCH is in flight", async () => {
+    servers = [{ name: "pubmed", type: "http", url: "https://relay.example/pubmed/mcp", enabled: true, auth: "signed-in", catalog: { id: "pubmed", auth: "cloud" } }];
+    await mount();
+    const base = fixture.api.getMockImplementation()!;
+    let finish!: () => void;
+    fixture.api.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === "PATCH") await new Promise<void>((resolve) => { finish = resolve; });
+      return base(path, init);
+    });
+    await act(async () => button("Turn off", tile("pubmed"))!.click());
+    expect(tile("pubmed").querySelectorAll("button")[0]!.disabled).toBe(true);
+    expect(button("Turn off", tile("pubmed"))).toBeUndefined();
+    await act(async () => finish());
+    await settle();
+    expect(mutations().filter(([m]) => m === "PATCH")).toHaveLength(1);
+  });
+
+  it("flips Needs Max when access arrives and the revision bumps", async () => {
+    catalog = SCIENCE_TEASER;
+    servers = [{ name: "pubmed", type: "http", url: "https://relay.example/pubmed/mcp", enabled: true, auth: "needs-max", catalog: { id: "pubmed", auth: "cloud" } }];
+    await mount();
+    expect(tile("pubmed").textContent).toContain("Needs Max");
+    catalog = served;
+    servers[0]!.auth = "signed-in";
+    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    await act(async () => root.render(element({})));
+    await settle();
+    expect(tile("pubmed").textContent).not.toContain("Needs Max");
   });
 });
