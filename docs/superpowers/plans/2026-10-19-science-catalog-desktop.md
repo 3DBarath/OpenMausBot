@@ -28,7 +28,7 @@
 1. **Served catalog arriving after the panel opened** (teaser first, Electron's message seconds later): the open Science view becomes connectable on the next config broadcast without reopening, keeping the search text. Test: Task 11 "switches from teaser to served without remounting".
 2. **Signed out or offline**: the bundled teaser shows, Get Max starts sign-in then checkout, and an offline refresh keeps the last served catalog instead of blanking it. Tests: Task 4 "falls back to the teaser" / "keeps the last good catalog", Task 7 "a failed catalog fetch sends nothing", Task 10 "signed out opens checkout".
 3. **A hand-added server with the same URL as a catalog entry**: its tile shows connected, Connect creates no duplicate, Turn off disables that server, and a hand-added relay URL gets the relay token (only there). Tests: Task 8 "matches a hand-added server by address", Task 9 "reuses a hand-added server", Task 5 "injects for any server under the relay base".
-4. **Relay token expiry mid-turn**: the desktop renews at least 15 minutes before `expiresAt` on its regular state refresh, so a new turn never starts with a token about to lapse; an expired held token is never sent; a 401/402 from the relay never marks the entry needs-sign-in or removes it. Tests: Task 7 "renews before expiry", Task 3 "an expired desktop token is not used", Task 5 "a relay refusal leaves the entry alone".
+4. **Relay token expiry mid-turn**: the desktop renews at least 15 minutes before `expiresAt` on its regular state refresh, so a new turn never starts with a token about to lapse, and a renewal never revokes the token a running turn holds (contracts §2); an expired held token is never sent; a 401 `unauthorized` or 402 from the relay never marks the entry needs-sign-in or removes it. Tests: Task 7 "renews before expiry", Task 3 "an expired desktop token is not used", Task 5 "a relay refusal leaves the entry alone".
 5. **The 50-server limit**: stored configs over 20 could not exist, so nothing migrates; a 20-entry config reads unchanged, the 50th add succeeds, the 51st is refused, and a bot may select 50. Tests: Task 2 "allows 50 and refuses the 51st", "a bot may select 50 MCP servers and not 51".
 
 ---
@@ -269,7 +269,7 @@ Run: `pnpm exec vitest run server/connector-catalog.test.ts server/included-serv
 
 - [ ] **Step 3: Implement**
 
-The Cloud home fetch uses `redirect: "error"`, a 10 s timeout and a 64 KiB body cap, and goes through `parseCatalogResponse`; a non-200 or unparseable answer counts as unreachable. A desktop (no env credential) never fetches; Electron's message is its only source. Make the three `server/index.ts` edits exactly as listed so the file does not grow, and the two `store.tsx` edits on their existing lines.
+The Cloud home fetch uses `redirect: "error"`, a 10 s timeout and a 64 KiB body cap, and goes through `parseCatalogResponse` (which ignores unknown top-level fields such as `cloudContractVersion`); a non-200 answer (relay errors are `{ error }`, 401 `unauthorized`) or an unparseable one counts as unreachable. Add a test `"a 401 unauthorized from the relay keeps the last good catalog"`. A desktop (no env credential) never fetches; Electron's message is its only source. Make the three `server/index.ts` edits exactly as listed so the file does not grow, and the two `store.tsx` edits on their existing lines.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -366,19 +366,21 @@ git commit -m "feat(science): inject the relay token for MausBot Cloud servers"
 - Test: `electron/cloud-account.node-test.mjs` (extend its fixture server near `:34` with `catalog`, `services/science` and `upgrade` routes)
 
 **Interfaces:**
-- Produces: `scienceCatalog(): Promise<unknown | null>`; `scienceAccess(): Promise<{ url: string; token: string; expiresAt: number } | null>`; `upgrade(plan: string, source: string): Promise<CloudUpgradeResult>` with `type CloudUpgradeResult = { outcome: "upgraded" | "payment-failed" | "rate-limited" | "failed"; state: CloudAccountState } | CloudCheckoutResult`.
+- Produces: `scienceCatalog(): Promise<unknown | null>`; `scienceAccess(): Promise<{ url: string; token: string; expiresAt: number } | null>`; `upgrade(plan: string, source: string): Promise<CloudUpgradeResult>` with `type CloudUpgradeResult = { outcome: "upgraded" | "pending" | "payment-failed" | "unavailable" | "rate-limited" | "failed"; state: CloudAccountState } | CloudCheckoutResult`.
+
+Desktop routes answer errors as `{ cloudContractVersion, error, errorDescription? }` with 401 `invalid_token`; `request()` already puts `error` in the thrown error's `code`, and `signInEnded` already recognises `invalid_token`. `errorDescription` is not shown: every outcome has its own copy.
 
 - [ ] **Step 1: Write the failing node tests**
 
-- `"science catalog: null signed out, the Admin's JSON signed in, invalid otherwise"`: `GET /api/cloud/desktop/catalog` with the `omc_` bearer; a body without `version: 1` and a `sections` array rejects `/Invalid Cloud catalog/`.
-- `"science access is this sign-in's own relay token while the Cloud allows it"`: 200 `{ url: \`${origin}/api/cloud/services/science\`, token: omb_sd_…43, expiresAt: ISO }` → `{ url, token, expiresAt: ms }`; 402 and 404 → null; another origin, another path, a short token, a past or unparseable `expiresAt` → rejects `/Invalid/`.
-- `"upgrade to Max"`: posts `{ plan: "max", source: "science" }` to `/api/cloud/desktop/upgrade` and refreshes; 200 → `upgraded`; 402 `payment_failed` → `payment-failed`; 409 `not_subscribed` → the checkout result (the fixture's checkout route is hit); 409 `already_on_plan` → `upgraded`; 429 → `rate-limited`; 500 → `failed`; an unknown source throws before any request.
+- `"science catalog: null signed out, the Admin's JSON signed in, invalid otherwise"`: `GET /api/cloud/desktop/catalog` with the `omc_` bearer; 200 `{ cloudContractVersion: 1, version: 1, sections }` → `{ version: 1, sections }`; a missing `cloudContractVersion`, `version` or `sections` array rejects `/Invalid Cloud catalog/`; 401 `{ error: "invalid_token" }` rejects (never null, so it is not mistaken for a locked answer).
+- `"science access is this sign-in's own relay token while the Cloud allows it"`: 200 `{ cloudContractVersion: 1, url: \`${origin}/api/cloud/services/science\`, token: omb_sd_…43, expiresAt: <epoch ms> }` → `{ url, token, expiresAt }`; 402 `subscription_inactive` and 404 → null; 401 `invalid_token` rejects; another origin, another path, a short token, no `cloudContractVersion`, an `expiresAt` in the past, an ISO string or a fraction → rejects `/Invalid/`.
+- `"upgrade to Max"`: posts `{ plan: "max", source: "science" }` to `/api/cloud/desktop/upgrade` and refreshes; 200 `{ cloudContractVersion: 1, status: "upgraded", tier: "max", trial }` → `upgraded`; 202 `{ cloudContractVersion: 1, status: "pending" }` → `pending`; 402 `payment_failed` → `payment-failed`; 409 `not_subscribed` → the checkout result (the fixture's checkout route is hit); 409 `already_on_plan` → `upgraded`; 409 `plan_change_unavailable` → `unavailable`; 401 `invalid_token` → `failed` after a session refresh (as `openCheckout`); 429 → `rate-limited`; 500 → `failed`; an unknown source throws before any request.
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `node --test electron/cloud-account.node-test.mjs` and `pnpm exec vitest run src/lib/cloud-plan.test.ts` — Expected: FAIL.
 
-- [ ] **Step 3: Implement** the three methods with `request()` exactly as `xResearchAccess` uses it. The science response carries no `cloudContractVersion` (contracts §2), so do not require one. `upgrade` validates plan/source like `openCheckout` and needs a connected grant (`"Sign in to MausBot Cloud before choosing a plan."`).
+- [ ] **Step 3: Implement** the three methods with `request()` exactly as `xResearchAccess` uses it, requiring `cloudContractVersion === 1` on every success body (contracts §2). `expiresAt` must be a safe integer later than `now()`; the token matches `/^omb_sd_[A-Za-z0-9_-]{43}$/`. `scienceCatalog` returns the body without `cloudContractVersion`. `upgrade` validates plan/source like `openCheckout` and needs a connected grant (`"Sign in to MausBot Cloud before choosing a plan."`).
 
 - [ ] **Step 4: Run to verify it passes** — same commands, Expected: PASS.
 
@@ -504,27 +506,32 @@ git commit -m "feat(science): connect flows for cloud, oauth and tenant entries"
 - Test: `src/components/McpServersPanel.test.ts`
 
 **Interfaces:**
-- Consumes: `useCloudPlan` (`ProIntroduction.tsx`), `useCloudOffer`, `usd`, `cloudPlanView`; bridge `checkout`, `upgrade` (Tasks 6-7).
+- Consumes: `useCloudPlan` (`ProIntroduction.tsx`), `useCloudOffer`, `usd`, `cloudPlanView`; bridge `checkout`, `upgrade` (Tasks 6-7), `refresh`, `openDashboard`.
 - Produces: `GetMaxButton(props: { className?: string }): JSX.Element | null`.
 
 - [ ] **Step 1: Write the failing tests** (happy-dom render, `window.ogb.cloudAccount` stub)
 
 - `"signed out opens checkout"` and `"a free account opens checkout"`: `checkout("max", "science")`; outcome `failed` shows `cloudAdd.failed`, `rate-limited` shows `cloudAdd.rateLimited`.
 - `"Personal and Pro upgrade in place"`: `upgrade("max", "science")`; `payment-failed` shows `science.upgradeFailed`, `failed` shows `science.upgradeError`.
+- `"a payment still going through waits for Max"` (fake timers): `pending` shows a spinner and `science.upgradePending`, then calls `bridge.refresh()` every 3 s; when a refresh returns `entitlement.tier === "max"` the polling stops and the button disappears; after 3 minutes without Max it stops polling and shows `science.upgradeSlow`; unmounting stops the polling.
+- `"a plan that can't change now points to the Plan page"`: `unavailable` shows `science.planChangeUnavailable` and a `cloudProPopup.manage` ("Manage plan") button that calls `bridge.openDashboard()`.
 - `"a plan needing attention or a new sign-in opens Settings → MausBot Cloud"`: dispatches `{ type: "toggleAppSettings", open: true, section: "cloudAccount" }`.
 - `"shows the Admin's price"`: offer `max` at 9900 → `"Get Max · $99/month"`; no offer → `"Get Max"`.
 - `"nothing for a Max account or without the desktop bridge"`.
 - McpServersPanel: a `needs-max` cloud entry shows `Needs Max`, the Get Max button and no Sign in; a signed-in cloud entry shows no Sign out.
 
 - [ ] **Step 2: Run to verify it fails** — `pnpm exec vitest run src/components/GetMaxButton.test.ts src/components/McpServersPanel.test.ts`, Expected: FAIL.
-- [ ] **Step 3: Implement.** In the row, `const cloud = server.catalog?.auth === "cloud"`; `canSignIn` and the Sign out branch require `!cloud`; `auth === "needs-max"` renders the warning badge with `science.needsMax` and `<GetMaxButton />`. Keep the file under 1,000 lines. Add these keys:
+- [ ] **Step 3: Implement.** In the row, `const cloud = server.catalog?.auth === "cloud"`; `canSignIn` and the Sign out branch require `!cloud`; `auth === "needs-max"` renders the warning badge with `science.needsMax` and `<GetMaxButton />`. Keep the file under 1,000 lines. In `GetMaxButton`, `UPGRADE_POLL_MS = 3_000` and `UPGRADE_WAIT_MS = 3 * 60_000`. Add these keys:
 
 ```json
 "science.getMax": "Get Max · {price}/month",
 "science.getMaxNoPrice": "Get Max",
 "science.needsMax": "Needs Max",
 "science.upgradeFailed": "Your payment didn't go through, so your plan hasn't changed. Check your card on your Plan page.",
-"science.upgradeError": "Max couldn't be added right now. Your plan hasn't changed. Try again."
+"science.upgradeError": "Max couldn't be added right now. Your plan hasn't changed. Try again.",
+"science.upgradePending": "Waiting for your payment to go through…",
+"science.upgradeSlow": "Your payment is taking longer than usual. Max turns on as soon as it goes through; your Plan page shows where it stands.",
+"science.planChangeUnavailable": "Your plan can't be changed right now, for example while a payment is on hold or renewal is off. Your Plan page shows why."
 ```
 
 - [ ] **Step 4: Run to verify it passes** — Step 2 command plus `pnpm -s i18n:check` and `pnpm exec vitest run src/locales`; Expected: PASS.
@@ -676,9 +683,9 @@ git commit -m "docs(science): isolated verification recipe"
 - **The desktop asks for a relay token when the served Science section is unlocked**, not by comparing `tier === "max"`, so the Cloud stays the only gate. `GetMaxButton` hides itself for a Max tier only to avoid offering Max to someone who has it.
 - **Injection is by address**: the relay token goes to any stored server under the held relay base (so a hand-added relay URL works), and only there; the `catalog` marker drives tile matching and the Needs Max state.
 
-## Contract points to confirm with PR A (not changed here)
+## Contract points confirmed (contracts doc as of fb52d6cbc)
 
-- `POST /api/cloud/desktop/services/science`: the token lifetime, and whether issuing a new token revokes the previous one. The desktop renews 15 minutes before `expiresAt`; if reissue revokes, a turn that spans the renewal loses its science calls from then on.
-- The `omb_sd_` token shape is not pinned in the contract; this plan accepts `omb_sd_` plus 43 characters, like `omb_xd_`.
-- The science and upgrade responses carry no `cloudContractVersion`, unlike every other desktop route; this plan follows the contract.
-- `source: "science"` is not in the Admin's `FUNNEL_SOURCES`, so checkouts from Science count as "other" until PR A adds it.
+- Token `omb_sd_` + 43 base64url characters; reissue never revokes a device's unexpired tokens; `expiresAt` is epoch ms.
+- `cloudContractVersion` is on every new desktop route's body, success and error; desktop errors are `{ error, errorDescription? }` (401 `invalid_token`), relay errors `{ error }` (401 `unauthorized`).
+- `"science"` is a known checkout and upgrade `source` at the Admin.
+- Upgrade answers include 202 `pending` and 409 `plan_change_unavailable` (Tasks 6 and 10).
