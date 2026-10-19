@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { applyIncludedMessage, scienceStatus } from "./connector-catalog.ts";
 import { jevEndpoint } from "./decider/jev.ts";
 import { applyIncludedScienceMessage, applyIncludedXMessage, boatCredential, deciderCredential, researchCredential, trialCreditCredential, scienceAccessRevision, scienceRelayCredential, voiceCredential, xCredential, xResearchStatus } from "./included-services.ts";
 
@@ -290,5 +291,27 @@ describe("science relay credential", () => {
     services.holdIncludedServices({ OMB_CLOUD_SCIENCE_URL: SCIENCE, OMB_CLOUD_SCIENCE_TOKEN: "omb_science_home" });
     services.applyIncludedScienceMessage({ type: "openmausbot:included-science", access: grant });
     expect(services.scienceRelayCredential(1_000)?.token).toBe("omb_science_home");
+  });
+});
+
+describe("included message dispatcher", () => {
+  it("applies the three included-service messages and ignores any other", () => {
+    expect(applyIncludedMessage({ type: "openmausbot:managed-composio" })).toBe(false);
+    expect(applyIncludedMessage({ type: "openmausbot:included-x", access: null })).toBe(true);
+    expect(applyIncludedMessage({ type: "openmausbot:included-science", access: null })).toBe(true);
+    expect(applyIncludedMessage({ type: "openmausbot:science-catalog", catalog: null })).toBe(true);
+  });
+
+  it("grows the science revision on each applied message", () => {
+    const before = scienceStatus().revision;
+    applyIncludedMessage({ type: "openmausbot:included-science", access: null });
+    const afterAccess = scienceStatus().revision;
+    applyIncludedMessage({ type: "openmausbot:science-catalog", catalog: null });
+    expect(afterAccess).toBeGreaterThan(before);
+    expect(scienceStatus().revision).toBeGreaterThan(afterAccess);
+  });
+
+  it("a malformed message throws instead of being applied", () => {
+    expect(() => applyIncludedMessage({ type: "openmausbot:included-science", access: { url: "x" } })).toThrow();
   });
 });

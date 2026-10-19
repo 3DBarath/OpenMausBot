@@ -188,6 +188,9 @@ export function scienceRelayCredential(now: number = Date.now(), env: NodeJS.Pro
   return desktopScience && desktopScience.expiresAt > now ? desktopScience.credential : null;
 }
 
+/** The science credential a Cloud home was started with; a desktop never has one. */
+export const scienceHomeCredential = (env: NodeJS.ProcessEnv = process.env): ServiceCredential | null => (held ?? includedFrom(env)).science;
+
 /** Changes whenever the desktop's science access is replaced or cleared. */
 export const scienceAccessRevision = (): number => scienceRevision;
 
