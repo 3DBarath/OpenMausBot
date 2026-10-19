@@ -5962,5 +5962,8 @@
   "science.group.papers": "Papers and preprints",
   "science.group.targets": "Targets and chemistry",
   "science.group.clinical": "Clinical and regulatory",
-  "science.group.lab": "Lab, data and figures"
+  "science.group.lab": "Lab, data and figures",
+  "science.tenantInvalid": "Enter your Benchling name, like acme, or your acme.benchling.com address.",
+  "science.noAddress": "This one has no address to connect to yet.",
+  "science.testFailed": "Connected, but its tools could not be loaded: {reason} Please try again."
 }
