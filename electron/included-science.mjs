@@ -1,8 +1,7 @@
 import { createDesktopIncludedX } from "./included-x.mjs";
 
 // The science catalog and this sign-in's science relay access, handed to the
-// local server over the private parent port (server/included-services.ts,
-// server/connector-catalog.ts). Both are kept in memory only.
+// local server over the private parent port. Both are kept in memory only.
 //
 // The Cloud decides who is unlocked: a relay token is requested only while the
 // served Science section is unlocked, and renewed before it lapses so a new
@@ -29,7 +28,8 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
   /** @type {{ access: { url: string; token: string; expiresAt: number } } | null} */
   let held = null;
   let refused = null;
-  let failedAt = null;
+  /** @type {{ key: string; at: number } | null} */
+  let failed = null;
   let latest = null;
   /** @type {Promise<void> | null} */
   let inflight = null;
@@ -40,16 +40,20 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
 
   const step = async (key) => {
     if (!catalog || catalog.key !== key || now() - catalog.at >= CATALOG_MS) {
-      if (failedAt !== null && now() - failedAt < RETRY_MS) return;
-      let fetched;
-      try { fetched = await fetchCatalog(); } catch { fetched = null; }
-      if (stale(key)) return;
-      if (!fetched) { failedAt = now(); return; }
-      failedAt = null;
-      if (catalog?.key !== key) refused = null;
-      catalog = { key, catalog: fetched, at: now() };
-      clearable = true;
-      sendCatalog(fetched);
+      const waiting = failed?.key === key && now() - failed.at < RETRY_MS;
+      if (!waiting) {
+        let fetched;
+        try { fetched = await fetchCatalog(); } catch { fetched = null; }
+        if (stale(key)) return;
+        if (fetched) {
+          failed = null;
+          if (catalog?.key !== key) refused = null;
+          catalog = { key, catalog: fetched, at: now() };
+          clearable = true;
+          sendCatalog(fetched);
+        } else failed = { key, at: now() };
+      }
+      if (!catalog || catalog.key !== key) return;
     }
     if (!unlocked(catalog.catalog)) {
       if (held) { held = null; sendAccess(null); }
@@ -69,7 +73,7 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
     const key = keyOf(state);
     if (!key) {
       if (clearable) { sendCatalog(null); sendAccess(null); }
-      catalog = null; held = null; refused = null; failedAt = null; clearable = false;
+      catalog = null; held = null; refused = null; failed = null; clearable = false;
       return;
     }
     if (inflight) return inflight;
@@ -79,7 +83,6 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
   };
 
   return {
-    /** Every Cloud account state the desktop publishes. */
     onState,
     /** The local server (re)started and holds nothing yet. */
     serverStarted() {

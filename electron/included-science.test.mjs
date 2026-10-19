@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDesktopIncludedServices, createIncludedScienceSync } from "./included-science.mjs";
 
 const HOUR = 3600_000, MIN = 60_000;
-const section = (locked) => ({ cloudContractVersion: 1, version: 3, sections: [{ id: "science", title: "Science", locked, groups: [], entries: [] }] });
+const section = (locked) => ({ version: 1, sections: [{ id: "science", title: "Science", locked, groups: [], entries: [] }] });
 const tokenFor = (expiresAt) => ({ url: "https://cloud.example.com/api/cloud/services/science", token: `omb_sd_${"a".repeat(43)}`, expiresAt });
 const state = (deviceId = "d1", version = 1) => ({ status: "connected", deviceId, entitlement: { plan: "pro", status: "active", tier: "max", version } });
 
@@ -55,6 +55,7 @@ describe("science sync on the desktop", () => {
   it("renews before expiry", async () => {
     const t = setup();
     await t.sync.onState(state());
+    const first = t.sent.at(-1).access;
     t.advance(HOUR - 16 * MIN);
     await t.sync.onState(state());
     expect(t.fetchAccess).toHaveBeenCalledTimes(1);
@@ -64,11 +65,33 @@ describe("science sync on the desktop", () => {
     await t.sync.onState(state());
     expect(t.fetchAccess).toHaveBeenCalledTimes(2);
     expect(t.sent).toHaveLength(before);
+    t.sync.serverStarted();
+    expect(t.sent.at(-1).access).toEqual(first);
     await t.sync.onState(state());
     expect(t.fetchAccess).toHaveBeenCalledTimes(3);
-    expect(t.sent).toHaveLength(before + 1);
-    t.sync.serverStarted();
     expect(t.sent.at(-1).access.expiresAt).toBe(t.clock() + HOUR);
+  });
+
+  it("keeps renewing the token while the catalog refresh keeps failing", async () => {
+    const t = setup();
+    await t.sync.onState(state());
+    t.advance(6 * HOUR);
+    t.fetchCatalog.mockRejectedValue(new Error("offline"));
+    await t.sync.onState(state());
+    expect(t.fetchCatalog).toHaveBeenCalledTimes(2);
+    expect(t.fetchAccess).toHaveBeenCalledTimes(2);
+    expect(t.sent.at(-1).access.expiresAt).toBe(t.clock() + HOUR);
+    t.advance(MIN);
+    await t.sync.onState(state());
+    expect(t.fetchCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it("a new plan version is not held back by an earlier failure", async () => {
+    const t = setup();
+    t.fetchCatalog.mockRejectedValueOnce(new Error("offline"));
+    await t.sync.onState(state());
+    await t.sync.onState(state("d1", 2));
+    expect(t.fetchCatalog).toHaveBeenCalledTimes(2);
   });
 
   it("a refusal stands until the plan version changes", async () => {

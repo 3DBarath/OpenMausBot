@@ -2663,8 +2663,7 @@ for (const method of ["checkout", "upgrade"]) ipcMain.handle(`cloud-account:${me
   if (!(await cloudOffersReady())) throw new Error("MausBot Cloud isn't offered in this app.");
   const client = ensureCloudAccount();
   if (typeof plan !== "string" || !CHECKOUT_SOURCES.includes(source) || (method === "upgrade" && (plan !== "max" || source !== "science"))) throw new Error("Choose a plan to continue.");
-  const offer = await client.offer();
-  if (!offer?.plans.some(entry => entry.tier === plan)) throw new Error("Choose a plan to continue.");
+  if (method === "checkout" && !(await client.offer())?.plans.some(entry => entry.tier === plan)) throw new Error("Choose a plan to continue.");
   return client[method](plan, source);
 }));
 // The machine and its code come from the verified session in main, never from the renderer.

@@ -94,7 +94,7 @@ test("the science upgrade carries only a plan and a source, as text, and main ac
   const context = vm.createContext({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
     localOnly: localOrigin.localOnly, workspaceSenderAllowed: environments.workspaceSenderAllowed, mainWindow: { webContents: contents },
     rendererOrigin: () => origin, environmentsState: { environments: [], activeId: "local" }, CHECKOUT_SOURCES, cloudOffersReady: async () => true,
-    ensureCloudAccount: () => ({ offer: async () => ({ plans: plans.map(tier => ({ tier })) }),
+    ensureCloudAccount: () => ({ offer: async () => (plans.length ? { plans: plans.map(tier => ({ tier })) } : null),
       upgrade: async (...args) => { calls.push(args); return { outcome: "upgraded", state: { status: "connected" } }; } }),
     connectCloudHome: () => ({ status: "connected" }),
   });
@@ -105,8 +105,11 @@ test("the science upgrade carries only a plan and a source, as text, and main ac
   for (const [plan, from] of [["pro", "science"], ["max", "app_card"], ["max", undefined], [{ tier: "max" }, "science"]]) {
     await assert.rejects(handle(event, plan, from), /Choose a plan/, `${plan} ${from}`);
   }
-  plans = ["pro"];
-  await assert.rejects(handle(event, "max", "science"), /Choose a plan/);
+  plans = [];
+  calls.length = 0;
+  assert.deepEqual(await handle(event, "max", "science"), { outcome: "upgraded", state: { status: "connected" } });
+  assert.deepEqual(calls, [["max", "science"]]);
+  calls.length = 0;
   assert.throws(() => handle({ sender: contents, senderFrame: { url: "https://remote.example.test/" } }, "max", "science"), /only available/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
 });
