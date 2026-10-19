@@ -1,8 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BotSummary } from "../../shared/wire";
-import type { InstanceInfo } from "@/state/store";
+import type { Bot, InstanceInfo } from "@/state/store";
 
 const fixture = { colorMine: false };
 
@@ -57,12 +56,13 @@ vi.mock("@/lib/virtualizer", () => ({
 const { ChatView } = await import("./ChatView");
 const { userBubbleTone } = await import("@/lib/user-bubble-tone");
 
-const bot: BotSummary = {
+const bot: Bot = {
+  title: "",
+  description: "",
   id: "b1",
   threadId: "selected",
   name: "B",
   color: "yellow",
-  mascot: "curious",
   notifications: true, unread: false, busy: false, messages: [
     { id: "u", role: "user", kind: "text", at: 1, text: "hello from me" },
     { id: "b", role: "bot", kind: "text", at: 2, text: "hello back" },
