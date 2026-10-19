@@ -18,18 +18,27 @@ Terminal 2, export those two variables and start the fixture:
 
 ```sh
 export OMB_CLOUD_SCIENCE_URL=… OMB_CLOUD_SCIENCE_TOKEN=…
-node --experimental-strip-types scripts/control-omb.ts ui launch
+pnpm control:omb ui launch
 ```
 
 The launcher passes the pair to the server only for a loopback `http://127.0.0.1`
 relay. The server then holds a Cloud home's science credential, fetches
 `GET /api/connector-catalog` through it, and shows what the relay serves.
 
+The launch prints a handle (see [Chat UI](chat-ui.md#launch)). In a third
+terminal, with the same two variables exported, set these from it:
+
+```sh
+H=/tmp/openmausbot-verify-data-XXXXXX/ui.json   # "ui"
+URL=http://127.0.0.1:PORT                       # "url"
+DATA=/tmp/openmausbot-verify-data-XXXXXX        # "dataDir"
+LOG=…                                           # "logPath"
+```
+
 ## Drive
 
-With `H` set to the printed `ui` handle, and `--ref` taken from a fresh
-`snapshot` whenever a name is ambiguous (with the Science section on All,
-"Science" names a pill, a region and a heading):
+Take `--ref` from a fresh `snapshot` whenever a name is ambiguous (with the
+Science section on All, "Science" names a pill, a region and a heading):
 
 ```sh
 pnpm control:omb ui click --ui $H --name "Apps"
@@ -53,10 +62,12 @@ dialog would and enable them (the same calls as the end-to-end test in
 `server/science-catalog.e2e.test.ts`):
 
 ```sh
-curl -s -X POST $URL/api/mcp/servers -H 'content-type: application/json' \
-  -d '{"name":"pubmed","type":"http","url":"'$OMB_CLOUD_SCIENCE_URL'/pubmed/mcp","enabled":false,"catalog":{"id":"pubmed","auth":"cloud"}}'
-curl -s -X POST $URL/api/mcp/servers/pubmed/test
-curl -s -X PATCH $URL/api/mcp/servers/pubmed -H 'content-type: application/json' -d '{"enabled":true}'
+for db in pubmed biorxiv chembl opentargets clinicaltrials; do
+  curl -s -X POST "$URL/api/mcp/servers" -H 'content-type: application/json' \
+    -d '{"name":"'$db'","type":"http","url":"'$OMB_CLOUD_SCIENCE_URL'/'$db'/mcp","enabled":false,"catalog":{"id":"'$db'","auth":"cloud"}}'
+  curl -s -X POST "$URL/api/mcp/servers/$db/test"
+  curl -s -X PATCH "$URL/api/mcp/servers/$db" -H 'content-type: application/json' -d '{"enabled":true}'
+done
 ```
 
 Reopen Apps: the five tiles read connected with a Bot access disclosure, and
@@ -65,7 +76,7 @@ the header counts them.
 ## Redaction
 
 ```sh
-rg -F -c "<the printed OMB_CLOUD_SCIENCE_TOKEN>" <dataDir>/config.json <logPath>
+rg -F -c "$OMB_CLOUD_SCIENCE_TOKEN" "$DATA/config.json" "$LOG"
 ```
 
 must find nothing (exit 1), for the unlocked and the `--locked` run.
