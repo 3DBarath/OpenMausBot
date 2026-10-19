@@ -32,6 +32,7 @@ import { HighLevelCard } from "./HighLevelCard";
 import { openBotSettings } from "./bot-panel/panel-link";
 import { ServiceIcon } from "./ServiceIcon";
 import { AppsSection } from "./AppsSection";
+import { TILE_BUTTON_CLASS, TILE_CLASS } from "./app-tile";
 
 export interface ToolkitCard {
   slug: string;
@@ -864,7 +865,7 @@ export function PluginsPanel() {
       <div
         key={card.slug}
         data-app-tile={card.slug}
-        className="flex min-w-0 flex-col rounded-xl px-2 py-2 transition-colors hover:bg-raised/40"
+        className={TILE_CLASS}
       >
         <div className="flex items-center gap-3">
           <ServiceIcon card={card} className="size-10 shrink-0 rounded-[10px]" />
@@ -917,7 +918,7 @@ export function PluginsPanel() {
                 setAliasDraft("");
               }
             }}
-            className="inline-flex h-7 min-w-[64px] shrink-0 items-center justify-center gap-2 rounded-full bg-control/80 px-3 text-[13px] font-medium leading-5 text-ink transition-colors hover:bg-raised-hover disabled:opacity-40"
+            className={TILE_BUTTON_CLASS}
           >
             {unavailableReason ? (
               t("connectors.selfHostOnly")
