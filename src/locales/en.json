@@ -5954,5 +5954,13 @@
   "history.empty": "No changes recorded yet.",
   "history.refreshError": "Couldn’t refresh history.",
   "history.undo": "Undo this change",
-  "history.restoreUnavailable": "The exact previous instructions are unavailable, so this change cannot be undone."
+  "history.restoreUnavailable": "The exact previous instructions are unavailable, so this change cannot be undone.",
+  "science.tag.noAccount": "No account",
+  "science.tag.freeAccount": "Free account",
+  "science.tag.paidAccount": "Paid account",
+  "science.tag.subscription": "Subscription",
+  "science.group.papers": "Papers and preprints",
+  "science.group.targets": "Targets and chemistry",
+  "science.group.clinical": "Clinical and regulatory",
+  "science.group.lab": "Lab, data and figures"
 }
