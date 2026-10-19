@@ -11,7 +11,7 @@ const fixture = vi.hoisted(() => {
   return {
     api: vi.fn(),
     dispatch: vi.fn(),
-    state: { bots: [] as unknown[], config: { science: { revision: 1 } } },
+    state: { bots: [] as unknown[], config: { science: { revision: "boot.1" } } },
     openExternalLink: vi.fn(async (_url: string) => {}),
     openBotSettings: vi.fn(),
   };
@@ -107,7 +107,7 @@ beforeEach(() => {
   servers = [];
   catalog = served;
   calls = [];
-  fixture.state = { bots: [], config: { science: { revision: 1 } } };
+  fixture.state = { bots: [], config: { science: { revision: "boot.1" } } };
   fixture.api.mockReset();
   fixture.dispatch.mockReset();
   fixture.openExternalLink.mockClear();
@@ -166,7 +166,7 @@ describe("ScienceCatalog", () => {
     const before = tile("pubmed");
     expect(button("Connect", before)!.disabled).toBe(true);
     catalog = served;
-    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    fixture.state = { bots: [], config: { science: { revision: "boot.2" } } };
     await act(async () => root.render(element({ search: "pub" })));
     await settle();
     expect(tile("pubmed")).toBe(before);
@@ -210,7 +210,7 @@ describe("ScienceCatalog", () => {
 
   it("a connected tile offers Turn off and Bot access", async () => {
     servers = [{ name: "pubmed", type: "http", url: "https://relay.example/pubmed/mcp", enabled: true, auth: "signed-in", catalog: { id: "pubmed", auth: "cloud" } }];
-    fixture.state = { bots: [{ id: "b1", name: "Pepper" }, { id: "b2", name: "Gone", hidden: true }], config: { science: { revision: 1 } } };
+    fixture.state = { bots: [{ id: "b1", name: "Pepper" }, { id: "b2", name: "Gone", hidden: true }], config: { science: { revision: "boot.1" } } };
     await mount();
     const pubmed = tile("pubmed");
     expect(pubmed.querySelector('[aria-label="Connected"]')).not.toBeNull();
@@ -357,7 +357,7 @@ describe("ScienceCatalog", () => {
     expect(tile("pubmed").textContent).toContain("Needs Max");
     catalog = served;
     servers[0]!.auth = "signed-in";
-    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    fixture.state = { bots: [], config: { science: { revision: "boot.2" } } };
     await act(async () => root.render(element({})));
     await settle();
     expect(tile("pubmed").textContent).not.toContain("Needs Max");
@@ -368,7 +368,7 @@ describe("ScienceCatalog", () => {
     await act(async () => root.unmount());
     host.remove();
     fixture.api.mockImplementation(async (path: string) => { if (path === "/api/mcp/servers") return { servers }; throw new Error("offline"); });
-    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    fixture.state = { bots: [], config: { science: { revision: "boot.2" } } };
     await mount();
     expect(host.textContent).toContain("Science sources come with Max.");
     expect(buttons().filter((b) => b.textContent?.trim() === "Connect").every((b) => b.disabled)).toBe(true);
@@ -377,7 +377,7 @@ describe("ScienceCatalog", () => {
   it("treats a response without a Science section after a revision bump as locked", async () => {
     await mount();
     catalog = { version: 1, sections: [] };
-    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    fixture.state = { bots: [], config: { science: { revision: "boot.2" } } };
     await act(async () => root.render(element({})));
     await settle();
     expect(host.textContent).toContain("Science sources come with Max.");

@@ -66,6 +66,15 @@ describe("connector catalog holder", () => {
     expect((await holder.connectorCatalog(0)).catalog).toEqual(served);
   });
 
+  it("a restarted server never repeats a science revision the page already saw", async () => {
+    holder.applyScienceCatalogMessage(message(served));
+    const first = holder.scienceStatus().revision;
+    vi.resetModules();
+    const restarted: Holder = await import("./connector-catalog.ts");
+    restarted.applyScienceCatalogMessage(message(served));
+    expect(restarted.scienceStatus().revision).not.toBe(first);
+  });
+
   it("other messages are not its own", () => {
     expect(holder.applyScienceCatalogMessage({ type: "openmausbot:included-x", access: null })).toBe(false);
     expect(holder.applyScienceCatalogMessage(null)).toBe(false);

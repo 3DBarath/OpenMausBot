@@ -302,13 +302,12 @@ describe("included message dispatcher", () => {
     expect(applyIncludedMessage({ type: "openmausbot:science-catalog", catalog: null })).toBe(true);
   });
 
-  it("grows the science revision on each applied message", () => {
+  it("changes the science revision on each applied message", () => {
     const before = scienceStatus().revision;
     applyIncludedMessage({ type: "openmausbot:included-science", access: null });
     const afterAccess = scienceStatus().revision;
     applyIncludedMessage({ type: "openmausbot:science-catalog", catalog: null });
-    expect(afterAccess).toBeGreaterThan(before);
-    expect(scienceStatus().revision).toBeGreaterThan(afterAccess);
+    expect(new Set([before, afterAccess, scienceStatus().revision]).size).toBe(3);
   });
 
   it("a malformed message throws instead of being applied", () => {

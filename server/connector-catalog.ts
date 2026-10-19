@@ -1,5 +1,7 @@
 // The Connectors catalog this server shows: a signed-in desktop is handed one by its main process, a Cloud home fetches
 // its own from the science relay. Without either, the bundled teaser stands in.
+import { randomUUID } from "node:crypto";
+
 import { parseCatalogResponse, SCIENCE_TEASER, type CatalogResponse } from "../shared/connector-catalog.ts";
 import {
   applyIncludedScienceMessage,
@@ -43,8 +45,10 @@ export function applyIncludedMessage(message: unknown): boolean {
   return applyIncludedXMessage(message) || applyIncludedScienceMessage(message) || applyScienceCatalogMessage(message);
 }
 
-/** Changes whenever the science access or the catalog this server holds changes. */
-export const scienceStatus = (): { revision: number } => ({ revision: scienceAccessRevision() + revision });
+const BOOT = randomUUID();
+
+/** Changes whenever the science access or the catalog this server holds changes, and with every server start. */
+export const scienceStatus = (): { revision: string } => ({ revision: `${BOOT}.${scienceAccessRevision() + revision}` });
 
 async function readCapped(response: Response): Promise<string | null> {
   const reader = response.body?.getReader();

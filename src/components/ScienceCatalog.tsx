@@ -35,7 +35,7 @@ interface Local {
 }
 
 interface Served {
-  revision: number | undefined;
+  revision: string | undefined;
   catalog: CatalogResponse;
 }
 
