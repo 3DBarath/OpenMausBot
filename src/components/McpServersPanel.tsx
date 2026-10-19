@@ -45,7 +45,7 @@ interface RemoteMcpListing extends McpResultBudgetListing {
   url: string;
   headerKeys: string[];
   enabled: boolean;
-  auth?: "signed-in" | "needs-sign-in";
+  auth?: "signed-in" | "needs-sign-in" | "needs-max";
   oauth?: McpOAuthClientListing;
 }
 interface McpOAuthClientListing {

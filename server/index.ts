@@ -222,9 +222,9 @@ import {
   addDisabledMcpServer,
   isRemoteMcpServer,
   listMcpServers,
-  parseStoredMcpServer,
 } from "./mcp-registry.ts";
 import { attachCustomMcp } from "./mcp-result-budget.ts";
+import { storedMcpAuth } from "./mcp-catalog-auth.ts";
 import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -1567,11 +1567,7 @@ const mcpOAuth = new McpOAuthManager({
   file: join(DATA_DIR, "mcp-oauth.json"),
   isOwnerLive: (owner) => owner === "loopback" || sessions.isLive(owner),
   // Read the registered app when needed; never copy its secret into the token store.
-  clients: (name, url) => {
-    const raw = cfg.mcpServers?.[name];
-    const parsed = raw === undefined ? null : parseStoredMcpServer(name, raw);
-    return parsed?.ok && isRemoteMcpServer(parsed.server) && parsed.server.url === url ? parsed.server.oauth : undefined;
-  },
+  ...storedMcpAuth(() => cfg),
 });
 // OpenCode reads provider keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) from its environment. Wired before the first catalog probe below.
 let openCodeOrganisationManaged = (): boolean => false;
