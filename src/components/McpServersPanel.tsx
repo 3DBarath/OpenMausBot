@@ -30,6 +30,8 @@ import { WhopIcon } from "./WhopIcon";
 import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
 import { openBotSettings } from "./bot-panel/panel-link";
+import { GetMaxButton } from "./GetMaxButton";
+import type { CatalogAuth } from "../../shared/connector-catalog";
 
 /** Security: secrets arrive as names only. */
 interface StdioMcpListing extends McpResultBudgetListing {
@@ -46,6 +48,7 @@ interface RemoteMcpListing extends McpResultBudgetListing {
   headerKeys: string[];
   enabled: boolean;
   auth?: "signed-in" | "needs-sign-in" | "needs-max";
+  catalog?: { id: string; auth: CatalogAuth };
   oauth?: McpOAuthClientListing;
 }
 interface McpOAuthClientListing {
@@ -897,7 +900,8 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
               const whop = isRemoteMcpListing(server) && isWhopServer(server);
               const result = probe[server.name];
               const auth = isRemoteMcpListing(server) ? server.auth : undefined;
-              const canSignIn = isRemoteMcpListing(server)
+              const cloud = isRemoteMcpListing(server) && server.catalog?.auth === "cloud";
+              const canSignIn = isRemoteMcpListing(server) && !cloud
                 && (auth === "needs-sign-in" || result?.auth === "required" || ((whop || Boolean(server.oauth)) && auth !== "signed-in"));
               return (
                 <div key={server.name} data-whop-server={whop ? server.name : undefined} className="rounded-2xl border border-hairline/50 bg-card px-4 py-4 sm:px-5">
@@ -909,7 +913,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="min-w-0 truncate text-[14px] font-medium text-ink">{whop ? "Whop" : server.name}</span>
                         <span className={cn("rounded-full px-2 py-0.5 text-[10.5px]", server.enabled ? "bg-success/10 text-success" : "bg-raised text-ink-secondary")}>{t(server.enabled ? "mcp.badge.on" : "mcp.badge.off")}</span>
-                        {auth && <span className={cn("rounded-full px-2 py-0.5 text-[10.5px]", auth === "signed-in" ? "bg-success/10 text-success" : "bg-warning/10 text-warning")}>{t(auth === "signed-in" ? "mcp.auth.signedIn" : "mcp.auth.needsSignIn")}</span>}
+                        {auth && <span className={cn("rounded-full px-2 py-0.5 text-[10.5px]", auth === "signed-in" ? "bg-success/10 text-success" : "bg-warning/10 text-warning")}>{t(auth === "signed-in" ? "mcp.auth.signedIn" : auth === "needs-max" ? "science.needsMax" : "mcp.auth.needsSignIn")}</span>}
                         {server.managedBy && <span className="rounded-full bg-raised px-2 py-0.5 text-[10.5px] text-ink-secondary">{t("policy.managedBy", { organization: server.managedBy })}</span>}
                       </div>
                       {server.managedBy && <div className="mt-1 text-[11.5px] text-ink-secondary">{t("policy.mcpBlocked", { organization: server.managedBy })}</div>}
@@ -928,7 +932,9 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                         <button type="button" disabled={busy !== null || signingIn !== null || Boolean(server.managedBy)} onClick={() => void signIn(server)} className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-2 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-40">
                           <LogIn size={14} /> {t(whop ? "whop.connect" : "mcp.auth.signIn")}
                         </button>
-                      ) : auth === "signed-in" ? (
+                      ) : auth === "needs-max" ? (
+                        <GetMaxButton />
+                      ) : auth === "signed-in" && !cloud ? (
                         <button type="button" disabled={busy !== null || signingIn !== null} onClick={() => void signOut(server)} className="flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-[12px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">
                           {busy === `signout:${server.name}` ? <Loader2 size={14} className="animate-spin" /> : <LogOut size={14} />} {t(whop ? "whop.disconnect" : "mcp.auth.signOut")}
                         </button>

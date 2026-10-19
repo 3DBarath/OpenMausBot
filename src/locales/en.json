@@ -5965,5 +5965,14 @@
   "science.group.lab": "Lab, data and figures",
   "science.tenantInvalid": "Enter your Benchling name, like acme, or your acme.benchling.com address.",
   "science.noAddress": "This one has no address to connect to yet.",
-  "science.testFailed": "Connected, but its tools could not be loaded: {reason} Please try again."
+  "science.testFailed": "Connected, but its tools could not be loaded: {reason} Please try again.",
+  "science.getMax": "Get Max · {price}/month",
+  "science.getMaxNoPrice": "Get Max",
+  "science.needsMax": "Needs Max",
+  "science.upgradeFailed": "Your payment didn't go through, so your plan hasn't changed. Check your card on your Plan page.",
+  "science.upgradeError": "Max couldn't be added right now. Your plan hasn't changed. Try again.",
+  "science.upgradePending": "Waiting for your payment to go through…",
+  "science.upgradeSlow": "Your payment is taking longer than usual. Max turns on as soon as it goes through; your Plan page shows where it stands.",
+  "science.upgrade.rateLimited": "Too many attempts. Try again in a few minutes.",
+  "science.planChangeUnavailable": "Your plan can't be changed right now, for example while a payment is on hold or renewal is off. Your Plan page shows why."
 }
