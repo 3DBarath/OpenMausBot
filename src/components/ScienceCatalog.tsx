@@ -34,7 +34,12 @@ interface Local {
   signIn: { status: McpSignInStatus; complete(result: McpSignInStatus): void } | null;
 }
 
-let lastServed: CatalogResponse | null = null;
+interface Served {
+  revision: number | undefined;
+  catalog: CatalogResponse;
+}
+
+let lastServed: Served | null = null;
 
 export function forgetServedScience() {
   lastServed = null;
@@ -47,7 +52,7 @@ const message = (cause: unknown) => (cause instanceof Error ? cause.message : St
 export function ScienceCatalog({ view, search, onViewAll, onConnections, onServersChanged }: Props) {
   const { state } = useStore();
   const revision = state.config?.science?.revision;
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(lastServed);
+  const [served, setServed] = useState<Served | null>(lastServed);
   const [servers, setServers] = useState<ScienceServer[]>([]);
   const [local, setLocal] = useState<Record<string, Local>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -64,9 +69,11 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
     const load = ++loads.current;
     void api("/api/connector-catalog").then((raw) => {
       const next = parseCatalogResponse(raw);
-      if (load !== loads.current || !next || !scienceSection(next)) return;
-      lastServed = next;
-      setCatalog(next);
+      if (load !== loads.current) return;
+      if (next && scienceSection(next)) {
+        lastServed = { revision, catalog: next };
+        setServed(lastServed);
+      }
     }, () => {});
     void api("/api/mcp/servers").then((result) => {
       if (load !== loads.current) return;
@@ -75,8 +82,9 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
     }, () => {});
   }, [revision]);
 
-  const pending = catalog === null;
-  const section = scienceSection(catalog ?? SCIENCE_TEASER);
+  const current = served && served.revision === revision ? served.catalog : null;
+  const pending = current === null && served === null;
+  const section = scienceSection(current ?? SCIENCE_TEASER);
   const connected = useMemo(() => (section ? connectedEntries(section, servers) : []), [section, servers]);
   const report = useRef(onConnections);
   report.current = onConnections;
@@ -164,7 +172,7 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
     setBulk(false);
   };
 
-  if (view === "hidden" || !section || (pending && view === "all")) return null;
+  if (view === "hidden" || !section || (pending && view !== "science")) return null;
 
   const renderTile = (entry: CatalogEntry) => {
     const own = local[entry.id] ?? IDLE;

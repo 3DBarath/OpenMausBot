@@ -287,13 +287,14 @@ describe("ScienceCatalog", () => {
     expect(host.textContent).not.toContain("Science sources come with Max.");
   });
 
-  it("keeps the shown catalog when a refetch fails", async () => {
+  it("keeps the served catalog on a same-revision remount even when the refetch fails", async () => {
     await mount();
+    await act(async () => root.unmount());
+    host.remove();
     fixture.api.mockImplementation(async () => { throw new Error("offline"); });
-    fixture.state = { bots: [], config: { science: { revision: 2 } } };
-    await act(async () => root.render(element({})));
-    await settle();
+    await mount();
     expect(host.textContent).toContain("public databases run on MausBot Cloud");
+    expect(host.textContent).not.toContain("Science sources come with Max.");
   });
 
   it("disables Turn off while the PATCH is in flight", async () => {
@@ -324,5 +325,32 @@ describe("ScienceCatalog", () => {
     await act(async () => root.render(element({})));
     await settle();
     expect(tile("pubmed").textContent).not.toContain("Needs Max");
+  });
+
+  it("never shows the old unlocked catalog after a revision bump when the refetch fails", async () => {
+    await mount();
+    await act(async () => root.unmount());
+    host.remove();
+    fixture.api.mockImplementation(async (path: string) => { if (path === "/api/mcp/servers") return { servers }; throw new Error("offline"); });
+    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    await mount();
+    expect(host.textContent).toContain("Science sources come with Max.");
+    expect(buttons().filter((b) => b.textContent?.trim() === "Connect").every((b) => b.disabled)).toBe(true);
+  });
+
+  it("treats a response without a Science section after a revision bump as locked", async () => {
+    await mount();
+    catalog = { version: 1, sections: [] };
+    fixture.state = { bots: [], config: { science: { revision: 2 } } };
+    await act(async () => root.render(element({})));
+    await settle();
+    expect(host.textContent).toContain("Science sources come with Max.");
+    expect(buttons().filter((b) => b.textContent?.trim() === "Connect").every((b) => b.disabled)).toBe(true);
+  });
+
+  it("renders nothing on the Connected view while pending", async () => {
+    fixture.api.mockImplementation(() => new Promise(() => {}));
+    await mount({ view: "connected" });
+    expect(host.textContent).toBe("");
   });
 });
