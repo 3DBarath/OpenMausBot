@@ -68,7 +68,7 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
   useEffect(() => {
     const load = ++loads.current;
     void api("/api/connector-catalog").then((raw) => {
-      const next = parseCatalogResponse(raw);
+      const next = parseCatalogResponse(raw?.catalog);
       if (load !== loads.current) return;
       if (next && scienceSection(next)) {
         lastServed = { revision, catalog: next };

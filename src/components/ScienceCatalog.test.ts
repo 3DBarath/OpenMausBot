@@ -72,7 +72,7 @@ function serve() {
     const method = init?.method ?? "GET";
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     calls.push([method, path, body]);
-    if (path === "/api/connector-catalog") return catalog;
+    if (path === "/api/connector-catalog") return { catalog, served: true };
     if (path === "/api/mcp/servers" && method === "GET") return { servers };
     if (path === "/api/mcp/servers" && method === "POST") {
       servers.push({ ...body, auth: body.catalog.auth === "cloud" ? "signed-in" : "needs-sign-in" });
@@ -271,7 +271,7 @@ describe("ScienceCatalog", () => {
     fixture.api.mockImplementation(async (path: string) => {
       if (path === "/api/mcp/servers") return { servers };
       await new Promise<void>((resolve) => { release = resolve; });
-      return served;
+      return { catalog: served, served: true };
     });
     await mount();
     expect(host.textContent).not.toContain("Science sources come with Max.");
