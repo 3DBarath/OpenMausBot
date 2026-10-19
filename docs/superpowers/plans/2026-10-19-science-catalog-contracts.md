@@ -70,6 +70,18 @@ All JSON. Errors are `{ "error": <code>, "message"?: string }`.
 
 `{db}` ∈ `pubmed | biorxiv | chembl | opentargets | clinicaltrials`.
 
+Route details:
+
+- Every new desktop route's JSON (`catalog`, `services/science`, `upgrade`,
+  success and error) carries `cloudContractVersion`, like the other
+  `/api/cloud/desktop/*` routes.
+- Science relay token: `omb_sd_` + 43 base64url characters (the X token's
+  shape), stored hashed. Lifetime equals the X relay token's. Issuing a new
+  token for a device never revokes that device's unexpired tokens, so a
+  renewal cannot break a running turn.
+- `"science"` is added to the Admin's known checkout/upgrade `source` values
+  (funnel tracking).
+
 Cloud homes: the Admin sets the Fly secrets `OMB_CLOUD_SCIENCE_URL`
 (= `scienceRelayBase`) and `OMB_CLOUD_SCIENCE_TOKEN` on every paid home, the
 same way it sets `OMB_CLOUD_X_URL` / `OMB_CLOUD_X_TOKEN`. The tier is checked
