@@ -139,8 +139,8 @@ describe("Get Max", () => {
   });
 
   it.each([
-    ["payment-failed", "Your payment didn't go through, so your plan hasn't changed."],
-    ["failed", "Max couldn't be added right now."],
+    ["payment-failed", "Your payment didn’t go through, so your plan hasn’t changed."],
+    ["failed", "Max couldn’t be added right now."],
     ["rate-limited", "Too many attempts. Try again in a few minutes."],
   ])("an upgrade that ends %s says so", async (outcome, text) => {
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome, state: paid("pro") })) });
@@ -155,7 +155,6 @@ describe("Get Max", () => {
     await mount(paid("pro"), { upgrade: call });
     await upgrade();
     expect(host.textContent).toContain("Check your plan in Settings → MausBot Cloud.");
-    expect(host.textContent).not.toContain("hasn't changed");
     expect(host.textContent).not.toContain("hasn’t changed");
   });
 
@@ -218,7 +217,7 @@ describe("Get Max", () => {
   it("a plan that can't change now points to the Plan page", async () => {
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome: "unavailable", state: paid("pro") })) });
     await upgrade();
-    expect(host.textContent).toContain("Your plan can't be changed right now");
+    expect(host.textContent).toContain("Your plan can’t be changed right now");
     await act(async () => button("Manage plan")!.click());
     expect(bridge.openDashboard).toHaveBeenCalledOnce();
   });
