@@ -12,6 +12,8 @@ import { createDesktopIncludedX } from "./included-x.mjs";
 const CATALOG_MS = 6 * 3600_000;
 const RETRY_MS = 5 * 60_000;
 const RENEW_BEFORE_MS = 15 * 60_000;
+/** Each token request can mint a token row on the Admin, so failed ones are spaced out. */
+const ACCESS_RETRY_MS = [60_000, 2 * 60_000, 5 * 60_000, 10 * 60_000];
 
 const deviceOf = (state) => (state?.status === "connected" && typeof state.deviceId === "string" ? state.deviceId : null);
 const keyOf = (state) => (deviceOf(state) ? `${deviceOf(state)}@${state.entitlement?.version ?? ""}` : null);
@@ -30,6 +32,8 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
   let refused = null;
   /** @type {{ key: string; at: number } | null} */
   let failed = null;
+  /** @type {{ key: string; at: number; count: number } | null} */
+  let accessFailed = null;
   let latest = null;
   /** @type {Promise<void> | null} */
   let inflight = null;
@@ -60,9 +64,14 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
       return;
     }
     if (refused === key || (held && held.access.expiresAt - now() > RENEW_BEFORE_MS)) return;
+    if (accessFailed?.key === key && now() - accessFailed.at < ACCESS_RETRY_MS[Math.min(accessFailed.count, ACCESS_RETRY_MS.length) - 1]) return;
     let access;
-    try { access = await fetchAccess(); } catch { return; }
+    try { access = await fetchAccess(); } catch {
+      if (!stale(key)) accessFailed = { key, at: now(), count: accessFailed?.key === key ? accessFailed.count + 1 : 1 };
+      return;
+    }
     if (stale(key)) return;
+    accessFailed = null;
     clearable = true;
     if (access) { held = { access }; refused = null; sendAccess(access); }
     else { held = null; refused = key; sendAccess(null, { offered: false }); }
@@ -73,7 +82,7 @@ export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now
     const key = keyOf(state);
     if (!key) {
       if (clearable) { sendCatalog(null); sendAccess(null); }
-      catalog = null; held = null; refused = null; failed = null; clearable = false;
+      catalog = null; held = null; refused = null; failed = null; accessFailed = null; clearable = false;
       return;
     }
     if (inflight) return inflight;

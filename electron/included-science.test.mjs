@@ -67,9 +67,45 @@ describe("science sync on the desktop", () => {
     expect(t.sent).toHaveLength(before);
     t.sync.serverStarted();
     expect(t.sent.at(-1).access).toEqual(first);
+    t.advance(MIN);
     await t.sync.onState(state());
     expect(t.fetchAccess).toHaveBeenCalledTimes(3);
     expect(t.sent.at(-1).access.expiresAt).toBe(t.clock() + HOUR);
+  });
+
+  it("backs off failed token requests: 1, 2 and 5 minutes, then every 10", async () => {
+    const t = setup();
+    t.fetchAccess.mockRejectedValue(new Error("offline"));
+    await t.sync.onState(state());
+    expect(t.fetchAccess).toHaveBeenCalledTimes(1);
+    let calls = 1;
+    for (const wait of [1, 2, 5, 10, 10]) {
+      t.advance(wait * MIN - 1);
+      await t.sync.onState(state());
+      expect(t.fetchAccess).toHaveBeenCalledTimes(calls);
+      t.advance(1);
+      await t.sync.onState(state());
+      expect(t.fetchAccess).toHaveBeenCalledTimes(++calls);
+    }
+    t.fetchAccess.mockResolvedValue(tokenFor(t.clock() + 20 * MIN));
+    t.advance(10 * MIN);
+    await t.sync.onState(state());
+    expect(t.sent.at(-1).access.token).toMatch(/^omb_sd_/);
+    t.fetchAccess.mockRejectedValue(new Error("offline"));
+    t.advance(5 * MIN + 1);
+    await t.sync.onState(state());
+    expect(t.fetchAccess).toHaveBeenCalledTimes(calls + 2);
+    t.advance(MIN);
+    await t.sync.onState(state());
+    expect(t.fetchAccess).toHaveBeenCalledTimes(calls + 3);
+  });
+
+  it("a new plan version asks for a token at once, whatever failed before", async () => {
+    const t = setup();
+    t.fetchAccess.mockRejectedValueOnce(new Error("offline"));
+    await t.sync.onState(state());
+    await t.sync.onState(state("d1", 2));
+    expect(t.fetchAccess).toHaveBeenCalledTimes(2);
   });
 
   it("keeps renewing the token while the catalog refresh keeps failing", async () => {
