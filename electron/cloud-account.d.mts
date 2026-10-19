@@ -70,6 +70,8 @@ export interface CloudAccountBridge {
   offer?(): Promise<import("./cloud-home.mjs").CloudOffer | null>;
   /** Opens a checkout for a plan of the offer in the browser; `source` is one of CHECKOUT_SOURCES. */
   checkout?(plan: string, source: string): Promise<CloudCheckoutResult>;
+  /** Moves a paid plan to Max from the Science section: only `("max", "science")`; the outcome and state, never a token. Absent on an older app. */
+  upgrade?(plan: string, source: string): Promise<CloudUpgradeResult>;
   /** The email-code sign-in; the attempt and the token never reach the page. Absent on an older app. */
   signInStart?(email: string): Promise<CloudSignInStart>;
   signInVerify?(code: string): Promise<CloudSignInVerify>;

@@ -1,0 +1,113 @@
+import { createDesktopIncludedX } from "./included-x.mjs";
+
+// The science catalog and this sign-in's science relay access, handed to the
+// local server over the private parent port (server/included-services.ts,
+// server/connector-catalog.ts). Both are kept in memory only.
+//
+// The Cloud decides who is unlocked: a relay token is requested only while the
+// served Science section is unlocked, and renewed before it lapses so a new
+// turn never starts with a token about to expire. A refusal stands until the
+// plan version changes. A failed fetch sends nothing: the server keeps what it
+// last had. Sign-out clears both.
+
+const CATALOG_MS = 6 * 3600_000;
+const RETRY_MS = 5 * 60_000;
+const RENEW_BEFORE_MS = 15 * 60_000;
+
+const deviceOf = (state) => (state?.status === "connected" && typeof state.deviceId === "string" ? state.deviceId : null);
+const keyOf = (state) => (deviceOf(state) ? `${deviceOf(state)}@${state.entitlement?.version ?? ""}` : null);
+const unlocked = (catalog) => catalog?.sections?.find?.((section) => section?.id === "science")?.locked === false;
+
+/**
+ * @param {{ fetchCatalog: () => Promise<object | null>,
+ *   fetchAccess: () => Promise<{ url: string; token: string; expiresAt: number } | null>,
+ *   send: (message: object) => void, now?: () => number }} options
+ */
+export function createIncludedScienceSync({ fetchCatalog, fetchAccess, send, now = Date.now }) {
+  /** @type {{ key: string; catalog: object; at: number } | null} */
+  let catalog = null;
+  /** @type {{ access: { url: string; token: string; expiresAt: number } } | null} */
+  let held = null;
+  let refused = null;
+  let failedAt = null;
+  let latest = null;
+  /** @type {Promise<void> | null} */
+  let inflight = null;
+  let clearable = false;
+  const sendCatalog = (value) => send({ type: "openmausbot:science-catalog", catalog: value });
+  const sendAccess = (access, note) => send({ type: "openmausbot:included-science", access, ...(note?.offered === false ? { offered: false } : {}) });
+  const stale = (key) => keyOf(latest) !== key;
+
+  const step = async (key) => {
+    if (!catalog || catalog.key !== key || now() - catalog.at >= CATALOG_MS) {
+      if (failedAt !== null && now() - failedAt < RETRY_MS) return;
+      let fetched;
+      try { fetched = await fetchCatalog(); } catch { fetched = null; }
+      if (stale(key)) return;
+      if (!fetched) { failedAt = now(); return; }
+      failedAt = null;
+      if (catalog?.key !== key) refused = null;
+      catalog = { key, catalog: fetched, at: now() };
+      clearable = true;
+      sendCatalog(fetched);
+    }
+    if (!unlocked(catalog.catalog)) {
+      if (held) { held = null; sendAccess(null); }
+      return;
+    }
+    if (refused === key || (held && held.access.expiresAt - now() > RENEW_BEFORE_MS)) return;
+    let access;
+    try { access = await fetchAccess(); } catch { return; }
+    if (stale(key)) return;
+    clearable = true;
+    if (access) { held = { access }; refused = null; sendAccess(access); }
+    else { held = null; refused = key; sendAccess(null, { offered: false }); }
+  };
+
+  const onState = async (state) => {
+    latest = state;
+    const key = keyOf(state);
+    if (!key) {
+      if (clearable) { sendCatalog(null); sendAccess(null); }
+      catalog = null; held = null; refused = null; failedAt = null; clearable = false;
+      return;
+    }
+    if (inflight) return inflight;
+    inflight = step(key).finally(() => { inflight = null; });
+    await inflight;
+    if (latest !== state && keyOf(latest) && keyOf(latest) !== key) await onState(latest);
+  };
+
+  return {
+    /** Every Cloud account state the desktop publishes. */
+    onState,
+    /** The local server (re)started and holds nothing yet. */
+    serverStarted() {
+      if (catalog) sendCatalog(catalog.catalog);
+      if (held) sendAccess(held.access);
+    },
+  };
+}
+
+/**
+ * The X research and science syncs posting to whichever local server is running, over the private parent port.
+ * @param {{ account: () => { xResearchAccess(): Promise<unknown>, scienceCatalog(): Promise<object | null>, scienceAccess(): Promise<unknown> } | null,
+ *   server: () => { postMessage(message: unknown): void } | null, log: (line: string) => void }} options
+ */
+export function createDesktopIncludedServices({ account, server, log }) {
+  const x = createDesktopIncludedX({ account, server, log });
+  const science = createIncludedScienceSync({
+    fetchCatalog: () => account()?.scienceCatalog() ?? Promise.resolve(null),
+    fetchAccess: () => account()?.scienceAccess() ?? Promise.resolve(null),
+    send: (message) => {
+      const proc = server();
+      if (!proc) return;
+      try { proc.postMessage(message); }
+      catch (error) { log(`Science sync failed: ${error?.message ?? error}`); }
+    },
+  });
+  return {
+    onState: (state) => Promise.all([x.onState(state), science.onState(state)]).then(() => {}),
+    serverStarted() { x.serverStarted(); science.serverStarted(); },
+  };
+}
