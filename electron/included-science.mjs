@@ -1,13 +1,6 @@
 import { createDesktopIncludedX } from "./included-x.mjs";
 
-// The science catalog and this sign-in's science relay access, handed to the
-// local server over the private parent port. Both are kept in memory only.
-//
-// The Cloud decides who is unlocked: a relay token is requested only while the
-// served Science section is unlocked, and renewed before it lapses so a new
-// turn never starts with a token about to expire. A refusal stands until the
-// plan version changes. A failed fetch sends nothing: the server keeps what it
-// last had. Sign-out clears both.
+// Security: the relay token is kept in memory only, never on disk.
 
 const CATALOG_MS = 6 * 3600_000;
 const RETRY_MS = 5 * 60_000;

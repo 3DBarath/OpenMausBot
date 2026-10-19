@@ -190,7 +190,7 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_CLOUD_X_URL = xUrl;
     if (parentEnv.OMB_CLOUD_X_TOKEN) childEnv.OMB_CLOUD_X_TOKEN = parentEnv.OMB_CLOUD_X_TOKEN;
   }
-  // The science catalog relay, same rule (server/testing/fake-science-relay.ts): its token crosses only with a loopback stub.
+  // The science relay token crosses only with a loopback stub.
   const scienceUrl = parentEnv.OMB_CLOUD_SCIENCE_URL?.trim() ?? "";
   if (/^http:\/\/127\.0\.0\.1:\d{1,5}(?:\/[A-Za-z0-9_-]+)*$/.test(scienceUrl)) {
     childEnv.OMB_CLOUD_SCIENCE_URL = scienceUrl;

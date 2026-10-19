@@ -1,5 +1,3 @@
-// The Connectors catalog this server shows: a signed-in desktop is handed one by its main process, a Cloud home fetches
-// its own from the science relay. Without either, the bundled teaser stands in.
 import { randomUUID } from "node:crypto";
 
 import { parseCatalogResponse, SCIENCE_TEASER, type CatalogResponse } from "../shared/connector-catalog.ts";
