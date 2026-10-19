@@ -36,6 +36,8 @@ async function fixture(t, options = {}) {
     if (req.url === "/api/cloud/desktop/catalog" && req.method === "GET" && req.headers.authorization === `Bearer ${accessToken}`) return send(f.catalog.status, f.catalog.body);
     for (const [route, answer] of [["/api/cloud/desktop/services/science", f.science], ["/api/cloud/desktop/upgrade", f.upgrade], ["/api/cloud/desktop/checkout", f.checkout], ["/api/cloud/desktop/interest", f.interest]]) {
       if (req.url !== route || req.method !== "POST" || req.headers.authorization !== `Bearer ${accessToken}`) continue;
+      if (answer.reset) return req.socket.destroy();
+      if (answer.delay) await sleep(answer.delay);
       if (typeof answer.body === "string") { res.writeHead(answer.status, { "content-type": "text/html" }); return res.end(answer.body); }
       return send(answer.status, answer.body);
     }
@@ -751,13 +753,16 @@ test("upgrade to Max", async t => {
   const post = f.requests.findLast(r => r.route === "/api/cloud/desktop/upgrade");
   assert.equal(post.method, "POST"); assert.equal(post.token, `Bearer ${accessToken}`); assert.deepEqual(JSON.parse(post.body), { plan: "max", source: "science" });
   assert.equal((await run(202, { cloudContractVersion: 1, status: "pending" })).outcome, "pending");
-  assert.equal((await run(200, { status: "upgraded" })).outcome, "failed");
+  assert.equal((await run(200, { status: "upgraded" })).outcome, "unknown");
   assert.equal((await run(402, { cloudContractVersion: 1, error: "payment_failed" })).outcome, "payment-failed");
   assert.equal((await run(409, { cloudContractVersion: 1, error: "already_on_plan" })).outcome, "already-on-plan");
   assert.equal((await run(409, { cloudContractVersion: 1, error: "plan_change_unavailable" })).outcome, "unavailable");
   assert.equal((await run(409, { cloudContractVersion: 1, error: "other" })).outcome, "failed");
   assert.equal((await run(429, { error: "rate_limited" })).outcome, "rate-limited");
-  assert.equal((await run(500, { error: "down" })).outcome, "failed");
+  for (const status of [502, 503]) assert.equal((await run(status, { error: "upstream_unavailable" })).outcome, "failed", String(status));
+  for (const status of [504, 524]) assert.equal((await run(status, "<!doctype html>timed out")).outcome, "pending", String(status));
+  assert.equal((await run(500, { error: "down" })).outcome, "unknown");
+  assert.equal((await run(500, "<!doctype html>oops")).outcome, "unknown");
   const checkouts = () => f.requests.filter(r => r.route === "/api/cloud/desktop/checkout").length;
   const had = checkouts();
   result = await run(409, { cloudContractVersion: 1, error: "not_subscribed" });
@@ -767,6 +772,45 @@ test("upgrade to Max", async t => {
   result = await run(401, { cloudContractVersion: 1, error: "invalid_token" });
   assert.equal(result.outcome, "failed"); assert.equal(sessions(), before + 1);
   assert.ok(!JSON.stringify(f.states).includes(accessToken));
+});
+
+test("an upgrade that outlasts the usual timeout, or loses its connection once sent, is pending; one never sent is unknown", async t => {
+  const timeouts = [], original = AbortSignal.timeout;
+  AbortSignal.timeout = ms => { timeouts.push(ms); return original.call(AbortSignal, ms >= 150_000 ? 50 : ms); };
+  t.after(() => { AbortSignal.timeout = original; });
+  let refuse = false;
+  const f = await fixture(t, { fetch: (url, init) => (refuse && url.endsWith("/upgrade")
+    ? Promise.reject(new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }))
+    : fetch(url, init)) });
+  await f.connect();
+  const sessions = () => f.requests.filter(r => r.route.endsWith("/session") && r.method === "GET").length;
+  const posts = () => f.requests.filter(r => r.route === "/api/cloud/desktop/upgrade").length;
+  f.upgrade = { status: 200, body: { cloudContractVersion: 1, status: "upgraded", tier: "max", trial: false }, delay: 300 };
+  timeouts.length = 0;
+  let before = sessions();
+  let result = await f.client.upgrade("max", "science");
+  assert.ok(Math.max(...timeouts) >= 150_000, `upgrade timeout ${Math.max(...timeouts)}`);
+  assert.equal(result.outcome, "pending"); assert.equal(posts(), 1); assert.equal(sessions(), before + 1);
+  f.entitlement = { plan: "pro", tier: "max", status: "active", expiresAt: f.now + 3600_000, version: 2 };
+  assert.equal((await f.client.refresh()).entitlement.tier, "max");
+  f.upgrade = { reset: true };
+  before = sessions();
+  result = await f.client.upgrade("max", "science");
+  assert.equal(result.outcome, "pending"); assert.equal(posts(), 2); assert.equal(sessions(), before + 1);
+  refuse = true;
+  result = await f.client.upgrade("max", "science");
+  assert.equal(result.outcome, "unknown"); assert.equal(posts(), 2);
+});
+
+test("an upgrade the Admin has no billing for opens the Cloud page", async t => {
+  const f = await fixture(t); await f.connect();
+  for (const body of [{ cloudContractVersion: 1, error: "not_found" }, "<!doctype html>not here"]) {
+    f.upgrade = { status: 404, body };
+    const result = await f.client.upgrade("max", "science");
+    assert.equal(result.outcome, "opened");
+    assert.equal(f.browsers.at(-1), `${f.origin}/cloud`);
+  }
+  assert.ok(!f.requests.some(r => r.route === "/api/cloud/desktop/checkout"));
 });
 
 test("My Cloud's line in the server menus says what is true now: the trial's end while it is ahead, always on while paid for, stopped when not, nothing when unknown", () => {

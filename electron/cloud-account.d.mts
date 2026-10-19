@@ -54,7 +54,13 @@ export interface CloudHomeLook { name: string; color: import("./cloud-buy.mjs").
  * again); `rate-limited`; or `failed` (nothing was opened). */
 export type CloudCheckoutOutcome = "opened" | "signing-in" | "conflict" | "rate-limited" | "failed";
 export interface CloudCheckoutResult { outcome: CloudCheckoutOutcome; state: CloudAccountState }
-export type CloudUpgradeOutcome = "upgraded" | "pending" | "payment-failed" | "unavailable" | "not-subscribed" | "already-on-plan" | "rate-limited" | "failed";
+/** What asking the Admin for Max did: `upgraded` or `already-on-plan`; `pending`
+ * (the charge is still going through, or the request may have reached the Admin
+ * with no answer: wait for the plan to change); `payment-failed`, `unavailable`,
+ * `not-subscribed` and `failed` (the Admin said the plan is unchanged);
+ * `rate-limited`; or `unknown` (nothing says whether the plan changed). A 404
+ * opens the Cloud page instead (`opened`). */
+export type CloudUpgradeOutcome = "upgraded" | "pending" | "payment-failed" | "unavailable" | "not-subscribed" | "already-on-plan" | "rate-limited" | "failed" | "unknown";
 export type CloudUpgradeResult = { outcome: CloudUpgradeOutcome; state: CloudAccountState } | CloudCheckoutResult;
 export interface CloudAccountBridge {
   state(): Promise<CloudAccountState>;

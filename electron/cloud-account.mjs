@@ -26,6 +26,12 @@ const CHECKING_AFTER = 2;
 const MAX_ENROLL_SECONDS = 1800;
 const OFFER_MS = 10 * 60_000, OFFER_RETRY_MS = 30_000;
 const CHECKOUT_WATCH_MS = 30 * 60_000, CHECKOUT_KEPT_MS = 24 * 3600_000;
+/** The Admin's plan change waits on Dodo's charge, which can take about two minutes. */
+const UPGRADE_TIMEOUT_MS = 180_000;
+/** Node's fetch failure causes that mean the request never left this computer. */
+const UNSENT_CAUSES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+/** A gateway that stopped waiting while the Admin may still finish: 504, and Cloudflare's origin timeout 524. */
+const GATEWAY_TIMEOUTS = [504, 524];
 export const CHECKOUT_SOURCES = Object.freeze(["app_card", "app_howto", "app_menu", "app_settings", "app_routines", "update_popup", "app_onboarding", "science"]);
 const CHECKOUT_ORIGIN = "https://checkout.dodopayments.com", TEST_CHECKOUT_ORIGIN = "https://test.checkout.dodopayments.com";
 /** Only Dodo's own HTTPS checkout origin, with no credentials and no fragment; anything else is never opened. Staging's
@@ -104,11 +110,11 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
   const reset = () => { generation++; stopTimer(); controller.abort(); controller = new AbortController(); pending = null; emailed = null; verifiedUntil = 0; failures = 0; return generation; };
   const current = stamp => !closed && generation === stamp;
   const versionHeader = text(appVersion, 40) && /^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$/.test(appVersion) ? { "x-openmausbot-version": appVersion } : {};
-  async function request(route, { method = "GET", body, token, signal = controller.signal, path = `/api/cloud/desktop/${route}` } = {}) {
+  async function request(route, { method = "GET", body, token, signal = controller.signal, timeout = 20_000, path = `/api/cloud/desktop/${route}` } = {}) {
     const response = await fetcher(`${origin}${path}`, {
       method, redirect: "error", credentials: "omit", cache: "no-store",
       headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...(token ? { authorization: `Bearer ${token}`, ...versionHeader } : {}) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
     });
     const reader = response.body?.getReader(), chunks = []; let size = 0;
     try {
@@ -363,23 +369,32 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     if (typeof plan !== "string" || !TIER.test(plan) || !CHECKOUT_SOURCES.includes(source)) throw new Error("Invalid Cloud upgrade.");
     if (state().status !== "connected" || !grant) throw new Error("Sign in to MausBot Cloud before choosing a plan.");
     const signedIn = grant;
-    const done = async outcome => (grant === signedIn ? { outcome, state: await refresh() } : { outcome: "failed", state: state() });
+    const done = async outcome => (grant === signedIn ? { outcome, state: await refresh() } : { outcome: "unknown", state: state() });
     let result;
-    try { result = await request("upgrade", { method: "POST", body: { plan, source }, token: signedIn.token }); }
+    try { result = await request("upgrade", { method: "POST", body: { plan, source }, token: signedIn.token, timeout: UPGRADE_TIMEOUT_MS }); }
     catch (error) {
-      if (error?.opaque) return { outcome: "failed", state: state() };
-      if (error?.status === 402 && error.code === "payment_failed") return { outcome: "payment-failed", state: state() };
-      if (error?.status === 409 && error.code === "not_subscribed") return openCheckout(plan, source).catch(() => ({ outcome: "not-subscribed", state: state() }));
-      if (error?.status === 409 && error.code === "already_on_plan") return done("already-on-plan");
-      if (error?.status === 409 && error.code === "plan_change_unavailable") return { outcome: "unavailable", state: state() };
-      if (error?.status === 429) return { outcome: "rate-limited", state: state() };
+      const status = error?.status;
+      if (!Number.isInteger(status)) return done(UNSENT_CAUSES.has(error?.cause?.code) ? "unknown" : "pending");
+      if (GATEWAY_TIMEOUTS.includes(status)) return done("pending");
+      if ([404, 405, 501].includes(status)) {
+        if (grant !== signedIn) return { outcome: "failed", state: state() };
+        await openBrowser(`${origin}/cloud`);
+        return { outcome: "opened", state: state() };
+      }
+      if ([502, 503].includes(status)) return { outcome: "failed", state: state() };
+      if (status === 429) return { outcome: "rate-limited", state: state() };
+      if (error.opaque) return done("unknown");
+      if (status === 402 && error.code === "payment_failed") return { outcome: "payment-failed", state: state() };
+      if (status === 409 && error.code === "not_subscribed") return openCheckout(plan, source).catch(() => ({ outcome: "not-subscribed", state: state() }));
+      if (status === 409 && error.code === "already_on_plan") return done("already-on-plan");
+      if (status === 409 && error.code === "plan_change_unavailable") return { outcome: "unavailable", state: state() };
       if (signInEnded(error)) return { outcome: "failed", state: await refresh() };
-      return { outcome: "failed", state: state() };
+      if (status >= 400 && status < 500) return { outcome: "failed", state: state() };
+      return done("unknown");
     }
-    if (result?.cloudContractVersion !== 1) return { outcome: "failed", state: state() };
-    if (result.status === "upgraded") return done("upgraded");
-    if (result.status === "pending") return done("pending");
-    return { outcome: "failed", state: state() };
+    if (result?.cloudContractVersion === 1 && result.status === "upgraded") return done("upgraded");
+    if (result?.cloudContractVersion === 1 && result.status === "pending") return done("pending");
+    return done("unknown");
   }
   /** Reopen checkout: the same page again, never a new one from the Admin; only with none kept here (the browser
    * sign-in led to it, or the app restarted) is the Admin asked, and it reopens the open one. Watches 30 minutes more. */
