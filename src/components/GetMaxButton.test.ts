@@ -25,6 +25,11 @@ let bridge: Record<string, ReturnType<typeof vi.fn>>;
 const settle = () => act(async () => { for (let turn = 0; turn < 8; turn += 1) await Promise.resolve(); });
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 const button = (label: string) => [...host.querySelectorAll("button")].find((element) => element.textContent?.trim() === label);
+const upgrade = async (label = "Get Max") => {
+  await act(async () => button(label)!.click());
+  await act(async () => button("Confirm")!.click());
+  await settle();
+};
 
 async function mount(account: CloudAccountState | null, extra: Record<string, unknown> = {}) {
   bridge = {
@@ -101,21 +106,36 @@ describe("Get Max", () => {
   it("disables the button while a request is in flight", async () => {
     let release: (value: unknown) => void = () => {};
     await mount(paid("pro"), { upgrade: vi.fn(() => new Promise((resolve) => { release = resolve; })) });
-    await act(async () => button("Get Max")!.click());
+    await upgrade();
     expect(button("Get Max")!.disabled).toBe(true);
     await act(async () => button("Get Max")!.click());
+    expect(button("Confirm")).toBeUndefined();
     expect(bridge.upgrade).toHaveBeenCalledTimes(1);
     await act(async () => release({ outcome: "failed", state: paid("pro") }));
     await settle();
     expect(button("Get Max")!.disabled).toBe(false);
   });
 
-  it.each(["personal", "pro"])("%s upgrades in place", async (tier) => {
-    await mount(paid(tier));
-    await act(async () => button("Get Max")!.click());
+  it.each(["personal", "pro"])("%s upgrades in place once the charge is confirmed", async (tier) => {
+    await mount(paid(tier), { offer: vi.fn(async () => offer) });
+    await act(async () => button("Get Max · $99/month")!.click());
+    expect(bridge.upgrade).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Move to Max now? You’ll pay the difference for the rest of this billing period today, then $99/month.");
+    await act(async () => button("Confirm")!.click());
     await settle();
     expect(bridge.upgrade).toHaveBeenCalledWith("max", "science");
     expect(bridge.checkout).not.toHaveBeenCalled();
+  });
+
+  it("Cancel leaves the plan alone", async () => {
+    await mount(paid("pro"));
+    await act(async () => button("Get Max")!.click());
+    expect(host.textContent).toContain("today, then the Max price each month.");
+    await act(async () => button("Cancel")!.click());
+    await settle();
+    expect(bridge.upgrade).not.toHaveBeenCalled();
+    expect(button("Confirm")).toBeUndefined();
+    expect(button("Get Max")!.disabled).toBe(false);
   });
 
   it.each([
@@ -124,23 +144,43 @@ describe("Get Max", () => {
     ["rate-limited", "Too many attempts. Try again in a few minutes."],
   ])("an upgrade that ends %s says so", async (outcome, text) => {
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome, state: paid("pro") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
     expect(host.textContent).toContain(text);
+  });
+
+  it.each([
+    ["an unknown outcome", vi.fn(async () => ({ outcome: "unknown", state: paid("pro") }))],
+    ["a thrown bridge error", vi.fn(async () => { throw new Error("IPC closed"); })],
+  ])("%s says to check the plan, never that it is unchanged", async (_name, call) => {
+    await mount(paid("pro"), { upgrade: call });
+    await upgrade();
+    expect(host.textContent).toContain("Check your plan in Settings → MausBot Cloud.");
+    expect(host.textContent).not.toContain("hasn't changed");
+    expect(host.textContent).not.toContain("hasn’t changed");
   });
 
   it.each(["upgraded", "already-on-plan"])("%s is a success and the button goes", async (outcome) => {
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome, state: paid("max") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
+    expect(host.textContent).toBe("");
+  });
+
+  it("an upgrade answered pending only after a long wait still waits for Max", async () => {
+    vi.useFakeTimers();
+    await mount(paid("pro"), { upgrade: vi.fn(() => new Promise((resolve) => { setTimeout(() => resolve({ outcome: "pending", state: paid("pro") }), 180_000); })) });
+    await upgrade();
+    expect(host.querySelector(".animate-spin")).not.toBeNull();
+    await advance(180_000);
+    expect(host.textContent).toContain("Waiting for your payment to go through…");
+    bridge.refresh.mockResolvedValue(paid("max"));
+    await advance(3_000);
     expect(host.textContent).toBe("");
   });
 
   it("a payment still going through waits for Max", async () => {
     vi.useFakeTimers();
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome: "pending", state: paid("pro") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
     expect(host.textContent).toContain("Waiting for your payment to go through…");
     expect(host.querySelector(".animate-spin")).not.toBeNull();
     await advance(3_000);
@@ -157,8 +197,7 @@ describe("Get Max", () => {
   it("stops after three minutes and says it is slow", async () => {
     vi.useFakeTimers();
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome: "pending", state: paid("pro") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
     await advance(3 * 60_000);
     const calls = bridge.refresh.mock.calls.length;
     expect(host.textContent).toContain("Your payment is taking longer than usual.");
@@ -169,8 +208,7 @@ describe("Get Max", () => {
   it("stops polling when it unmounts", async () => {
     vi.useFakeTimers();
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome: "pending", state: paid("pro") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
     await act(async () => root.unmount());
     root = createRoot(host);
     await advance(10_000);
@@ -179,8 +217,7 @@ describe("Get Max", () => {
 
   it("a plan that can't change now points to the Plan page", async () => {
     await mount(paid("pro"), { upgrade: vi.fn(async () => ({ outcome: "unavailable", state: paid("pro") })) });
-    await act(async () => button("Get Max")!.click());
-    await settle();
+    await upgrade();
     expect(host.textContent).toContain("Your plan can't be changed right now");
     await act(async () => button("Manage plan")!.click());
     expect(bridge.openDashboard).toHaveBeenCalledOnce();

@@ -7,6 +7,7 @@ import { usd } from "@/lib/cloud-plan";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
+import type { CloudUpgradeResult } from "../../electron/cloud-account.mjs";
 
 const UPGRADE_POLL_MS = 3_000;
 const UPGRADE_WAIT_MS = 3 * 60_000;
@@ -19,6 +20,7 @@ export function GetMaxButton({ className }: { className?: string }) {
   const bridge = window.ogb?.cloudAccount;
   const offer = useCloudOffer(plan !== null, plan?.account?.offer);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
   const inFlight = useRef(false);
   const waiting = outcome === "waiting";
@@ -42,30 +44,48 @@ export function GetMaxButton({ className }: { className?: string }) {
   if (mode === null || (mode === "checkout" && !bridge.checkout) || (mode === "upgrade" && !bridge.upgrade)) return null;
 
   const max = offer?.plans.find((entry) => entry.tier === "max");
-  const label = max ? t("science.getMax", { price: usd(max.amount / 100) }) : t("science.getMaxNoPrice");
+  const price = max ? usd(max.amount / 100) : null;
+  const label = price ? t("science.getMax", { price }) : t("science.getMaxNoPrice");
 
-  const start = async () => {
+  const run = async (kind: "checkout" | "upgrade") => {
     if (inFlight.current) return;
-    if (mode === "settings") { dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" }); return; }
     inFlight.current = true;
+    setConfirming(false);
     setBusy(true);
     setOutcome(null);
     try {
-      const result = mode === "upgrade" ? await bridge.upgrade!("max", "science") : await bridge.checkout!("max", "science");
-      setOutcome(outcomeFor(mode, result.outcome));
+      const result = kind === "upgrade" ? await bridge.upgrade!("max", "science") : await bridge.checkout!("max", "science");
+      setOutcome(outcomeFor(kind, result.outcome));
     } catch {
-      setOutcome(mode === "upgrade" ? "science.upgradeError" : "cloudAdd.failed");
+      setOutcome(kind === "upgrade" ? "science.upgradeUnknown" : "cloudAdd.failed");
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
   };
 
+  const start = () => {
+    if (inFlight.current) return;
+    if (mode === "settings") { dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" }); return; }
+    if (mode === "checkout") { void run("checkout"); return; }
+    setOutcome(null);
+    setConfirming(true);
+  };
+
   return (
     <div className={cn("flex flex-col items-end gap-1.5", className)}>
-      <button type="button" disabled={busy || waiting} onClick={() => void start()} className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-2 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-40">
+      <button type="button" disabled={busy || waiting || confirming} onClick={start} className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-2 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-40">
         {busy || waiting ? <Loader2 size={14} className="animate-spin" /> : <Crown size={14} />} {label}
       </button>
+      {confirming && (
+        <div className="flex max-w-xs flex-col items-end gap-1.5 text-right text-[11.5px] text-ink-secondary">
+          {price ? t("science.upgradeConfirm", { price }) : t("science.upgradeConfirmNoPrice")}
+          <div className="flex gap-1.5">
+            <button type="button" onClick={() => setConfirming(false)} className="rounded-lg bg-control px-2.5 py-1.5 text-[12px] text-ink hover:bg-raised-hover">{t("common.cancel")}</button>
+            <button type="button" onClick={() => void run("upgrade")} className="rounded-lg bg-accent px-2.5 py-1.5 text-[12px] font-medium text-white hover:brightness-110">{t("science.upgradeConfirmAction")}</button>
+          </div>
+        </div>
+      )}
       {waiting && <div role="status" className="text-[11.5px] text-ink-secondary">{t("science.upgradePending")}</div>}
       {outcome === "slow" && <div role="status" className="max-w-xs text-right text-[11.5px] text-ink-secondary">{t("science.upgradeSlow")}</div>}
       {outcome === "unavailable" && (
@@ -81,12 +101,27 @@ export function GetMaxButton({ className }: { className?: string }) {
   );
 }
 
-function outcomeFor(mode: "checkout" | "upgrade", outcome: string): Outcome {
-  if (outcome === "upgraded" || outcome === "already-on-plan") return "done";
-  if (outcome === "pending") return "waiting";
-  if (outcome === "unavailable") return "unavailable";
-  if (outcome === "payment-failed") return "science.upgradeFailed";
-  if (outcome === "rate-limited") return mode === "upgrade" ? "science.upgrade.rateLimited" : "cloudAdd.rateLimited";
-  if (outcome === "opened" || outcome === "signing-in") return null;
-  return mode === "upgrade" ? "science.upgradeError" : "cloudAdd.failed";
+function outcomeFor(mode: "checkout" | "upgrade", outcome: CloudUpgradeResult["outcome"]): Outcome {
+  switch (outcome) {
+    case "upgraded":
+    case "already-on-plan":
+      return "done";
+    case "pending":
+      return "waiting";
+    case "unavailable":
+      return "unavailable";
+    case "payment-failed":
+      return "science.upgradeFailed";
+    case "rate-limited":
+      return mode === "upgrade" ? "science.upgrade.rateLimited" : "cloudAdd.rateLimited";
+    case "opened":
+    case "signing-in":
+      return null;
+    case "unknown":
+      return "science.upgradeUnknown";
+    case "failed":
+    case "not-subscribed":
+    case "conflict":
+      return mode === "upgrade" ? "science.upgradeError" : "cloudAdd.failed";
+  }
 }
