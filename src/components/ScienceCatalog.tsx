@@ -63,7 +63,11 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
   const changed = useRef(onServersChanged);
   changed.current = onServersChanged;
 
-  useEffect(() => () => abort.current.abort(), []);
+  useEffect(() => {
+    const controller = new AbortController();
+    abort.current = controller;
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const load = ++loads.current;
@@ -88,11 +92,10 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
   const connected = useMemo(() => (section ? connectedEntries(section, servers) : []), [section, servers]);
   const report = useRef(onConnections);
   report.current = onConnections;
-  const reportKey = connected.map((e) => e.id).join(",");
+  const connections = JSON.stringify(connected.map((e): ScienceConnection => ({ id: e.id, name: e.name, domain: e.domain })));
   useEffect(() => {
-    report.current(connected.map((e) => ({ id: e.id, name: e.name, domain: e.domain })));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportKey]);
+    report.current(JSON.parse(connections) as ScienceConnection[]);
+  }, [connections]);
 
   const patch = useCallback((id: string, next: Partial<Local>) => setLocal((all) => ({ ...all, [id]: { ...(all[id] ?? IDLE), ...next } })), []);
   const fail = useCallback((id: string, error: string | null) => setErrors((all) => {
@@ -117,12 +120,8 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
     fail(entry.id, null);
     patch(entry.id, { busy: true });
     const result = await connectEntry(entry, deps(entry.id), address);
-    if (abort.current.signal.aborted) return;
-    if (result.ok) patch(entry.id, { ...IDLE });
-    else {
-      patch(entry.id, { busy: false, signIn: null });
-      fail(entry.id, result.error);
-    }
+    patch(entry.id, result.ok ? { ...IDLE } : { busy: false, signIn: null });
+    if (!result.ok) fail(entry.id, result.error);
   };
 
   const toggleForm = (entry: CatalogEntry) => {
@@ -138,9 +137,10 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
     try {
       await turnOff(server, deps(entry.id));
     } catch (cause) {
-      if (!abort.current.signal.aborted) fail(entry.id, message(cause));
+      fail(entry.id, message(cause));
+    } finally {
+      patch(entry.id, { busy: false });
     }
-    if (!abort.current.signal.aborted) patch(entry.id, { busy: false });
   };
 
   const completeSignIn = async (entry: CatalogEntry, callbackUrl: string) => {
@@ -166,10 +166,12 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
   const connectRemaining = async () => {
     setBulk(true);
     remaining.forEach((e) => fail(e.id, null));
-    const results = await connectPublic(remaining, deps(null));
-    if (abort.current.signal.aborted) return;
-    for (const [id, result] of Object.entries(results)) if (!result.ok && result.error) fail(id, result.error);
-    setBulk(false);
+    try {
+      const results = await connectPublic(remaining, deps(null));
+      for (const [id, result] of Object.entries(results)) if (!result.ok && result.error) fail(id, result.error);
+    } finally {
+      setBulk(false);
+    }
   };
 
   if (view === "hidden" || !section || (pending && view !== "science")) return null;
@@ -202,9 +204,11 @@ export function ScienceCatalog({ view, search, onViewAll, onConnections, onServe
 
   const flat = (entries: CatalogEntry[], id: string, viewAll?: () => void) =>
     entries.length > 0 && (
-      <AppsSection id={id} title={t("apps.filter.science")} viewAll={viewAll ? { label: t("apps.viewAll"), onClick: viewAll } : undefined}>
-        {entries.map(renderTile)}
-      </AppsSection>
+      <div data-apps-grid="true" className="@container mb-7 flex flex-col gap-7 pt-1">
+        <AppsSection id={id} title={t("apps.filter.science")} viewAll={viewAll ? { label: t("apps.viewAll"), onClick: viewAll } : undefined}>
+          {entries.map(renderTile)}
+        </AppsSection>
+      </div>
     );
 
   if (view === "all") return flat(allViewEntries(section, search), "science-all", search.trim() ? undefined : onViewAll) || null;

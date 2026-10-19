@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -92,13 +92,14 @@ function serve() {
 
 const element = (props: Props) => createElement(ScienceCatalog, { view: "science", search: "", ...props, ...callbacks });
 
-async function mount(props: Props = {}) {
+async function mount(props: Props = {}, strict = false) {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root.render(element(props)));
+  await act(async () => root.render(strict ? createElement(StrictMode, null, element(props)) : element(props)));
   await settle();
 }
+const container = (section: string) => host.querySelector(`[data-apps-section="${section}"]`)!.closest<HTMLElement>('[class~="@container"]');
 
 beforeEach(() => {
   setLocale("en");
@@ -251,6 +252,29 @@ describe("ScienceCatalog", () => {
     servers = [{ name: "chembl", type: "http", url: "https://relay.example/chembl/mcp", enabled: true, auth: "signed-in", catalog: { id: "chembl", auth: "cloud" } }];
     await mount({ view: "connected" });
     expect([...host.querySelectorAll("[data-app-tile]")].map((t) => t.getAttribute("data-app-tile"))).toEqual(["chembl"]);
+  });
+
+  it.each([["all", "science-all"], ["connected", "science-connected"]] as const)("the %s view's section sits in a sized grid spaced like the sections below it", async (view, section) => {
+    servers = [{ name: "chembl", type: "http", url: "https://relay.example/chembl/mcp", enabled: true, auth: "signed-in", catalog: { id: "chembl", auth: "cloud" } }];
+    await mount({ view });
+    const grid = container(section);
+    expect(grid).not.toBeNull();
+    expect(grid!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "gap-7", "pt-1", "mb-7"]));
+  });
+
+  it("connects, turns off and connects all under StrictMode", async () => {
+    await mount({}, true);
+    await act(async () => button("Connect", tile("pubmed"))!.click());
+    await settle();
+    expect(tile("pubmed").querySelector('[aria-label="Connected"]')).not.toBeNull();
+    await act(async () => button("Turn off", tile("pubmed"))!.click());
+    await settle();
+    expect(tile("pubmed").querySelector('[aria-label="Connected"]')).toBeNull();
+    expect(button("Connect", tile("pubmed"))!.disabled).toBe(false);
+    await act(async () => button("Connect the 5 public databases")!.click());
+    await settle();
+    expect(button("Public databases connected")!.disabled).toBe(true);
+    expect(mutations().filter(([m, , b]) => m === "PATCH" && b.enabled === true)).toHaveLength(6);
   });
 
   it("hidden still reports connections", async () => {
