@@ -46,6 +46,7 @@ export function GetMaxButton({ className }: { className?: string }) {
   const max = offer?.plans.find((entry) => entry.tier === "max");
   const price = max ? usd(max.amount / 100) : null;
   const label = price ? t("science.getMax", { price }) : t("science.getMaxNoPrice");
+  const asking = confirming && mode === "upgrade";
 
   const run = async (kind: "checkout" | "upgrade") => {
     if (inFlight.current) return;
@@ -74,10 +75,10 @@ export function GetMaxButton({ className }: { className?: string }) {
 
   return (
     <div className={cn("flex flex-col items-end gap-1.5", className)}>
-      <button type="button" disabled={busy || waiting || confirming} onClick={start} className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-2 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-40">
+      <button type="button" disabled={busy || waiting || asking} onClick={start} className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-2 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-40">
         {busy || waiting ? <Loader2 size={14} className="animate-spin" /> : <Crown size={14} />} {label}
       </button>
-      {confirming && (
+      {asking && (
         <div className="flex max-w-xs flex-col items-end gap-1.5 text-right text-[11.5px] text-ink-secondary">
           {price ? t("science.upgradeConfirm", { price }) : t("science.upgradeConfirmNoPrice")}
           <div className="flex gap-1.5">
