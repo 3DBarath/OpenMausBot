@@ -1617,7 +1617,12 @@
   "oneWorkspace.chatsMany": "{count} Chats",
   "oneWorkspace.automationsOne": "1 Automatisierung",
   "oneWorkspace.automationsMany": "{count} Automatisierungen",
-  "oneWorkspace.twinBoth": "{chats} und {automations}",
   "oneWorkspace.twinOnCloud": "Auch auf {cloud}: {what}",
-  "oneWorkspace.twinOnComputer": "Auch auf diesem Computer: {what}"
+  "oneWorkspace.twinOnComputer": "Auch auf diesem Computer: {what}",
+  "oneWorkspace.newerOne": "1 neuere Nachricht",
+  "oneWorkspace.newerMany": "{count} neuere Nachrichten",
+  "oneWorkspace.listLast": "{list} und {last}",
+  "oneWorkspace.listJoin": ", ",
+  "oneWorkspace.copyOnCloud": "Das ist die Kopie von {name} auf {cloud}, für Routinen, während dieser Computer aus ist. Dein Chat mit {name} ist auf diesem Computer.",
+  "oneWorkspace.copyOnComputer": "Das ist die Kopie von {name} auf diesem Computer. Dein Chat mit {name} ist auf {cloud}."
 }

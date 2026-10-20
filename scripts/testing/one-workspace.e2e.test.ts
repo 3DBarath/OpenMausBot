@@ -162,6 +162,26 @@ it("after Send everything every bot is on both sides with the same id: each show
   expect(fromCloud.hidden.has(ids.juno)).toBe(true);
   expect(fromCloud.homes.get(ids.juno)).toEqual({ side: "computer", twin: true });
   expect(fromCloud.twinWork.get(ids.juno)).toMatchObject({ side: "cloud", chats: 1, automations: 1, threadId: phone });
+
+  // Even with My Cloud's Juno open on My Cloud's page (from a notification, say), the row stays this computer's Juno,
+  // and opening it goes home at that same chat.
+  const openOnCloud = mergeWorkspace(await later.call<OneWorkspaceView>("one-workspace:view", "cloud"), { ...cloud, selectedId: ids.juno });
+  const cloudJunoThread = cloud.bots.find((bot) => bot.id === ids.juno)!.threadId;
+  expect(openOnCloud.hidden.has(ids.juno)).toBe(true);
+  expect(openOnCloud.opened).toEqual(cloudJunoThread === here?.threadId ? { id: ids.juno, threadId: cloudJunoThread } : { id: ids.juno });
+
+  // A phone message into the chat both copies have (the same conversation id) is never invisible here: the line counts
+  // the newer messages My Cloud has there and opens My Cloud at that chat.
+  const shared = here!.threadId;
+  expect((await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "(from my phone) Also add the venue.", threadId: shared })).status).toBe(202);
+  await settled("onCloud", ids.juno);
+  const phoneLater = wireOneWorkspace(fx, { file: join(fx.root, "twins-phone.json") });
+  const withNewer = rows(await phoneLater.call<OneWorkspaceView>("one-workspace:view", "local"), await storeOf("local"));
+  expect(withNewer.merged.twinWork.get(ids.juno)).toMatchObject({ side: "cloud", chats: 1, newer: 2, automations: 1 });
+  await phoneLater.call("one-workspace:open", "local", { side: "cloud", id: ids.juno, threadId: shared });
+  expect(await phoneLater.call<string>("one-workspace:take", "cloud")).toBe(`openmausbot://thread/${shared}?bot=${ids.juno}`);
+  // Nothing of it came to this computer's chat: Phase 1 only shows where it is.
+  expect(said((await bots("local")).find((bot) => bot.id === ids.juno), "(from my phone) Also add the venue.")).toBeUndefined();
 }, hostTimeout(120_000));
 
 it("an unreachable or asleep My Cloud keeps its bots (an asleep one is never called), then and after a restart", async () => {

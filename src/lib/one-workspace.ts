@@ -14,11 +14,13 @@ export interface Home {
   twin: boolean;
 }
 
-/** What the copy out of sight has of its own, on `side`: conversations the shown copy lacks (chats from a phone, its
- * routines' and webhooks' reports), whether any of them is unread, the newest of them, and its switched-on automations. */
+/** What the copy out of sight has that the copy its row opens lacks, on `side`: conversations of its own (chats from a
+ * phone, its routines' and webhooks' reports), newer messages in conversations both have, whether any of that is
+ * unread, the conversation to open for it, and its switched-on automations. */
 export interface TwinWork {
   side: WorkspaceSide;
   chats: number;
+  newer: number;
   unread: boolean;
   automations: number;
   threadId?: string;
@@ -32,12 +34,32 @@ export function threadsOf(bot: Conversations): string[] {
   return [...new Set([...(bot.threadId ? [bot.threadId] : []), ...open])];
 }
 
-export function ownWork(hidden: { threads?: readonly string[]; unreadThreads?: readonly string[]; automations?: number }, shownThreads: readonly string[], side: WorkspaceSide): TwinWork | null {
+/** `newer`: per conversation both copies have, how many messages the copy out of sight has after the shown copy's newest. */
+export function ownWork(hidden: { threads?: readonly string[]; unreadThreads?: readonly string[]; automations?: number }, shownThreads: readonly string[], side: WorkspaceSide,
+  newer: ReadonlyMap<string, number> = new Map()): TwinWork | null {
   const shown = new Set(shownThreads);
   const own = (hidden.threads ?? []).filter((id) => !shown.has(id));
+  const ahead = (hidden.threads ?? []).filter((id) => shown.has(id) && (newer.get(id) ?? 0) > 0);
   const automations = hidden.automations ?? 0;
-  if (!own.length && !automations) return null;
-  return { side, chats: own.length, unread: (hidden.unreadThreads ?? []).some((id) => own.includes(id)), automations, ...(own[0] ? { threadId: own[0] } : {}) };
+  if (!own.length && !ahead.length && !automations) return null;
+  const threadId = (hidden.threads ?? []).find((id) => own.includes(id) || ahead.includes(id));
+  return {
+    side, chats: own.length, newer: ahead.reduce((sum, id) => sum + (newer.get(id) ?? 0), 0),
+    unread: (hidden.unreadThreads ?? []).some((id) => own.includes(id) || ahead.includes(id)), automations, ...(threadId ? { threadId } : {}),
+  };
+}
+
+/** The one rule for a bot or room both sides have (Send keeps its id): its row opens its home, on either page. The
+ * home is this computer, where Send copied it from, unless the bots were moved to My Cloud (`twinHome`). True when
+ * `id` is on both sides and this page holds the copy out of sight. */
+export function awayFromHome(view: OneWorkspaceView | null, id: string): boolean {
+  if (!view || view.twinHome === view.page) return false;
+  return view.other.bots.some((bot) => bot.id === id) || view.other.rooms.some((room) => room.id === id);
+}
+
+/** Newer-message counts for one bot, from the copy on `side`'s point of view. */
+export function newerOn(view: OneWorkspaceView, id: string, side: WorkspaceSide): Map<string, number> {
+  return new Map((view.newer?.[id] ?? []).map((entry) => [entry.threadId, entry[side]]));
 }
 
 /** One page's own bots and rooms (its store) beside the other side's, each id once. */
@@ -47,14 +69,17 @@ export interface MergedWorkspace {
   cloudName: string;
   state: SideState;
   reason?: string;
-  /** This page's own ids that show as their other copy instead. */
+  /** This page's own ids whose row is their home copy on the other side. */
   hidden: ReadonlySet<string>;
   /** The other side's bots and rooms that show here. */
   bots: RosterBot[];
   rooms: RosterRoom[];
   homes: ReadonlyMap<string, Home>;
-  /** For a bot both sides have: what its copy out of sight has of its own, when it has anything. */
+  /** For a bot both sides have: what its copy out of sight has that its home copy lacks, when it has anything. */
   twinWork: ReadonlyMap<string, TwinWork>;
+  /** The copy out of sight this page has open anyway (a notification, a search, a routine run), and its conversation
+   * when the home copy has it too: its row opens the home there. */
+  opened?: { id: string; threadId?: string };
   /** Teams only the other side has, in its order. */
   sections: string[];
   /** Every team to list, the same on both pages: this computer's in its order, then My Cloud's own. */
@@ -72,15 +97,11 @@ interface HereSide {
   selectedId?: string | null;
 }
 
-/**
- * Every id shows once. A bot or room both sides have (Send keeps its id) shows as `twinHome`'s copy, except the copy
- * this page has open, which keeps its row.
- */
+/** Every id shows once: a bot or room both sides have shows as its home copy (`awayFromHome`), whichever page this is. */
 export function mergeWorkspace(view: OneWorkspaceView, here: HereSide): MergedWorkspace {
   const page = view.page, other = view.other.side;
   const mine = new Set([...here.bots.filter((bot) => !bot.hidden).map((bot) => bot.id), ...here.groups.filter((group) => !group.dm).map((group) => group.id)]);
   const theirs = new Set([...view.other.bots.map((bot) => bot.id), ...view.other.rooms.map((room) => room.id)]);
-  const hereWins = (id: string) => id === here.selectedId || view.twinHome === page;
   const hidden = new Set<string>();
   const homes = new Map<string, Home>();
   const shownThere = <T extends { id: string }>(items: readonly T[]) => items.filter((item) => {
@@ -88,7 +109,7 @@ export function mergeWorkspace(view: OneWorkspaceView, here: HereSide): MergedWo
       homes.set(item.id, { side: other, twin: false });
       return true;
     }
-    if (hereWins(item.id)) return false;
+    if (!awayFromHome(view, item.id)) return false;
     hidden.add(item.id);
     homes.set(item.id, { side: other, twin: true });
     return true;
@@ -102,17 +123,33 @@ export function mergeWorkspace(view: OneWorkspaceView, here: HereSide): MergedWo
     if (!ownBot) continue;
     const ownThreads = threadsOf(ownBot);
     const work = hidden.has(theirBot.id)
-      ? ownWork({ threads: ownThreads, unreadThreads: (ownBot.tasks ?? []).filter((task) => task.unread && task.archivedAt === undefined).map((task) => task.threadId), automations: here.automations?.get(ownBot.id) }, theirBot.threads ?? [], page)
-      : ownWork(theirBot, ownThreads, other);
+      ? ownWork({ threads: ownThreads, unreadThreads: (ownBot.tasks ?? []).filter((task) => task.unread && task.archivedAt === undefined).map((task) => task.threadId), automations: here.automations?.get(ownBot.id) },
+        theirBot.threads ?? [], page, newerOn(view, theirBot.id, page))
+      : ownWork(theirBot, ownThreads, other, newerOn(view, theirBot.id, other));
     if (work) twinWork.set(theirBot.id, work);
   }
+  const openedId = here.selectedId && hidden.has(here.selectedId) ? here.selectedId : null;
+  const openedThread = openedId ? here.bots.find((bot) => bot.id === openedId)?.threadId : undefined;
+  const opened = openedId ? { id: openedId, ...(openedThread && view.other.bots.find((bot) => bot.id === openedId)?.threads?.includes(openedThread) ? { threadId: openedThread } : {}) } : undefined;
   const known = new Set([...(here.sections ?? []), ...here.bots.flatMap((bot) => bot.section ? [bot.section] : []), ...here.groups.flatMap((group) => group.section ? [group.section] : [])].map((name) => name.trim()));
   const sections = [...new Set([...view.other.sections, ...bots.flatMap((bot) => bot.section ? [bot.section] : []), ...rooms.flatMap((room) => room.section ? [room.section] : [])])]
     .filter((name) => !known.has(name.trim()) && [...bots, ...rooms].some((item) => item.section === name));
   const mineTeams = here.sections ?? [];
   const [computerTeams, cloudTeams] = page === "computer" ? [mineTeams, view.other.sections] : [view.other.sections, mineTeams];
   const teams = [...new Set([...computerTeams, ...cloudTeams])].filter((name) => mineTeams.includes(name) || sections.includes(name));
-  return { page, other, cloudName: view.cloudName, state: view.other.state, ...(view.other.reason ? { reason: view.other.reason } : {}), hidden, bots, rooms, homes, twinWork, sections, teams };
+  return { page, other, cloudName: view.cloudName, state: view.other.state, ...(view.other.reason ? { reason: view.other.reason } : {}), hidden, bots, rooms, homes, twinWork,
+    ...(opened ? { opened } : {}), sections, teams };
+}
+
+/** Of a page's own bots, the one a welcome greets: a Chief at home here, else any bot at home here, else (when every
+ * bot here is a copy of one whose home is elsewhere) that home's, which `elsewhere` opens on its own side. */
+export function greetedBot<T extends { id: string; chiefOfStaff?: boolean }>(bots: readonly T[], away: (id: string) => boolean): { bot: T | null; elsewhere: boolean } {
+  const atHome = bots.filter((bot) => !away(bot.id));
+  const pick = (from: readonly T[]) => from.find((bot) => bot.chiefOfStaff) ?? from[0] ?? null;
+  const home = pick(atHome);
+  if (home) return { bot: home, elsewhere: false };
+  const bot = pick(bots);
+  return { bot, elsewhere: Boolean(bot) };
 }
 
 /** The other side's rows a sidebar section holds: a team's by name, else the built-in Bots and Channels sections. */
@@ -232,11 +269,11 @@ export const automationsByBot = lastOf((routines: ReadonlyArray<{ botId: string;
   return counts;
 });
 
-/** For a row of this page's own that shows: what its copy on the other side has of its own, if anything. */
+/** For a row of this page's own that shows: what its copy on the other side has that this one lacks, if anything. */
 export function useTwinWork(bot: { id: string } & Conversations): TwinWork | null {
   const { view } = useOneWorkspace();
   const theirs = view?.other.bots.find((entry) => entry.id === bot.id);
-  return view && theirs ? ownWork(theirs, threadsOf(bot), view.other.side) : null;
+  return view && theirs ? ownWork(theirs, threadsOf(bot), view.other.side, newerOn(view, bot.id, view.other.side)) : null;
 }
 
 export function useOwnHome(id: string): Home | null {

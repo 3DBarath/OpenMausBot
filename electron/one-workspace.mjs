@@ -18,6 +18,8 @@ const ROSTER_ROUTE = "/api/bots?messages=0";
 const AUTOMATION_ROUTES = [`/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"];
 export const AUTOMATIONS_FRESH_MS = 60_000;
 const MAX_THREADS = 300;
+/** How much of a conversation both copies have is compared: its newest messages. */
+const THREAD_PAGE = 200;
 const ACTIVITIES = new Set(["working", "waiting-on-you", "idle", "no-signal", "dead", "parked.computer"]);
 const PICTURE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const ID = /^[\w-]{1,128}$/;
@@ -71,6 +73,32 @@ export function rosterBot(bot) {
     ...optional("cloudBackend", typeof bot.cloudBackend === "string" ? text(bot.cloudBackend, 20) : undefined),
     ...conversations(bot),
   };
+}
+
+/** Each bot's open conversations and the time of each one's newest message: what tells two copies of one apart. */
+export function threadTimes(body) {
+  const times = new Map();
+  for (const bot of Array.isArray(body?.bots) ? body.bots : []) {
+    if (!record(bot) || typeof bot.id !== "string" || !ID.test(bot.id) || bot.hidden === true) continue;
+    const threads = new Map();
+    for (const task of Array.isArray(bot.tasks) ? bot.tasks : []) {
+      if (record(task) && typeof task.threadId === "string" && ID.test(task.threadId) && task.archivedAt === undefined) threads.set(task.threadId, number(task.updatedAt) ?? 0);
+    }
+    times.set(bot.id, threads);
+  }
+  return times;
+}
+
+/** Of two copies of one conversation (each its newest text messages, oldest first), how many messages each has after
+ * the newest one the other has. A message both have keeps its id there; without one in common, time decides. */
+export function aheadCounts(cloudMessages, computerMessages) {
+  const after = (mine, theirs) => {
+    const last = theirs.at(-1);
+    if (!last) return mine.length;
+    const index = mine.findIndex((message) => message.id === last.id);
+    return index >= 0 ? mine.length - index - 1 : mine.filter((message) => message.at > last.at).length;
+  };
+  return { cloud: after(cloudMessages, computerMessages), computer: after(computerMessages, cloudMessages) };
 }
 
 /** How many switched-on routines and webhooks each bot has, from GET /api/routines and GET /api/webhooks. */
@@ -129,7 +157,10 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
     try { const value = store.read(); saved = record(value) ? value : {}; } catch { saved = {}; }
     return saved;
   };
-  const sides = Object.fromEntries(SIDES.map((side) => [side, { roster: null, refreshing: null, pictures: new Map(), automations: null }]));
+  const sides = Object.fromEntries(SIDES.map((side) => [side, { roster: null, refreshing: null, pictures: new Map(), automations: null, times: null, timesAt: null, reading: null }]));
+  /** Conversations both copies of a bot have, with the messages each copy has after the other's newest. */
+  let newer = new Map(), mirroring = null;
+  const counted = new Map();
   let pending = null;
 
   const save = (patch) => { saved = { ...kept(), ...patch }; try { store.write(saved); } catch {} };
@@ -197,6 +228,8 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       return keep("unreachable", why ? { reason: why } : {});
     }
     const lists = parseRoster(body);
+    sides[side].times = threadTimes(body);
+    sides[side].timesAt = now();
     const counts = await automations(side);
     const bots = (await withPictures(side, lists.bots)).map((bot) => (counts.get(bot.id) ? { ...bot, automations: counts.get(bot.id) } : bot));
     const roster = { side, state: "ready", at: now(), ...lists, bots };
@@ -224,6 +257,66 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
     return entry.automations.counts;
   }
 
+  /** This page's own side's conversation times, for comparing them with the other side's. */
+  function readTimes(side) {
+    const entry = sides[side];
+    if (entry.timesAt !== null && now() - entry.timesAt < ROSTER_FRESH_MS) return Promise.resolve();
+    if (side === "cloud" && (!cloud()?.origin || power?.asleep())) return Promise.resolve();
+    entry.reading ??= (async () => {
+      try {
+        const response = await readerOf(side)(ROSTER_ROUTE);
+        if (!response.ok) { await response.body?.cancel?.(); return; }
+        entry.times = threadTimes(await response.json());
+        entry.timesAt = now();
+      } catch {}
+    })().finally(() => { entry.reading = null; });
+    return entry.reading;
+  }
+
+  async function texts(side, threadId) {
+    const response = await readerOf(side)(`/api/threads/${threadId}/messages?limit=${THREAD_PAGE}`);
+    if (!response.ok) { await response.body?.cancel?.(); throw new Error(`${response.status}`); }
+    const body = await response.json();
+    return (Array.isArray(body?.messages) ? body.messages : [])
+      .filter((message) => record(message) && message.kind === "text" && typeof message.id === "string")
+      .map((message) => ({ id: message.id, at: number(message.at) ?? 0 }));
+  }
+
+  /** Reads a conversation's messages on both sides only when their newest-message times differ, once per change. */
+  async function readNewer() {
+    const cloudTimes = sides.cloud.times, computerTimes = sides.computer.times;
+    if (!cloudTimes || !computerTimes) return newer;
+    const next = new Map();
+    for (const [botId, cloudThreads] of cloudTimes) {
+      const computerThreads = computerTimes.get(botId);
+      if (!computerThreads) continue;
+      for (const [threadId, cloudAt] of cloudThreads) {
+        const computerAt = computerThreads.get(threadId);
+        if (computerAt === undefined || computerAt === cloudAt) continue;
+        const key = `${botId}:${threadId}`, version = `${cloudAt}:${computerAt}`;
+        let entry = counted.get(key);
+        if (entry?.version !== version && !power?.asleep()) {
+          try {
+            const [onCloud, onComputer] = await Promise.all([texts("cloud", threadId), texts("computer", threadId)]);
+            entry = { version, counts: aheadCounts(onCloud, onComputer) };
+            counted.set(key, entry);
+          } catch {}
+        }
+        if (entry && (entry.counts.cloud || entry.counts.computer)) next.set(botId, [...(next.get(botId) ?? []), { threadId, ...entry.counts }]);
+      }
+    }
+    return next;
+  }
+
+  function refreshNewer() {
+    mirroring ??= readNewer().then((next) => {
+      const changed = JSON.stringify([...next]) !== JSON.stringify([...newer]);
+      newer = next;
+      if (changed) onChange();
+    }).finally(() => { mirroring = null; });
+    return mirroring;
+  }
+
   const comparable = (roster) => roster && JSON.stringify({ ...roster, at: null });
   const same = (a, b) => comparable(a) === comparable(b);
   function refresh(side) {
@@ -239,7 +332,8 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
 
   function snapshot(page, roster) {
     const target = cloud();
-    return { page, twinHome: twinHome() === "cloud" ? "cloud" : "computer", cloudName: text(target?.name, 60) || "My Cloud", other: roster };
+    return { page, twinHome: twinHome() === "cloud" ? "cloud" : "computer", cloudName: text(target?.name, 60) || "My Cloud", other: roster,
+      ...(newer.size ? { newer: Object.fromEntries(newer) } : {}) };
   }
 
   function rosterFor(side) {
@@ -266,7 +360,8 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       const stale = !entry.roster || entry.roster.at === null || now() - entry.roster.at >= ROSTER_FRESH_MS || entry.roster.state !== "ready";
       if (stale) {
         let timer;
-        await Promise.race([refresh(side), new Promise((resolve) => { timer = setTimeout(resolve, readWaitMs); timer.unref?.(); })]);
+        const reading = Promise.all([refresh(side), readTimes(page)]).then(refreshNewer);
+        await Promise.race([reading, new Promise((resolve) => { timer = setTimeout(resolve, readWaitMs); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       if (!available()) return null;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { automationCounts, AUTOMATIONS_FRESH_MS, createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot } from "./one-workspace.mjs";
+import { aheadCounts, automationCounts, AUTOMATIONS_FRESH_MS, createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot } from "./one-workspace.mjs";
 
 const CLOUD = "https://omb-u-1.fly.dev";
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -56,7 +56,9 @@ test("each page gets the other side: this computer's page reads My Cloud, My Clo
   assert.deepEqual(fromLocal.other.bots.map((entry) => entry.id), ["atlas"]);
   const fromCloud = await one.view("cloud");
   assert.deepEqual(fromCloud.other.bots.map((entry) => entry.id), ["ember"]);
-  assert.deepEqual(calls, { cloud: ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"], local: ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"] });
+  // Each side once for its bots and automations; this computer's page also reads this computer's conversation times.
+  assert.deepEqual(calls.cloud, ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"]);
+  assert.deepEqual([...new Set(calls.local)], ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"]);
   assert.equal(await one.view("server"), null);
 });
 
@@ -356,4 +358,39 @@ test("opening the other copy's own conversation hands that side's page the conve
   assert.equal(one.take("cloud"), "openmausbot://thread/phone-1?bot=ember");
   one.open("computer", { side: "cloud", id: "ember", threadId: "somebody-elses" });
   assert.equal(one.take("cloud"), "openmausbot://bot/ember");
+});
+
+test("a message My Cloud has after this computer's newest in a conversation both have is counted, read only when that conversation's times differ", async () => {
+  const thread = (id) => `/api/threads/${id}/messages?limit=200`;
+  const message = (id, at, kind = "text") => ({ id, at, kind, role: "user" });
+  let cloudAt = 20, cloudMessages = [message("m1", 1), message("m2", 2), message("phone", 3), message("reply", 4), message("card", 5, "options")];
+  const computerMessages = [message("m1", 1), message("m2", 2)];
+  const routes = [];
+  const scout = (at) => ({ id: "scout", threadId: "t", name: "Scout", title: "", color: "blue", unread: false, avatarUrl: null, tasks: [{ threadId: "t", updatedAt: at }, { threadId: "same", updatedAt: 7 }] });
+  const { one, tick } = harness({
+    cloudBody: (route) => { routes.push(`cloud ${route}`); return route === thread("t") ? { messages: cloudMessages } : route.startsWith("/api/bots") ? { bots: [scout(cloudAt)], groups: [], sections: [] } : { routines: [], webhooks: [] }; },
+    localBody: (route) => { routes.push(`local ${route}`); return route === thread("t") ? { messages: computerMessages } : route.startsWith("/api/bots") ? { bots: [scout(10)], groups: [], sections: [] } : { routines: [], webhooks: [] }; },
+  });
+  await one.view("computer");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(one.peek("computer").newer, { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  assert.equal(routes.filter((route) => route.includes("/api/threads/same/")).length, 0);
+  tick(ROSTER_FRESH_MS);
+  await one.view("computer");
+  assert.equal(routes.filter((route) => route.includes(thread("t"))).length, 2);
+  // Once this computer has the same newest message, nothing is newer.
+  cloudAt = 10;
+  cloudMessages = computerMessages;
+  tick(ROSTER_FRESH_MS);
+  await one.view("computer");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(one.peek("computer").newer, undefined);
+});
+
+test("two copies of a conversation are compared by the newest message each has; without one in common, by time", () => {
+  const m = (id, at) => ({ id, at });
+  assert.deepEqual(aheadCounts([m("a", 1), m("b", 2), m("c", 3)], [m("a", 1), m("b", 2)]), { cloud: 1, computer: 0 });
+  assert.deepEqual(aheadCounts([m("a", 1)], [m("a", 1), m("x", 5)]), { cloud: 0, computer: 1 });
+  assert.deepEqual(aheadCounts([m("p", 9), m("q", 10)], [m("x", 5)]), { cloud: 2, computer: 0 });
+  assert.deepEqual(aheadCounts([], []), { cloud: 0, computer: 0 });
 });

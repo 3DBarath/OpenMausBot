@@ -7,7 +7,7 @@ import { WorkingDots } from "./WorkingIndicator";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { automationsByBot, lastOf, openElsewhere, otherSideIn, otherSideNeeds, searchMerged, useMergedWorkspace, useOneWorkspace, useOwnHome, useTwinWork, type Home, type MergedWorkspace, type RosterBot, type RosterRoom, type TwinWork } from "@/lib/one-workspace";
+import { automationsByBot, awayFromHome, lastOf, openElsewhere, otherSideIn, otherSideNeeds, searchMerged, useMergedWorkspace, useOneWorkspace, useOwnHome, useTwinWork, type Home, type MergedWorkspace, type RosterBot, type RosterRoom, type TwinWork } from "@/lib/one-workspace";
 import { userSectionName } from "@/lib/sidebar-layout";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 import { openThread, useStore, type AppState, type Bot } from "@/state/store";
@@ -95,10 +95,19 @@ function otherLine(merged: MergedWorkspace, title = ""): string {
   return [where, status].filter(Boolean).join(" · ");
 }
 
+/** "1 chat", "2 newer messages and 1 automation", "1 chat, 2 newer messages and 1 automation". */
+function workParts(work: TwinWork): string {
+  const parts = [
+    work.chats ? (work.chats === 1 ? t("oneWorkspace.chatsOne") : t("oneWorkspace.chatsMany", { count: work.chats })) : "",
+    work.newer ? (work.newer === 1 ? t("oneWorkspace.newerOne") : t("oneWorkspace.newerMany", { count: work.newer })) : "",
+    work.automations ? (work.automations === 1 ? t("oneWorkspace.automationsOne") : t("oneWorkspace.automationsMany", { count: work.automations })) : "",
+  ].filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? "";
+  return t("oneWorkspace.listLast", { list: parts.slice(0, -1).join(t("oneWorkspace.listJoin")), last: parts.at(-1)! });
+}
+
 function workText(work: TwinWork, cloudName: string): string {
-  const chats = work.chats ? (work.chats === 1 ? t("oneWorkspace.chatsOne") : t("oneWorkspace.chatsMany", { count: work.chats })) : "";
-  const automations = work.automations ? (work.automations === 1 ? t("oneWorkspace.automationsOne") : t("oneWorkspace.automationsMany", { count: work.automations })) : "";
-  const what = chats && automations ? t("oneWorkspace.twinBoth", { chats, automations }) : chats || automations;
+  const what = workParts(work);
   return work.side === "cloud" ? t("oneWorkspace.twinOnCloud", { cloud: cloudName, what }) : t("oneWorkspace.twinOnComputer", { what });
 }
 
@@ -178,10 +187,11 @@ export function OtherSideBotRow({ bot, merged, density }: { bot: RosterBot; merg
     : [otherLine(merged, bot.title), waiting ? t("sidebar.preview.waiting") : ""].filter(Boolean).join(" · ");
   const label = openLabel(merged, bot.name);
   const work = merged.twinWork.get(bot.id);
+  const at = merged.opened?.id === bot.id ? merged.opened.threadId : undefined;
   return (
     <div className={cn("group relative", iconOnly && simple && "mx-auto w-[52px]")}>
       <button type="button" data-other-side-bot={bot.id} data-home={home.side} aria-label={`${label} · ${homeLabel(home, merged.cloudName)}${unread ? ` · ${t("task.unread")}` : ""}`}
-        title={iconOnly ? label : undefined} disabled={Boolean(opening)} onClick={() => void openElsewhere({ side: merged.other, id: bot.id })}
+        title={iconOnly ? label : undefined} disabled={Boolean(opening)} onClick={() => void openElsewhere({ side: merged.other, id: bot.id, ...(at ? { threadId: at } : {}) })}
         className={cn(rowClasses(density, simple), "disabled:cursor-progress")}>
         <span className={cn("relative flex shrink-0", !ready && "opacity-60")}>
           <BotAvatar bot={asAvatar(bot)} state="happy" size={size} animated={false} />
@@ -236,6 +246,26 @@ export function OtherSideRoomRow({ room, merged, density }: { room: RosterRoom; 
           </span>
           {density !== "compact" && (otherLine(merged) || (ready && room.working)) && <span className="block truncate text-[13px] leading-[18px] text-ink-secondary">{[otherLine(merged), ready && room.working ? t("sidebar.preview.working") : ""].filter(Boolean).join(" · ")}</span>}
         </span>}
+      </button>
+    </div>
+  );
+}
+
+/** One line above a chat this page holds the copy out of sight of (opened from a notification, a search or a routine
+ * run): whose copy it is, and where the chat is. The line opens the home copy, at this conversation when it has it. */
+export function TwinCopyLine({ bot }: { bot: Pick<Bot, "id" | "name" | "threadId"> }) {
+  const { view, opening } = useOneWorkspace();
+  if (!view || !awayFromHome(view, bot.id)) return null;
+  const home = view.other.bots.find((entry) => entry.id === bot.id);
+  const threadId = home?.threads?.includes(bot.threadId) ? bot.threadId : undefined;
+  const text = view.page === "cloud" ? t("oneWorkspace.copyOnCloud", { name: bot.name, cloud: view.cloudName }) : t("oneWorkspace.copyOnComputer", { name: bot.name, cloud: view.cloudName });
+  const Icon = opening?.id === bot.id ? Loader2 : view.other.side === "cloud" ? Cloud : Laptop;
+  return (
+    <div className="w-full px-5">
+      <button type="button" data-twin-copy={view.other.side} disabled={Boolean(opening)} onClick={() => void openElsewhere({ side: view.other.side, id: bot.id, ...(threadId ? { threadId } : {}) })}
+        className="mb-2 flex w-full items-start gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-left text-[13px] text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 disabled:cursor-progress">
+        <Icon size={14} aria-hidden="true" className={cn("mt-[3px] shrink-0", opening?.id === bot.id && "animate-spin")} />
+        <span className="min-w-0">{text}</span>
       </button>
     </div>
   );

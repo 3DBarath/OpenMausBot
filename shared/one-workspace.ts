@@ -62,13 +62,22 @@ export interface SideRoster {
   reason?: string;
 }
 
-/** `page`: the side the asking page is. `twinHome`: which copy a bot on both sides shows as. `cloudName`: My Cloud's
- * own name. `other`: the other side's roster. */
+/** In a conversation both copies of a bot have: how many messages each copy has after the newest one the other has. */
+export interface NewerMessages {
+  threadId: string;
+  cloud: number;
+  computer: number;
+}
+
+/** `page`: the side the asking page is. `twinHome`: where a bot on both sides lives, so the copy its row opens.
+ * `cloudName`: My Cloud's own name. `other`: the other side's roster. `newer`: per bot on both sides, its conversations
+ * where one copy has messages the other lacks. */
 export interface OneWorkspaceView {
   page: WorkspaceSide;
   twinHome: WorkspaceSide;
   cloudName: string;
   other: SideRoster;
+  newer?: Record<string, NewerMessages[]>;
 }
 
 /** `window.ogb.oneWorkspace`. `view` is null while the person keeps the two apart (or has no My Cloud). `open` asks main

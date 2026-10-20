@@ -2,8 +2,11 @@
 
 The desktop app shows This computer's bots and My Cloud's in one sidebar and
 one Team map ("All bots"), each with its home. A bot on both sides (Send keeps
-its id) shows once, at its home: where it was made, or where the bots were last
-moved; what its copy out of sight has of its own shows as one line under it. Main reads the other side's bots and rooms
+its id) shows once and always opens at its home: where it was made, or where
+the bots were last moved. What its copy out of sight has that the home lacks
+(its own chats, newer messages in a chat both have, its automations) shows as
+one line under it, and that copy, if opened anyway, says above its chat where
+the chat is. Main reads the other side's bots and rooms
 for the page the window shows (`electron/one-workspace.mjs`) and moves the
 window to the other side when one of them is opened there. Every check below
 runs on two real servers in disposable homes; nothing reaches the user's app,

@@ -2,9 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OneWorkspaceView, RosterBot, SideRoster } from "../../shared/one-workspace";
-import { mergeWorkspace, setOneWorkspaceForTests } from "@/lib/one-workspace";
+import { mergeWorkspace, setOneWorkspaceForTests, type TwinWork } from "@/lib/one-workspace";
 import { BOTS_SECTION_ID, userSectionId } from "@/lib/sidebar-layout";
-import { ElsewhereCard, elsewhereOnMap, OneWorkspaceStatus, OtherSideRows, OwnHomeBadge, ownSectionName, TwinWorkLine } from "./OneWorkspace";
+import { ElsewhereCard, elsewhereOnMap, OneWorkspaceStatus, OtherSideRows, OwnHomeBadge, ownSectionName, TwinCopyLine, TwinWorkLine } from "./OneWorkspace";
 
 const bot = (id: string, extra: Partial<RosterBot> = {}): RosterBot => ({ id, threadId: `t-${id}`, name: id[0]!.toUpperCase() + id.slice(1), title: "", color: "blue", avatarUrl: null, unread: false, ...extra });
 const view = (other: Partial<SideRoster> = {}, extra: Partial<OneWorkspaceView> = {}): OneWorkspaceView => ({
@@ -127,7 +127,29 @@ describe("a bot both sides have", () => {
     expect(line).toContain("Also on My Cloud: 1 chat and 1 automation");
     expect(line).toContain('aria-label="Unread"');
     expect(render(createElement(TwinWorkLine, { work: fromComputer.twinWork.get("ember")!, cloudName: "My Cloud", density: "icons", onOpen: () => {} }))).toBe("");
-    expect(render(createElement(TwinWorkLine, { work: { side: "computer", chats: 3, unread: false, automations: 0 }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} })))
+    expect(render(createElement(TwinWorkLine, { work: { side: "computer", chats: 3, newer: 0, unread: false, automations: 0 }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} })))
       .toContain("Also on this computer: 3 chats");
+  });
+});
+
+describe("the line under a bot on both sides, and the line above its copy's chat", () => {
+  it("lists what the copy out of sight has: its own chats, newer messages in chats both have, its automations", () => {
+    const line = (work: Partial<TwinWork>) => render(createElement(TwinWorkLine, { work: { side: "cloud", chats: 0, newer: 0, unread: false, automations: 0, ...work }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} }));
+    expect(line({ newer: 2 })).toContain("Also on My Cloud: 2 newer messages");
+    expect(line({ newer: 1 })).toContain("Also on My Cloud: 1 newer message");
+    expect(line({ chats: 1, newer: 2, automations: 1 })).toContain("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
+  });
+
+  it("says above a copy's chat whose copy it is and where the chat is, only for a bot whose home is the other side", () => {
+    const fromCloud = view({ side: "computer", bots: [bot("scout", { threads: ["t-scout"] })] }, { page: "cloud" });
+    setOneWorkspaceForTests({ view: fromCloud });
+    const copy = render(createElement(TwinCopyLine, { bot: { id: "scout", name: "Scout", threadId: "t-scout" } }));
+    expect(copy).toContain('data-twin-copy="computer"');
+    expect(copy).toContain("This is Scout&#x27;s copy on My Cloud, for routines while this computer is off. Your chat with Scout is on this computer.");
+    expect(render(createElement(TwinCopyLine, { bot: { id: "clover", name: "Clover", threadId: "t" } }))).toBe("");
+    setOneWorkspaceForTests({ view: view({ bots: [bot("scout")] }) });
+    expect(render(createElement(TwinCopyLine, { bot: { id: "scout", name: "Scout", threadId: "t-scout" } }))).toBe("");
+    setOneWorkspaceForTests({ view: view({ bots: [bot("scout")] }, { twinHome: "cloud" }) });
+    expect(render(createElement(TwinCopyLine, { bot: { id: "scout", name: "Scout", threadId: "t-scout" } }))).toContain("This is Scout&#x27;s copy on this computer. Your chat with Scout is on My Cloud.");
   });
 });

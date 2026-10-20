@@ -6,6 +6,8 @@ export const OPEN_FOR_MS: number;
 export const PICTURE_MAX_BYTES: number;
 export const AUTOMATIONS_FRESH_MS: number;
 export function automationCounts(...bodies: unknown[]): Map<string, number>;
+export function threadTimes(body: unknown): Map<string, Map<string, number>>;
+export function aheadCounts(cloud: ReadonlyArray<{ id: string; at: number }>, computer: ReadonlyArray<{ id: string; at: number }>): { cloud: number; computer: number };
 
 export function otherSide(side: WorkspaceSide): WorkspaceSide;
 export function rosterBot(bot: unknown): RosterBot | null;

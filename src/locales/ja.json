@@ -5746,7 +5746,12 @@
   "oneWorkspace.chatsMany": "チャット{count}件",
   "oneWorkspace.automationsOne": "自動化1件",
   "oneWorkspace.automationsMany": "自動化{count}件",
-  "oneWorkspace.twinBoth": "{chats}と{automations}",
   "oneWorkspace.twinOnCloud": "{cloud}にもあります: {what}",
-  "oneWorkspace.twinOnComputer": "このコンピューターにもあります: {what}"
+  "oneWorkspace.twinOnComputer": "このコンピューターにもあります: {what}",
+  "oneWorkspace.newerOne": "新しいメッセージ1件",
+  "oneWorkspace.newerMany": "新しいメッセージ{count}件",
+  "oneWorkspace.listLast": "{list}と{last}",
+  "oneWorkspace.listJoin": "、",
+  "oneWorkspace.copyOnCloud": "これは{cloud}上の{name}のコピーで、このコンピューターがオフの間のルーティン用です。{name}とのチャットはこのコンピューターにあります。",
+  "oneWorkspace.copyOnComputer": "これはこのコンピューター上の{name}のコピーです。{name}とのチャットは{cloud}にあります。"
 }

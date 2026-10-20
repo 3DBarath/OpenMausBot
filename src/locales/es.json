@@ -5108,7 +5108,6 @@
   "oneWorkspace.chatsMany": "{count} chats",
   "oneWorkspace.automationsOne": "1 automatización",
   "oneWorkspace.automationsMany": "{count} automatizaciones",
-  "oneWorkspace.twinBoth": "{chats} y {automations}",
   "oneWorkspace.twinOnCloud": "También en {cloud}: {what}",
   "oneWorkspace.twinOnComputer": "También en este equipo: {what}",
   "cloudMove.more": "Empezar My Cloud de nuevo desde este equipo",
@@ -5116,5 +5115,11 @@
   "lending.page.off": "Desactivado: los bots de My Cloud no pueden usar este equipo.",
   "lending.page.lends": "My Cloud puede usar {what} en este equipo.",
   "lending.page.readOnly": "solo lectura",
-  "lending.page.canEdit": "puede editar"
+  "lending.page.canEdit": "puede editar",
+  "oneWorkspace.newerOne": "1 mensaje más reciente",
+  "oneWorkspace.newerMany": "{count} mensajes más recientes",
+  "oneWorkspace.listLast": "{list} y {last}",
+  "oneWorkspace.listJoin": ", ",
+  "oneWorkspace.copyOnCloud": "Esta es la copia de {name} en {cloud}, para las rutinas mientras este equipo está apagado. Tu chat con {name} está en este equipo.",
+  "oneWorkspace.copyOnComputer": "Esta es la copia de {name} en este equipo. Tu chat con {name} está en {cloud}."
 }

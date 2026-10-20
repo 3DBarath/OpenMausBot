@@ -1599,7 +1599,12 @@
   "oneWorkspace.chatsMany": "{count} चैट",
   "oneWorkspace.automationsOne": "1 ऑटोमेशन",
   "oneWorkspace.automationsMany": "{count} ऑटोमेशन",
-  "oneWorkspace.twinBoth": "{chats} और {automations}",
   "oneWorkspace.twinOnCloud": "{cloud} पर भी: {what}",
-  "oneWorkspace.twinOnComputer": "इस कंप्यूटर पर भी: {what}"
+  "oneWorkspace.twinOnComputer": "इस कंप्यूटर पर भी: {what}",
+  "oneWorkspace.newerOne": "1 नया संदेश",
+  "oneWorkspace.newerMany": "{count} नए संदेश",
+  "oneWorkspace.listLast": "{list} और {last}",
+  "oneWorkspace.listJoin": ", ",
+  "oneWorkspace.copyOnCloud": "यह {cloud} पर {name} की कॉपी है, जो इस कंप्यूटर के बंद रहने पर रूटीन चलाती है। {name} के साथ आपकी चैट इस कंप्यूटर पर है।",
+  "oneWorkspace.copyOnComputer": "यह इस कंप्यूटर पर {name} की कॉपी है। {name} के साथ आपकी चैट {cloud} पर है।"
 }

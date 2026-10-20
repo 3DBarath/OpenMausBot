@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OneWorkspaceView, RosterBot, RosterRoom, SideRoster } from "../../shared/one-workspace";
-import { mergeWorkspace, otherSideIn, otherSideNeeds, searchMerged } from "./one-workspace";
+import { awayFromHome, greetedBot, mergeWorkspace, otherSideIn, otherSideNeeds, searchMerged } from "./one-workspace";
 import { BOT_CHATS_SECTION_ID, BOTS_SECTION_ID, CHANNELS_SECTION_ID, PINNED_SECTION_ID, userSectionId } from "./sidebar-layout";
 
 const rosterBot = (id: string, extra: Partial<RosterBot> = {}): RosterBot => ({ id, threadId: `t-${id}`, name: id[0]!.toUpperCase() + id.slice(1), title: "", color: "blue", avatarUrl: null, unread: false, ...extra });
@@ -40,11 +40,25 @@ describe("one workspace: every bot and room shows once", () => {
     expect(merged.homes.get("juno")).toEqual({ side: "computer", twin: false });
   });
 
-  it("the copy open in this window keeps its row, so the chat you are in never disappears or doubles", () => {
-    const merged = mergeWorkspace(view({ bots: [rosterBot("ember")] }, { twinHome: "cloud" }), here([{ id: "ember" }], [], { selectedId: "ember" }));
-    expect(ids(merged.bots)).toEqual([]);
-    expect(merged.hidden.size).toBe(0);
-    expect(merged.homes.get("ember")).toEqual({ side: "computer", twin: true });
+  it("a bot on both sides always shows as its home copy, even while this page has the other copy open: that copy is noted, with its conversation when the home has it", () => {
+    const fromCloud = view({ side: "computer", bots: [rosterBot("scout", { threads: ["t-scout", "t-old"] })] }, { page: "cloud" });
+    const open = mergeWorkspace(fromCloud, here([{ id: "scout", threadId: "t-scout" }], [], { selectedId: "scout" }));
+    expect(ids(open.bots)).toEqual(["scout"]);
+    expect([...open.hidden]).toEqual(["scout"]);
+    expect(open.homes.get("scout")).toEqual({ side: "computer", twin: true });
+    expect(open.opened).toEqual({ id: "scout", threadId: "t-scout" });
+    // A conversation only this copy has is not handed to the home.
+    expect(mergeWorkspace(fromCloud, here([{ id: "scout", threadId: "phone-1" }], [], { selectedId: "scout" })).opened).toEqual({ id: "scout" });
+    // The home copy open here, or a bot only here, is nothing out of the ordinary.
+    expect(mergeWorkspace(view({ bots: [rosterBot("scout")] }), here([{ id: "scout" }], [], { selectedId: "scout" })).opened).toBeUndefined();
+    expect(mergeWorkspace(fromCloud, here([{ id: "clover" }], [], { selectedId: "clover" })).opened).toBeUndefined();
+  });
+
+  it("awayFromHome is the one rule: on both sides and the home is the other page", () => {
+    const fromCloud = view({ side: "computer", bots: [rosterBot("scout")], rooms: [room("plans")] }, { page: "cloud" });
+    expect([awayFromHome(fromCloud, "scout"), awayFromHome(fromCloud, "plans"), awayFromHome(fromCloud, "clover"), awayFromHome(null, "scout")]).toEqual([true, true, false, false]);
+    expect(awayFromHome(view({ bots: [rosterBot("scout")] }), "scout")).toBe(false);
+    expect(awayFromHome(view({ side: "computer", bots: [rosterBot("scout")] }, { page: "cloud", twinHome: "cloud" }), "scout")).toBe(false);
   });
 
   it("an archived bot here is no twin: the other side's copy shows", () => {
@@ -136,7 +150,7 @@ describe("one workspace: what a bot's copy out of sight has of its own", () => {
 
   it("counts My Cloud's own conversations (a phone chat, a routine's report) and automations, newest first, unread included", () => {
     const merged = mergeWorkspace(view({ bots: [sent({ threads: ["phone-1", "t-ember", "run-2", "t-report"], unreadThreads: ["run-2"], automations: 2 })] }), here([local]));
-    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 2, unread: true, automations: 2, threadId: "phone-1" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 2, newer: 0, unread: true, automations: 2, threadId: "phone-1" });
   });
 
   it("on My Cloud's page, where this computer's copy shows, counts My Cloud's own copy's conversations and automations", () => {
@@ -144,11 +158,41 @@ describe("one workspace: what a bot's copy out of sight has of its own", () => {
     const cloudCopy = { id: "ember", threadId: "phone-1", tasks: [{ threadId: "phone-1", unread: true }, { threadId: "t-ember" }, { threadId: "t-report" }, { threadId: "gone", archivedAt: 1 }] };
     const merged = mergeWorkspace(fromCloud, { ...here([cloudCopy]), automations: new Map([["ember", 1]]) });
     expect([...merged.hidden]).toEqual(["ember"]);
-    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 1, unread: true, automations: 1, threadId: "phone-1" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 1, newer: 0, unread: true, automations: 1, threadId: "phone-1" });
   });
 
   it("after the bots moved to My Cloud, this computer's own conversations are the ones out of sight", () => {
     const merged = mergeWorkspace(view({ bots: [rosterBot("ember", { threads: ["t-ember"] })] }, { twinHome: "cloud" }), here([{ id: "ember", threadId: "t-ember", tasks: [{ threadId: "t-ember" }, { threadId: "local-only" }] }]));
-    expect(merged.twinWork.get("ember")).toEqual({ side: "computer", chats: 1, unread: false, automations: 0, threadId: "local-only" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "computer", chats: 1, newer: 0, unread: false, automations: 0, threadId: "local-only" });
+  });
+});
+
+describe("one workspace: newer messages in a conversation both copies have", () => {
+  const local = { id: "scout", threadId: "t-scout", tasks: [{ threadId: "t-scout" }, { threadId: "t-trip" }] };
+  const cloudScout = rosterBot("scout", { threads: ["t-trip", "t-scout"], unreadThreads: ["t-trip"] });
+
+  it("counts what My Cloud's copy has after this computer's newest, and opens My Cloud at that conversation", () => {
+    const merged = mergeWorkspace(view({ bots: [cloudScout] }, { newer: { scout: [{ threadId: "t-trip", cloud: 2, computer: 0 }] } }), here([local]));
+    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 0, newer: 2, unread: true, automations: 0, threadId: "t-trip" });
+  });
+
+  it("never counts what this computer has that My Cloud's copy is still waiting for", () => {
+    expect(mergeWorkspace(view({ bots: [cloudScout] }, { newer: { scout: [{ threadId: "t-trip", cloud: 0, computer: 3 }] } }), here([local])).twinWork.size).toBe(0);
+  });
+
+  it("on My Cloud's page counts the same newer messages for this page's own copy out of sight", () => {
+    const fromCloud = view({ side: "computer", bots: [rosterBot("scout", { threads: ["t-scout", "t-trip"] })] }, { page: "cloud", newer: { scout: [{ threadId: "t-scout", cloud: 1, computer: 0 }] } });
+    const merged = mergeWorkspace(fromCloud, here([{ id: "scout", threadId: "t-scout", tasks: [{ threadId: "t-scout" }, { threadId: "t-trip" }, { threadId: "phone-1" }] }]));
+    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 1, newer: 1, unread: false, automations: 0, threadId: "t-scout" });
+  });
+});
+
+describe("one workspace: whom a welcome greets", () => {
+  const bots = [{ id: "scout", chiefOfStaff: true }, { id: "clover" }, { id: "kiwi" }];
+  it("a bot at home here first, a Chief before others; when every bot here is a copy, the home's, opened there", () => {
+    expect(greetedBot(bots, (id) => id === "scout")).toEqual({ bot: { id: "clover" }, elsewhere: false });
+    expect(greetedBot(bots, () => false)).toEqual({ bot: { id: "scout", chiefOfStaff: true }, elsewhere: false });
+    expect(greetedBot(bots, () => true)).toEqual({ bot: { id: "scout", chiefOfStaff: true }, elsewhere: true });
+    expect(greetedBot([], () => true)).toEqual({ bot: null, elsewhere: false });
   });
 });

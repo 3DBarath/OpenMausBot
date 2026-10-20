@@ -34,7 +34,9 @@ describe("the merged view's hooks", () => {
 
   it("tell a row of this page what its copy on the other side has of its own", () => {
     setOneWorkspaceForTests({ view: { ...view, other: { ...view.other, bots: [{ ...view.other.bots[0]!, threads: ["phone-1", "t"], automations: 1 }] } } });
-    expect(useTwinWork({ id: "ember", threadId: "t", tasks: [{ threadId: "t" }] })).toEqual({ side: "cloud", chats: 1, unread: false, automations: 1, threadId: "phone-1" });
+    expect(useTwinWork({ id: "ember", threadId: "t", tasks: [{ threadId: "t" }] })).toEqual({ side: "cloud", chats: 1, newer: 0, unread: false, automations: 1, threadId: "phone-1" });
+    setOneWorkspaceForTests({ view: { ...view, newer: { ember: [{ threadId: "t", cloud: 2, computer: 0 }] }, other: { ...view.other, bots: [{ ...view.other.bots[0]!, threads: ["t"] }] } } });
+    expect(useTwinWork({ id: "ember", threadId: "t", tasks: [{ threadId: "t" }] })).toEqual({ side: "cloud", chats: 0, newer: 2, unread: false, automations: 0, threadId: "t" });
     expect(useTwinWork({ id: "juno", threadId: "j" })).toBeNull();
   });
 

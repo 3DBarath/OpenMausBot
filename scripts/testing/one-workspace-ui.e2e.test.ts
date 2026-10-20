@@ -37,6 +37,10 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "Remind me at five.", threadId: phone });
     await fx.onCloud("POST", "/api/routines", { name: "Nightly notes", prompt: "Write tonight's notes.", botId: ids.juno,
       schedule: { type: "interval", everyMinutes: 1_440, anchorAt: Date.now() + 86_400_000 } });
+    // And a phone message into the chat both copies have, which this computer's copy never gets.
+    const shared = ((await fx.local("GET", "/api/bots?messages=0")).body.bots as Array<{ id: string; threadId: string }>).find((bot) => bot.id === ids.juno)!.threadId;
+    await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "(from my phone) Also add the venue.", threadId: shared });
+    for (let tries = 0; tries < 200 && (await fx.onCloud("GET", "/api/bots")).body.bots.some((bot: { busy?: boolean }) => bot.busy); tries++) await new Promise((done) => setTimeout(done, 100));
     pages = await mountOneWorkspacePages(fx);
     const shots = resolve(process.env.OMB_ONE_WORKSPACE_SHOTS ?? join(fx.root, "shots"));
     mkdirSync(shots, { recursive: true });
@@ -54,6 +58,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
         if (Date.now() > deadline) {
           await shot("failure").catch(() => {});
           const page = await evaluate<string>("location.href + ' ' + document.body.innerText.slice(0, 400)").catch(() => "");
+          console.log("browser console", JSON.stringify(await ab("console").catch(() => ({}))).slice(0, 4000));
           throw new Error(`timed out waiting for ${js}: ${JSON.stringify(value)} on ${page}`);
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -69,6 +74,10 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
       await until<number>("document.querySelectorAll('[data-sidebar-bot-row]').length", (count) => count > 0, 60_000);
     };
     await ab("set", "viewport", "1280", "800");
+    // Each preview's dev server bundles what its page imports on the first visit and reloads the page once it has; a
+    // chat handed over by take() must not land in that reload.
+    await openLoaded(`${pages.cloud.previewUrl}?page=cloud`);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
 
     // This computer's page: its own Ember and Juno, My Cloud's Miso, Atlas, Kit and Launch, each once. Ember and Juno are
     // on both sides and show as this computer's; Juno's line says what My Cloud's copy has of its own.
@@ -85,7 +94,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.textContent")).toBe("All bots");
     expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('On My Cloud'))")).toBe(true);
     const twinLine = await until<string | null>("document.querySelector('[data-twin-work]')?.textContent ?? null", (text) => text !== null);
-    expect(twinLine).toBe("Also on My Cloud: 1 chat and 1 automation");
+    expect(twinLine).toBe("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
     await shot("1-sidebar-this-computer-light");
     await openLoaded(local("&skin=midnight"));
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
@@ -125,7 +134,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
 
     // On My Cloud's page Juno is the same one row, this computer's, with the same line under it.
     expect(await evaluate(`Boolean(document.querySelector('[data-other-side-bot="${ids.juno}"]')) && !document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')`)).toBe(true);
-    expect(await evaluate("document.querySelector('[data-twin-work]')?.textContent ?? null")).toBe("Also on My Cloud: 1 chat and 1 automation");
+    expect(await evaluate("document.querySelector('[data-twin-work]')?.textContent ?? null")).toBe("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
 
     // A row of this computer opens it back on this computer's page, with this computer's history.
     await evaluate(`document.querySelector('[data-other-side-bot="${ids.juno}"]').click(); true`);
@@ -133,14 +142,21 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await until<string | null>(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current") ?? null`, (current) => current === "page");
     expect(await evaluate("document.querySelector('textarea')?.getAttribute('aria-label')")).toBe("Message Juno");
 
-    // Juno's line opens My Cloud's own chat there: the phone chat, from My Cloud's server.
+    // Juno's line opens My Cloud's copy there, at what this computer doesn't have: a phone chat or the newer messages.
     await until<boolean>("Boolean(document.querySelector('[data-twin-work]'))", Boolean);
-    await shot("6-both-sides-line-light");
+    await shot("6-both-sides-line-dark");
     await evaluate("document.querySelector('[data-twin-work]').click(); true");
     await until<string>("location.href", (href) => href.startsWith(pages!.cloud.previewUrl));
-    await until<boolean>("document.body.innerText.includes('Remind me at five.')", Boolean, 30_000);
-    expect(await evaluate(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current")`)).toBe("page");
-    await shot("7-both-sides-phone-chat-on-my-cloud-light");
+    await until<boolean>("document.body.innerText.includes('Remind me at five.') || document.body.innerText.includes('(from my phone) Also add the venue.')", Boolean, 30_000);
+    // It is My Cloud's copy, so the row stays this computer's Juno and one line above the chat says where the chat is.
+    expect(await evaluate(`Boolean(document.querySelector('[data-other-side-bot="${ids.juno}"]')) && !document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')`)).toBe(true);
+    expect(await until<string | null>("document.querySelector('[data-twin-copy]')?.textContent ?? null", (text) => text !== null))
+      .toBe("This is Juno's copy on My Cloud, for routines while this computer is off. Your chat with Juno is on this computer.");
+    await shot("7-both-sides-copy-on-my-cloud-dark");
+    // The line opens this computer's Juno.
+    await evaluate("document.querySelector('[data-twin-copy]').click(); true");
+    await until<string>("location.href", (href) => href.startsWith(pages!.local.previewUrl));
+    await until<string | null>(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current") ?? null`, (current) => current === "page");
 
     // The Team map: both sides' teams and bots, My Cloud's with their computers, opening there.
     for (const [skin, name] of [["meadow", "8-team-map-light"], ["midnight", "9-team-map-dark"]] as const) {

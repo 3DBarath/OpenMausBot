@@ -5843,7 +5843,6 @@
   "oneWorkspace.chatsMany": "{count} conversas",
   "oneWorkspace.automationsOne": "1 automação",
   "oneWorkspace.automationsMany": "{count} automações",
-  "oneWorkspace.twinBoth": "{chats} e {automations}",
   "oneWorkspace.twinOnCloud": "Também no {cloud}: {what}",
   "oneWorkspace.twinOnComputer": "Também neste computador: {what}",
   "cloudMove.more": "Recomeçar o My Cloud a partir deste computador",
@@ -5863,5 +5862,11 @@
   "settings.profile.avatar.invalidType": "Escolha uma imagem PNG, JPEG, GIF ou WebP.",
   "settings.profile.avatar.tooLarge": "A foto precisa ter no máximo 10 MB.",
   "settings.profile.avatar.tooSmall": "A foto precisa ter pelo menos 64 × 64 pixels.",
-  "settings.profile.avatar.tooLargeDimensions": "A foto precisa ter no máximo 8192 × 8192 pixels."
+  "settings.profile.avatar.tooLargeDimensions": "A foto precisa ter no máximo 8192 × 8192 pixels.",
+  "oneWorkspace.newerOne": "1 mensagem mais recente",
+  "oneWorkspace.newerMany": "{count} mensagens mais recentes",
+  "oneWorkspace.listLast": "{list} e {last}",
+  "oneWorkspace.listJoin": ", ",
+  "oneWorkspace.copyOnCloud": "Esta é a cópia de {name} no {cloud}, para as rotinas enquanto este computador está desligado. Sua conversa com {name} está neste computador.",
+  "oneWorkspace.copyOnComputer": "Esta é a cópia de {name} neste computador. Sua conversa com {name} está no {cloud}."
 }
