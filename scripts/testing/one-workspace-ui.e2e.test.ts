@@ -57,12 +57,16 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
       home: row.querySelector("[data-home-badge]")?.dataset.homeBadge ?? null, twin: Boolean(row.querySelector("[data-home-twin]")),
       other: Boolean(row.dataset.otherSideBot ?? row.dataset.otherSideRoom), label: row.querySelector("[data-home-badge]")?.getAttribute("aria-label") ?? "" }))`);
     const local = (query = "") => `${pages!.local.previewUrl}?page=local${query}`;
+    const openLoaded = async (url: string) => {
+      await ab("open", url);
+      await until<number>("document.querySelectorAll('[data-sidebar-bot-row]').length", (count) => count > 0, 60_000);
+    };
     await ab("set", "viewport", "1280", "800");
 
     // This computer's page: its own Ember and Juno, My Cloud's Miso, Atlas, Kit and Launch, each once; Ember (sent to
     // My Cloud, the same id there) shows as this computer's copy.
     const everything = Object.values(ids).sort();
-    await ab("open", local());
+    await openLoaded(local());
     await until<number>("document.querySelectorAll('[data-other-side-bot], [data-other-side-room]').length", (count) => count === 4);
     const here = await rows();
     expect(here.map((row) => row.id).sort()).toEqual(everything);
@@ -72,12 +76,12 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     expect([byId[ids.juno]!.home, byId[ids.atlas]!.home, byId[ids.launch]!.home]).toEqual(["computer", "cloud", "cloud"]);
     expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.getAttribute('aria-label')")).toBe("Switch server: This computer and My Cloud");
     await shot("1-sidebar-this-computer-light");
-    await ab("open", local("&skin=midnight"));
+    await openLoaded(local("&skin=midnight"));
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
     await shot("2-sidebar-this-computer-dark");
 
     // The switcher: one entry for both, other servers as before, and the setting.
-    await ab("open", local());
+    await openLoaded(local());
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
     await evaluate("document.querySelector('[data-workspace-switcher] button').click(); true");
     const menu = await until<string[]>("[...document.querySelectorAll('[data-menu-stand-in] [role=menuitem]')].map((item) => item.textContent)", (items) => items.length > 0);
@@ -86,7 +90,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
 
     // Opening a Cloud bot moves the window to My Cloud's page, which opens it from My Cloud's own server; a message sent
     // there reaches My Cloud's server and never this computer's.
-    await ab("open", local());
+    await openLoaded(local());
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
     await evaluate(`document.querySelector('[data-other-side-bot="${ids.atlas}"]').click(); true`);
     await until<string>("location.href", (href) => href.startsWith(pages!.cloud.previewUrl));
@@ -104,7 +108,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     while (!(await cloudHas()) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await cloudHas()).toBe(true);
     expect(JSON.stringify((await fx.local("GET", "/api/bots?messages=50")).body)).not.toContain(said);
-    await ab("open", `${pages.cloud.previewUrl}?page=cloud&skin=midnight`);
+    await openLoaded(`${pages.cloud.previewUrl}?page=cloud&skin=midnight`);
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 2);
     await shot("5-sidebar-my-cloud-dark");
 
@@ -115,7 +119,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
 
     // The Team map: both sides' teams and bots, My Cloud's with their computers, opening there.
     for (const [skin, name] of [["meadow", "6-team-map-light"], ["midnight", "7-team-map-dark"]] as const) {
-      await ab("open", local(`&advanced=1&skin=${skin}`));
+      await openLoaded(local(`&advanced=1&skin=${skin}`));
       await until<boolean>("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Team map'))", Boolean);
       await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Team map').click(); true");
       await until<number>("document.querySelectorAll('[data-elsewhere-card]').length", (count) => count === 3);
@@ -137,7 +141,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     const before = pages.one.cloudCalls.length;
     await new Promise((resolve) => setTimeout(resolve, 5_100));
     for (const [skin, name] of [["meadow", "8-sidebar-cloud-asleep-light"], ["midnight", "9-sidebar-cloud-asleep-dark"]] as const) {
-      await ab("open", local(`&skin=${skin}`));
+      await openLoaded(local(`&skin=${skin}`));
       await until<string | null>("document.querySelector('[data-one-workspace-status]')?.dataset.oneWorkspaceStatus ?? null", (status) => status === "asleep");
       expect((await rows()).filter((row) => row.other).map((row) => row.id).sort()).toEqual([ids.miso, ids.atlas, ids.kit, ids.launch].sort());
       expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('Asleep'))")).toBe(true);
