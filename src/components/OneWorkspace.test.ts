@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { OneWorkspaceView, RosterBot, SideRoster } from "../../shared/one-workspace";
 import { mergeWorkspace, setOneWorkspaceForTests } from "@/lib/one-workspace";
 import { BOTS_SECTION_ID, userSectionId } from "@/lib/sidebar-layout";
-import { ElsewhereCard, elsewhereOnMap, OneWorkspaceStatus, OtherSideRows, OwnHomeBadge, ownSectionName } from "./OneWorkspace";
+import { ElsewhereCard, elsewhereOnMap, OneWorkspaceStatus, OtherSideRows, OwnHomeBadge, ownSectionName, TwinWorkLine } from "./OneWorkspace";
 
 const bot = (id: string, extra: Partial<RosterBot> = {}): RosterBot => ({ id, threadId: `t-${id}`, name: id[0]!.toUpperCase() + id.slice(1), title: "", color: "blue", avatarUrl: null, unread: false, ...extra });
 const view = (other: Partial<SideRoster> = {}, extra: Partial<OneWorkspaceView> = {}): OneWorkspaceView => ({
@@ -21,24 +21,31 @@ describe("the other side's rows in the sidebar", () => {
     expect(html).toContain('data-other-side-bot="atlas"');
     expect(html).toContain('data-home="cloud"');
     expect(html).toContain('aria-label="Open Atlas on My Cloud · On My Cloud · Unread"');
-    expect(html).toContain("Inbox");
+    // A Cloud bot's line says where it lives, in place of its title.
+    expect(html).toContain(">On My Cloud<");
+    expect(html).not.toContain("Inbox");
     expect(html).toContain('data-home-badge="cloud"');
+    expect(html).toContain("bg-accent text-white");
     expect(html).not.toContain("kit");
     expect(render(createElement(OtherSideRows, { merged: ready, sectionId: userSectionId("Ops"), density: "comfortable", place: "after" }))).toContain('data-other-side-bot="kit"');
 
     const asleep = mergeWorkspace(view({ state: "asleep", bots: [bot("atlas", { unread: true })] }), { bots: [], groups: [] });
     const sleeping = render(createElement(OtherSideRows, { merged: asleep, sectionId: BOTS_SECTION_ID, density: "comfortable", place: "after" }));
     expect(sleeping).toContain('data-other-side-bot="atlas"');
-    expect(sleeping).toContain("Asleep · opening wakes it");
+    expect(sleeping).toContain("On My Cloud · asleep");
     expect(sleeping).not.toContain("Unread");
-    expect(sleeping).not.toContain("bg-accent");
+    expect(sleeping).not.toContain("size-2 shrink-0 rounded-full bg-accent");
   });
 
-  it("say on My Cloud's page that they open on this computer", () => {
-    const merged = mergeWorkspace(view({ side: "computer", bots: [bot("ember")] }, { page: "cloud" }), { bots: [], groups: [] });
+  it("say on My Cloud's page that they open on this computer, with no extra line for this computer's bots", () => {
+    const merged = mergeWorkspace(view({ side: "computer", bots: [bot("ember"), bot("juno", { title: "Writes the notes" })] }, { page: "cloud" }), { bots: [], groups: [] });
     const html = render(createElement(OtherSideRows, { merged, sectionId: BOTS_SECTION_ID, density: "icons", place: "before" }));
     expect(html).toContain('aria-label="Open Ember on this computer · On this computer"');
     expect(html).toContain('data-home-badge="computer"');
+    expect(html).toContain("bg-ink text-app");
+    const rows = render(createElement(OtherSideRows, { merged, sectionId: BOTS_SECTION_ID, density: "comfortable", place: "before" }));
+    expect(rows).not.toContain(">On this computer<");
+    expect(rows).toContain("Writes the notes");
   });
 
   it("render nothing while the two are shown apart", () => {
@@ -105,7 +112,22 @@ describe("the other side on the Team map", () => {
     const asleep = elsewhereOnMap(mergeWorkspace(view({ state: "asleep", bots: [bot("atlas", { computer: "cloud", busy: true, unread: true })] }), { bots: [], groups: [] }))!;
     expect(asleep.computers[0]!.state).toBe("asleep");
     expect([asleep.bots[0]!.busy, asleep.bots[0]!.unread]).toEqual([false, false]);
-    expect(render(createElement(ElsewhereCard, { bot: asleep.bots[0]!, merged: asleep.merged }))).toContain("Asleep · opening wakes it");
+    expect(render(createElement(ElsewhereCard, { bot: asleep.bots[0]!, merged: asleep.merged }))).toContain("asleep");
     expect(elsewhereOnMap(null)).toBeNull();
+  });
+});
+
+describe("a bot both sides have", () => {
+  it("shows one row; a line under it opens what its copy out of sight has of its own", () => {
+    const fromComputer = mergeWorkspace(view({ bots: [bot("ember", { threads: ["phone-1", "t-ember"], unreadThreads: ["phone-1"], automations: 1 })] }),
+      { bots: [{ id: "ember", threadId: "t-ember", tasks: [{ threadId: "t-ember" }] }], groups: [] });
+    expect(fromComputer.bots).toEqual([]);
+    const line = render(createElement(TwinWorkLine, { work: fromComputer.twinWork.get("ember")!, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} }));
+    expect(line).toContain('data-twin-work="cloud"');
+    expect(line).toContain("Also on My Cloud: 1 chat and 1 automation");
+    expect(line).toContain('aria-label="Unread"');
+    expect(render(createElement(TwinWorkLine, { work: fromComputer.twinWork.get("ember")!, cloudName: "My Cloud", density: "icons", onOpen: () => {} }))).toBe("");
+    expect(render(createElement(TwinWorkLine, { work: { side: "computer", chats: 3, unread: false, automations: 0 }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} })))
+      .toContain("Also on this computer: 3 chats");
   });
 });

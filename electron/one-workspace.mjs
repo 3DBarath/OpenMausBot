@@ -14,6 +14,10 @@ export const PICTURE_MAX_BYTES = 256 * 1024;
 const PICTURES_KEPT = 300;
 const MAX_ITEMS = 1_000;
 const ROSTER_ROUTE = "/api/bots?messages=0";
+/** Routines without their runs (runs start no earlier than this), and webhooks: what each bot does on its own. */
+const AUTOMATION_ROUTES = [`/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"];
+export const AUTOMATIONS_FRESH_MS = 60_000;
+const MAX_THREADS = 300;
 const ACTIVITIES = new Set(["working", "waiting-on-you", "idle", "no-signal", "dead", "parked.computer"]);
 const PICTURE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const ID = /^[\w-]{1,128}$/;
@@ -29,6 +33,14 @@ export const otherSide = (side) => (side === "cloud" ? "computer" : "cloud");
 function shownUnread(bot) {
   if (!Array.isArray(bot.tasks) || bot.tasks.length === 0) return bot.unread === true;
   return bot.tasks.some((task) => record(task) && task.unread === true && !task.routineRunId && task.archivedAt === undefined);
+}
+
+/** A bot's open conversations, newest first, and those with something unread: ids only, never a title or a word. */
+function conversations(bot) {
+  const tasks = Array.isArray(bot.tasks) ? bot.tasks.filter((task) => record(task) && typeof task.threadId === "string" && ID.test(task.threadId) && task.archivedAt === undefined) : [];
+  const threads = [...new Set([...(typeof bot.threadId === "string" && ID.test(bot.threadId) ? [bot.threadId] : []), ...tasks.map((task) => task.threadId)])].slice(0, MAX_THREADS);
+  const unread = tasks.filter((task) => task.unread === true).map((task) => task.threadId).slice(0, MAX_THREADS);
+  return { threads, ...optional("unreadThreads", unread.length ? unread : undefined) };
 }
 
 /** A read-only bot for another page: nothing a row does not show (no instructions, model, messages, tools or settings). */
@@ -57,7 +69,19 @@ export function rosterBot(bot) {
     ...optional("waitingForTeammates", bot.waitingForTeammates === true ? true : undefined),
     ...optional("computer", typeof bot.computer === "string" ? text(bot.computer, 20) : undefined),
     ...optional("cloudBackend", typeof bot.cloudBackend === "string" ? text(bot.cloudBackend, 20) : undefined),
+    ...conversations(bot),
   };
+}
+
+/** How many switched-on routines and webhooks each bot has, from GET /api/routines and GET /api/webhooks. */
+export function automationCounts(...bodies) {
+  const counts = new Map();
+  for (const body of bodies) {
+    for (const item of [...(Array.isArray(body?.routines) ? body.routines : []), ...(Array.isArray(body?.webhooks) ? body.webhooks : [])]) {
+      if (record(item) && item.enabled === true && typeof item.botId === "string" && ID.test(item.botId)) counts.set(item.botId, (counts.get(item.botId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 /** Rooms people open; a chat between two bots stays on its own side's page. */
@@ -105,7 +129,7 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
     try { const value = store.read(); saved = record(value) ? value : {}; } catch { saved = {}; }
     return saved;
   };
-  const sides = Object.fromEntries(SIDES.map((side) => [side, { roster: null, refreshing: null, pictures: new Map() }]));
+  const sides = Object.fromEntries(SIDES.map((side) => [side, { roster: null, refreshing: null, pictures: new Map(), automations: null }]));
   let pending = null;
 
   const save = (patch) => { saved = { ...kept(), ...patch }; try { store.write(saved); } catch {} };
@@ -173,12 +197,31 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       return keep("unreachable", why ? { reason: why } : {});
     }
     const lists = parseRoster(body);
-    const roster = { side, state: "ready", at: now(), ...lists, bots: await withPictures(side, lists.bots) };
+    const counts = await automations(side);
+    const bots = (await withPictures(side, lists.bots)).map((bot) => (counts.get(bot.id) ? { ...bot, automations: counts.get(bot.id) } : bot));
+    const roster = { side, state: "ready", at: now(), ...lists, bots };
     if (side === "cloud") {
       const origin = cloud()?.origin;
       if (origin) save({ cloud: { origin, roster: { at: roster.at, bots: lists.bots.map((bot) => ({ ...bot, avatarUrl: null })), rooms: lists.rooms, sections: lists.sections } } });
     }
     return roster;
+  }
+
+  /** Read at most once a minute: they change rarely, and a failed read keeps the last counts. */
+  async function automations(side) {
+    const entry = sides[side];
+    if (entry.automations && now() - entry.automations.at < AUTOMATIONS_FRESH_MS) return entry.automations.counts;
+    try {
+      const bodies = await Promise.all(AUTOMATION_ROUTES.map(async (route) => {
+        const response = await readerOf(side)(route);
+        if (!response.ok) { await response.body?.cancel?.(); throw new Error(`${response.status}`); }
+        return response.json();
+      }));
+      entry.automations = { at: now(), counts: automationCounts(...bodies) };
+    } catch {
+      entry.automations ??= { at: 0, counts: new Map() };
+    }
+    return entry.automations.counts;
   }
 
   const comparable = (roster) => roster && JSON.stringify({ ...roster, at: null });
@@ -236,10 +279,12 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       const id = record(target) && typeof target.id === "string" && ID.test(target.id) ? target.id : null;
       if (!side || side === page || !id) throw new Error("Choose a bot or room to open.");
       const roster = rosterFor(side);
-      if (!roster.bots.some((bot) => bot.id === id) && !roster.rooms.some((room) => room.id === id)) {
+      const bot = roster.bots.find((entry) => entry.id === id);
+      if (!bot && !roster.rooms.some((room) => room.id === id)) {
         throw new Error(side === "cloud" ? "That bot is no longer on My Cloud." : "That bot is no longer on this computer.");
       }
-      pending = { side, link: `openmausbot://bot/${id}`, at: now() };
+      const thread = record(target) && typeof target.threadId === "string" && bot?.threads?.includes(target.threadId) ? target.threadId : null;
+      pending = { side, link: thread ? `openmausbot://thread/${thread}?bot=${id}` : `openmausbot://bot/${id}`, at: now() };
       return { side };
     },
     cancelOpen() { pending = null; },
@@ -256,7 +301,7 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
 /** The switcher's part: one entry for both, and the setting, while this computer has My Cloud. */
 export function oneWorkspaceMenu(one, entry, onToggle) {
   if (!entry || !one.possible()) return {};
-  return { together: { cloudId: entry.id, label: `This computer and ${entry.name}`, on: one.together(), onToggle } };
+  return { together: { cloudId: entry.id, label: "All bots", detail: `This computer and ${entry.name}`, on: one.together(), onToggle } };
 }
 
 /**

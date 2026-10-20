@@ -31,6 +31,11 @@ export interface RosterBot {
   waitingForTeammates?: boolean;
   computer?: string;
   cloudBackend?: string;
+  /** Its open conversations, newest first, and those with something unread: ids only. */
+  threads?: string[];
+  unreadThreads?: string[];
+  /** Its switched-on routines and webhooks. */
+  automations?: number;
 }
 
 /** A room of the other side; `dm` is a chat between two bots. */
@@ -67,10 +72,11 @@ export interface OneWorkspaceView {
 }
 
 /** `window.ogb.oneWorkspace`. `view` is null while the person keeps the two apart (or has no My Cloud). `open` asks main
- * to show a bot or room of the other side there; `take` hands the page that just loaded the chat link it should open. */
+ * to show a bot or room of the other side there, at one of its own conversations (`threadId`) when given; `take` hands
+ * the page that just loaded the chat link it should open. */
 export interface OneWorkspaceBridge {
   view(): Promise<OneWorkspaceView | null>;
   onView(listener: (view: OneWorkspaceView | null) => void): () => void;
-  open(target: { side: WorkspaceSide; id: string }): Promise<void>;
+  open(target: { side: WorkspaceSide; id: string; threadId?: string }): Promise<void>;
   take(): Promise<string | null>;
 }

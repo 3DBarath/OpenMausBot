@@ -162,15 +162,15 @@ test("together, This computer and My Cloud are one entry, checked on either page
   const cloud = { id: "cloud", name: "My Cloud", origin: "https://omb-u-1.fly.dev" };
   const office = { id: "office", name: "Office", origin: "https://office.example" };
   const calls = [];
-  const together = { cloudId: "cloud", label: "This computer and My Cloud", on: true, onToggle: () => calls.push("toggle") };
+  const together = { cloudId: "cloud", label: "All bots", detail: "This computer and My Cloud", on: true, onToggle: () => calls.push("toggle") };
   const base = { onSwitch: (id) => calls.push(["switch", id]), onConnect() {}, onForget() {}, sublabels: { cloud: "Sleeps when idle" }, places: "These bots live on this computer: Ember.", together };
   for (const activeId of ["local", "cloud"]) {
     const items = env.workspaceMenuTemplate({ environments: [cloud, office], activeId }, base);
     assert.deepEqual(items.map((item) => item.id ?? item.type), ["workspace-local", "workspace-office", "workspace-together", "separator", "workspace-connect", ...(activeId === "cloud" ? ["workspace-forget"] : [])]);
     const both = items.find((item) => item.id === "workspace-local");
-    assert.deepEqual([both.label, both.sublabel, both.checked], ["This computer and My Cloud", "Sleeps when idle", true]);
+    assert.deepEqual([both.label, both.sublabel, both.checked], ["All bots", "This computer and My Cloud · Sleeps when idle", true]);
     both.click();
-    assert.deepEqual(items.find((item) => item.id === "workspace-together"), { id: "workspace-together", label: "Show This computer and My Cloud together", type: "checkbox", checked: true, click: together.onToggle });
+    assert.deepEqual(items.find((item) => item.id === "workspace-together"), { id: "workspace-together", label: "Show all bots together", type: "checkbox", checked: true, click: together.onToggle });
   }
   assert.deepEqual(calls, []);
   const fromOffice = env.workspaceMenuTemplate({ environments: [cloud, office], activeId: "office" }, base);
@@ -179,7 +179,7 @@ test("together, This computer and My Cloud are one entry, checked on either page
   fromOffice.find((item) => item.id === "workspace-together").click();
   assert.deepEqual(calls, [["switch", "local"], "toggle"]);
   const windows = env.workspaceMenuTemplate({ environments: [cloud], activeId: "local" }, { ...base, foldSublabels: true });
-  assert.equal(windows.find((item) => item.id === "workspace-local").label, "This computer and My Cloud · Sleeps when idle");
+  assert.equal(windows.find((item) => item.id === "workspace-local").label, "All bots · This computer and My Cloud · Sleeps when idle");
   const apart = env.workspaceMenuTemplate({ environments: [cloud], activeId: "local" }, { ...base, together: { ...together, on: false } });
   assert.deepEqual(apart.map((item) => item.id ?? item.type), ["workspace-places", "separator", "workspace-local", "workspace-cloud", "workspace-together", "separator", "workspace-connect"]);
   assert.equal(apart.find((item) => item.id === "workspace-together").checked, false);

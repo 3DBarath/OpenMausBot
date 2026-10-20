@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { OneWorkspaceView } from "../../shared/one-workspace.ts";
 import { openChatLink } from "../../src/components/ThreadRefs.tsx";
-import { mergeWorkspace } from "../../src/lib/one-workspace.ts";
+import { automationsByBot, mergeWorkspace } from "../../src/lib/one-workspace.ts";
 import { initialState, type Action, type AppState, type Bot, type Group } from "../../src/state/store.tsx";
 import { launchCloudSendFixture, type CloudSendFixture } from "./cloud-send-fixture.ts";
 import { seedOneWorkspace, wireOneWorkspace, type OneWorkspaceWiring } from "./one-workspace-fixture.ts";
@@ -93,6 +93,76 @@ it("opening a Cloud bot moves the window to My Cloud, whose page opens it from M
   expect(one.went).toEqual(["cloud", "cloud", "local"]);
   expect(await one.call("one-workspace:take", "local")).toBe(`openmausbot://bot/${ids.juno}`);
 });
+
+it("after Send everything every bot is on both sides with the same id: each shows once at home, chats there with the history shown, and what My Cloud's copy has of its own opens there", async () => {
+  type Turnable = { id: string; busy?: boolean; threadId: string; messages?: Array<{ id: string; text?: string }> };
+  const bots = async (side: "local" | "onCloud") => (await fx[side]("GET", "/api/bots?messages=200")).body.bots as Turnable[];
+  const settled = async (side: "local" | "onCloud", id: string) => {
+    for (let tries = 0; tries < 200; tries++) {
+      if ((await bots(side)).find((bot) => bot.id === id)?.busy === false) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`${id} never settled on ${side}`);
+  };
+  const said = (bot: Turnable | undefined, text: string) => bot?.messages?.find((message) => message.text === text);
+
+  // Juno has a history here; Send everything takes every bot, chats included, under the same ids.
+  expect((await fx.local("POST", `/api/bots/${ids.juno}/messages`, { text: "Draft the weekly notes." })).status).toBe(202);
+  await settled("local", ids.juno);
+  const everything = await fx.call<{ result: { bots: string[]; failed: unknown[] } }>("cloud-send:send", "local", {});
+  expect(everything.result.failed).toEqual([]);
+  const cloudJuno = (await bots("onCloud")).find((bot) => bot.id === ids.juno);
+  expect(said(cloudJuno, "Draft the weekly notes.")?.id).toBe(said((await bots("local")).find((bot) => bot.id === ids.juno), "Draft the weekly notes.")?.id);
+
+  const wire = wireOneWorkspace(fx, { file: join(fx.root, "twins.json") });
+  const fromLocal = await wire.call<OneWorkspaceView>("one-workspace:view", "local");
+  const shown = rows(fromLocal, await storeOf("local"));
+  expect([...shown.ids].sort()).toEqual(Object.values(ids).sort());
+  expect(new Set(shown.ids).size).toBe(shown.ids.length);
+  expect(shown.merged.homes.get(ids.juno)).toEqual({ side: "computer", twin: true });
+  expect(shown.merged.homes.get(ids.ember)).toEqual({ side: "computer", twin: true });
+  expect(shown.merged.twinWork.size).toBe(0);
+
+  // Juno's row is this computer's: a message lands here, in the history the row shows, and reaches My Cloud's copy
+  // only with the next send, under the same id.
+  expect((await fx.local("POST", `/api/bots/${ids.juno}/messages`, { text: "Add the release date." })).status).toBe(202);
+  await settled("local", ids.juno);
+  const here = (await bots("local")).find((bot) => bot.id === ids.juno);
+  expect([said(here, "Draft the weekly notes."), said(here, "Add the release date.")].every(Boolean)).toBe(true);
+  expect(said((await bots("onCloud")).find((bot) => bot.id === ids.juno), "Add the release date.")).toBeUndefined();
+  await fx.call("cloud-send:send", "local", {});
+  expect(said((await bots("onCloud")).find((bot) => bot.id === ids.juno), "Add the release date.")?.id).toBe(said(here, "Add the release date.")?.id);
+
+  // Something of My Cloud's own: a chat from the phone and a routine, both made there. Routines stay where they were made.
+  const phone = (await fx.onCloud("POST", `/api/bots/${ids.juno}/tasks`, { title: "From my phone" })).body.task.threadId as string;
+  expect((await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "Remind me at five.", threadId: phone })).status).toBe(202);
+  await settled("onCloud", ids.juno);
+  expect((await fx.onCloud("POST", "/api/routines", { name: "Nightly notes", prompt: "Write tonight's notes.", botId: ids.juno,
+    schedule: { type: "interval", everyMinutes: 1_440, anchorAt: Date.now() + 86_400_000 } })).status).toBe(201);
+  const routinesOf = async (side: "local" | "onCloud") => ((await fx[side]("GET", "/api/routines")).body.routines as Array<{ botId: string }>).filter((routine) => routine.botId === ids.juno);
+  expect([(await routinesOf("onCloud")).length, (await routinesOf("local")).length]).toEqual([1, 0]);
+
+  const later = wireOneWorkspace(fx, { file: join(fx.root, "twins-later.json") });
+  const again = rows(await later.call<OneWorkspaceView>("one-workspace:view", "local"), await storeOf("local"));
+  expect(again.ids.filter((id) => id === ids.juno)).toHaveLength(1);
+  expect(again.merged.twinWork.get(ids.juno)).toMatchObject({ side: "cloud", chats: 1, automations: 1, threadId: phone });
+  await later.call("one-workspace:open", "local", { side: "cloud", id: ids.juno, threadId: phone });
+  const link = await later.call<string>("one-workspace:take", "cloud");
+  expect(link).toBe(`openmausbot://thread/${phone}?bot=${ids.juno}`);
+  const cloud = await storeOf("onCloud");
+  const actions: Action[] = [];
+  const page: AppState = { ...initialState, bots: cloud.bots.map((bot) => ({ ...bot, messages: [] })), groups: cloud.groups.map((group) => ({ ...group, messages: [] })), hydrated: true };
+  expect(openChatLink((action) => actions.push(action), link, page, true)).toBe(true);
+  expect(actions).toContainEqual(expect.objectContaining({ threadId: phone }));
+
+  // My Cloud's page shows the same one row, this computer's Juno, with the same line under it.
+  const cloudRoutines = (await fx.onCloud("GET", "/api/routines")).body.routines as Array<{ botId: string; enabled: boolean }>;
+  const fromCloud = mergeWorkspace(await later.call<OneWorkspaceView>("one-workspace:view", "cloud"),
+    { ...cloud, automations: automationsByBot(cloudRoutines, []) });
+  expect(fromCloud.hidden.has(ids.juno)).toBe(true);
+  expect(fromCloud.homes.get(ids.juno)).toEqual({ side: "computer", twin: true });
+  expect(fromCloud.twinWork.get(ids.juno)).toMatchObject({ side: "cloud", chats: 1, automations: 1, threadId: phone });
+}, hostTimeout(120_000));
 
 it("an unreachable or asleep My Cloud keeps its bots (an asleep one is never called), then and after a restart", async () => {
   await one.call("one-workspace:view", "local");

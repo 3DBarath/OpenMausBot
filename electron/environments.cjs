@@ -95,16 +95,17 @@ function workspaceSenderAllowed(event, contents, state, localOrigin) {
 /** Native menu choices, never renderer-supplied destinations or callbacks. `iconFor`: a saved colour's small dot, when main can draw one.
  * `places`: the one line saying which side has which bots, shown first; `copyToCloud`: the send line under the list. `foldSublabels`: where menus show no sublabels (Windows, Linux), My Cloud's status line
  * joins its name instead of vanishing. `together`: while this computer has My Cloud, the setting that shows both as one
- * entry (`on`), My Cloud's saved id and that entry's label. */
+ * entry (`on`), My Cloud's saved id, that entry's label and the line under it (`detail`). */
 function workspaceMenuTemplate(state, { onSwitch, onConnect, onForget, onAddCloud, sublabels = {}, iconFor = null, places = null, copyToCloud = null, foldSublabels = false, together = null }) {
   const active = activeEnvironment(state);
   const merged = together?.on === true;
   const onMerged = merged && (!active || active.id === together.cloudId);
   const mergedStatus = merged && Object.hasOwn(sublabels, together.cloudId) ? sublabels[together.cloudId] : null;
+  const mergedSublabel = merged ? [together.detail, mergedStatus].filter(Boolean).join(" · ") : null;
   return [
     ...(places && !merged ? [{ id: "workspace-places", label: places, enabled: false }, { type: "separator" }] : []),
     merged
-      ? { id: "workspace-local", label: foldSublabels && mergedStatus ? `${together.label} · ${mergedStatus}` : together.label, ...(mergedStatus ? { sublabel: mergedStatus } : {}),
+      ? { id: "workspace-local", label: foldSublabels && mergedSublabel ? `${together.label} · ${mergedSublabel}` : together.label, ...(mergedSublabel ? { sublabel: mergedSublabel } : {}),
         type: "radio", checked: onMerged, click: () => { if (!onMerged) onSwitch(LOCAL_ID); } }
       : { id: "workspace-local", label: "This computer", type: "radio", checked: !active, click: () => onSwitch(LOCAL_ID) },
     ...state.environments.filter((entry) => !merged || entry.id !== together.cloudId).map((entry) => {
@@ -117,7 +118,7 @@ function workspaceMenuTemplate(state, { onSwitch, onConnect, onForget, onAddClou
       };
     }),
     ...(copyToCloud ? [{ id: "workspace-copy-to-cloud", label: copyToCloud.label, click: copyToCloud.click }] : []),
-    ...(together ? [{ id: "workspace-together", label: `Show ${together.label} together`, type: "checkbox", checked: merged, click: together.onToggle }] : []),
+    ...(together ? [{ id: "workspace-together", label: "Show all bots together", type: "checkbox", checked: merged, click: together.onToggle }] : []),
     ...(onAddCloud ? [{ id: "workspace-add-cloud", label: "Add a Cloud…", sublabel: "Keeps your bots running 24/7", click: onAddCloud }] : []),
     { type: "separator" },
     { id: "workspace-connect", label: "Connect to a server…", click: onConnect },

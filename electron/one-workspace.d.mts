@@ -4,6 +4,8 @@ export const ROSTER_FRESH_MS: number;
 export const READ_WAIT_MS: number;
 export const OPEN_FOR_MS: number;
 export const PICTURE_MAX_BYTES: number;
+export const AUTOMATIONS_FRESH_MS: number;
+export function automationCounts(...bodies: unknown[]): Map<string, number>;
 
 export function otherSide(side: WorkspaceSide): WorkspaceSide;
 export function rosterBot(bot: unknown): RosterBot | null;
@@ -40,7 +42,7 @@ export function createOneWorkspace(deps: {
 }): OneWorkspace;
 
 export interface OneWorkspaceMenu {
-  together?: { cloudId: string; label: string; on: boolean; onToggle(): void };
+  together?: { cloudId: string; label: string; detail: string; on: boolean; onToggle(): void };
 }
 
 export function oneWorkspaceMenu(one: OneWorkspace, entry: { id: string; name: string } | null | undefined, onToggle: () => void): OneWorkspaceMenu;

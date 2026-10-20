@@ -6,7 +6,7 @@ vi.mock("react", async (original) => ({
 }));
 
 import type { OneWorkspaceView } from "../../shared/one-workspace";
-import { setOneWorkspaceForTests, useMergedWorkspace, useOwnHome } from "./one-workspace";
+import { setOneWorkspaceForTests, useMergedWorkspace, useOwnHome, useTwinWork } from "./one-workspace";
 
 const view: OneWorkspaceView = { page: "computer", twinHome: "computer", cloudName: "My Cloud",
   other: { side: "cloud", state: "ready", at: 1, bots: [{ id: "ember", threadId: "t", name: "Ember", title: "", color: "blue", avatarUrl: null, unread: false }], rooms: [], sections: [] } };
@@ -30,5 +30,11 @@ describe("the merged view's hooks", () => {
     setOneWorkspaceForTests({ view });
     expect(useOwnHome("ember")).toEqual({ side: "computer", twin: true });
     expect(useOwnHome("juno")).toEqual({ side: "computer", twin: false });
+  });
+
+  it("tell a row of this page what its copy on the other side has of its own", () => {
+    setOneWorkspaceForTests({ view: { ...view, other: { ...view.other, bots: [{ ...view.other.bots[0]!, threads: ["phone-1", "t"], automations: 1 }] } } });
+    expect(useTwinWork({ id: "ember", threadId: "t", tasks: [{ threadId: "t" }] })).toEqual({ side: "cloud", chats: 1, unread: false, automations: 1, threadId: "phone-1" });
+    expect(useTwinWork({ id: "juno", threadId: "j" })).toBeNull();
   });
 });

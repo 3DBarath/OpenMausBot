@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot } from "./one-workspace.mjs";
+import { automationCounts, AUTOMATIONS_FRESH_MS, createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot } from "./one-workspace.mjs";
 
 const CLOUD = "https://omb-u-1.fly.dev";
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -28,13 +28,16 @@ function harness({ cloudBody = { bots: [bot("atlas")], groups: [], sections: [] 
     localDefault: () => options.localDefault ?? true, twinHome: () => options.twinHome ?? "computer", reason: () => options.reason ?? null,
     onChange: options.onChange,
   });
-  return { one, calls, power, store, tick: (ms) => { clock += ms; } };
+  const roster = (side) => calls[side].filter((route) => route === "/api/bots?messages=0");
+  return { one, calls, roster, power, store, tick: (ms) => { clock += ms; } };
 }
 
 test("a roster carries what a row shows and never a bot's instructions, model, messages or settings", () => {
   const projected = rosterBot(bot("ember", { section: " Research ", chiefOfStaff: true, busy: true, activity: "working", cwd: "/Users/amit", approvalMode: "full",
-    tasks: [{ unread: true, routineRunId: "r1" }, { unread: true, archivedAt: 5 }] }));
-  assert.deepEqual(projected, { id: "ember", threadId: "t-ember", name: "ember", title: "", color: "blue", avatarUrl: null, section: "Research", chiefOfStaff: true, unread: false, busy: true, activity: "working" });
+    tasks: [{ threadId: "run-1", title: "Morning digest", unread: true, routineRunId: "r1" }, { threadId: "old-1", unread: true, archivedAt: 5 }, { threadId: "t-ember", title: "Hello" }] }));
+  assert.deepEqual(projected, { id: "ember", threadId: "t-ember", name: "ember", title: "", color: "blue", avatarUrl: null, section: "Research", chiefOfStaff: true, unread: false, busy: true, activity: "working",
+    threads: ["t-ember", "run-1"], unreadThreads: ["run-1"] });
+  assert.equal(JSON.stringify(projected).includes("Morning digest"), false);
   assert.equal(rosterBot(bot("old", { hidden: true })), null);
   assert.equal(rosterBot({ id: "../x" }), null);
   assert.equal(rosterBot(bot("u", { tasks: [{ unread: true }] })).unread, true);
@@ -53,7 +56,7 @@ test("each page gets the other side: this computer's page reads My Cloud, My Clo
   assert.deepEqual(fromLocal.other.bots.map((entry) => entry.id), ["atlas"]);
   const fromCloud = await one.view("cloud");
   assert.deepEqual(fromCloud.other.bots.map((entry) => entry.id), ["ember"]);
-  assert.deepEqual(calls, { cloud: ["/api/bots?messages=0"], local: ["/api/bots?messages=0"] });
+  assert.deepEqual(calls, { cloud: ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"], local: ["/api/bots?messages=0", `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, "/api/webhooks"] });
   assert.equal(await one.view("server"), null);
 });
 
@@ -70,14 +73,14 @@ test("nothing is merged while the person keeps them apart, has no My Cloud, or r
 test("a roster is read again only when older than its freshness, and a change is announced once", async () => {
   let changes = 0;
   const bots = [bot("atlas")];
-  const { one, calls, tick } = harness({ cloudBody: () => ({ bots, groups: [], sections: [] }), onChange: () => changes++ });
+  const { one, roster, tick } = harness({ cloudBody: () => ({ bots, groups: [], sections: [] }), onChange: () => changes++ });
   await one.view("computer");
   await one.view("computer");
-  assert.equal(calls.cloud.length, 1);
+  assert.equal(roster("cloud").length, 1);
   tick(ROSTER_FRESH_MS);
   bots.push(bot("juno"));
   const view = await one.view("computer");
-  assert.equal(calls.cloud.length, 2);
+  assert.equal(roster("cloud").length, 2);
   assert.deepEqual(view.other.bots.map((entry) => entry.id), ["atlas", "juno"]);
   assert.equal(changes, 2);
   tick(ROSTER_FRESH_MS);
@@ -90,8 +93,9 @@ test("an asleep Cloud is never called and keeps its bots; a Cloud going to sleep
   await one.view("computer");
   power.asleepNow = true;
   tick(ROSTER_FRESH_MS);
+  const before = calls.cloud.length;
   const asleep = await one.view("computer");
-  assert.equal(calls.cloud.length, 1);
+  assert.equal(calls.cloud.length, before);
   assert.equal(asleep.other.state, "asleep");
   assert.deepEqual(asleep.other.bots.map((entry) => entry.id), ["atlas"]);
 
@@ -163,7 +167,8 @@ test("a picture is inlined once, and only an image small enough", async () => {
 test("a first read that takes long gives the page what main holds, then announces the answer", async () => {
   let release;
   let changes = 0;
-  const { one } = harness({ cloudBody: () => new Promise((resolve) => { release = () => resolve({ bots: [bot("atlas")], groups: [], sections: [] }); }), onChange: () => changes++ });
+  const { one } = harness({ cloudBody: (route) => route.startsWith("/api/bots")
+    ? new Promise((resolve) => { release = () => resolve({ bots: [bot("atlas")], groups: [], sections: [] }); }) : { routines: [], webhooks: [] }, onChange: () => changes++ });
   const early = await one.view("computer");
   assert.equal(early.other.state, "unreachable");
   assert.deepEqual(early.other.bots, []);
@@ -201,7 +206,7 @@ test("the switcher offers one entry for both and the setting while this computer
   const entry = { id: "c1", name: "Amit's Cloud", origin: CLOUD };
   let toggled = 0;
   const menu = oneWorkspaceMenu(one, entry, () => toggled++);
-  assert.deepEqual({ ...menu.together, onToggle: undefined }, { cloudId: "c1", label: "This computer and Amit's Cloud", on: true, onToggle: undefined });
+  assert.deepEqual({ ...menu.together, onToggle: undefined }, { cloudId: "c1", label: "All bots", detail: "This computer and Amit's Cloud", on: true, onToggle: undefined });
   menu.together.onToggle();
   assert.equal(toggled, 1);
   one.setTogether(false);
@@ -257,7 +262,7 @@ test("My Cloud is read with the window's own sign-in, in the background, and sig
   const { call, fetches } = installed({ signedIn: false });
   const view = await call("one-workspace:view", "local");
   assert.equal(view.other.state, "ready");
-  assert.equal(fetches.length, 2);
+  assert.equal(fetches.filter(([url]) => url === `${CLOUD}/api/bots?messages=0`).length, 2);
   const [url, init] = fetches[0];
   assert.equal(url, `${CLOUD}/api/bots?messages=0`);
   assert.equal(init.credentials, "include");
@@ -324,4 +329,31 @@ test("a picture whose read failed is tried again on the next roster, not dropped
   tick(ROSTER_FRESH_MS);
   assert.equal((await one.view("computer")).other.bots[0].avatarUrl, "data:image/png;base64,Bw==");
   assert.equal(calls.cloud.filter((route) => route === "/api/attachments/a.png").length, 2);
+});
+
+test("each bot carries how many routines and webhooks it has switched on, read at most once a minute", async () => {
+  const routes = { routines: `/api/routines?from=${Number.MAX_SAFE_INTEGER}`, webhooks: "/api/webhooks" };
+  let routines = [{ botId: "atlas", enabled: true, prompt: "secret prompt" }, { botId: "atlas", enabled: false }, { botId: "kit", enabled: true }];
+  const { one, calls, tick } = harness({ cloudBody: (route) => route === routes.routines ? { routines, runs: [] }
+    : route === routes.webhooks ? { webhooks: [{ botId: "atlas", enabled: true }], attempts: [] }
+    : { bots: [bot("atlas"), bot("kit"), bot("juno")], groups: [], sections: [] } });
+  const view = await one.view("computer");
+  assert.deepEqual(view.other.bots.map((entry) => [entry.id, entry.automations]), [["atlas", 2], ["kit", 1], ["juno", undefined]]);
+  assert.equal(JSON.stringify(view).includes("secret prompt"), false);
+  routines = [];
+  tick(ROSTER_FRESH_MS);
+  await one.view("computer");
+  assert.equal(calls.cloud.filter((route) => route === routes.routines).length, 1);
+  tick(AUTOMATIONS_FRESH_MS);
+  assert.deepEqual((await one.view("computer")).other.bots.map((entry) => entry.automations), [1, undefined, undefined]);
+  assert.deepEqual([...automationCounts({ routines: [{ botId: "../x", enabled: true }, "nope"] }, null)], []);
+});
+
+test("opening the other copy's own conversation hands that side's page the conversation, never one main did not read", async () => {
+  const { one } = harness({ cloudBody: { bots: [bot("ember", { tasks: [{ threadId: "phone-1" }, { threadId: "t-ember" }] })], groups: [], sections: [] } });
+  await one.view("computer");
+  one.open("computer", { side: "cloud", id: "ember", threadId: "phone-1" });
+  assert.equal(one.take("cloud"), "openmausbot://thread/phone-1?bot=ember");
+  one.open("computer", { side: "cloud", id: "ember", threadId: "somebody-elses" });
+  assert.equal(one.take("cloud"), "openmausbot://bot/ember");
 });

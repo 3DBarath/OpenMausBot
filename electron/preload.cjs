@@ -384,7 +384,7 @@ const bridge = {
       return () => ipcRenderer.removeListener("one-workspace:view", handler);
     },
     open: target => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("one-workspace:open", { side: target?.side === "computer" ? "computer" : "cloud", id: String(target?.id ?? "") })
+      ? ipcRenderer.invoke("one-workspace:open", { side: target?.side === "computer" ? "computer" : "cloud", id: String(target?.id ?? ""), ...(typeof target?.threadId === "string" ? { threadId: target.threadId } : {}) })
       : Promise.reject(new Error("Choose the bot to open it.")),
     take: () => ipcRenderer.invoke("one-workspace:take"),
   } : undefined,

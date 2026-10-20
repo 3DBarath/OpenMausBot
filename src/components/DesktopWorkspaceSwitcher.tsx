@@ -80,9 +80,9 @@ export function DesktopWorkspaceSwitcher({ compact = false, inline = false, pill
       </div>
     </div>;
   }
-  const name = both ? t("oneWorkspace.name", { cloud: both.cloudName }) : current?.name ?? (cloudHome ? t("cloudSetup.myCloud") : t("sidebar.servers"));
+  const name = both ? t("oneWorkspace.name") : current?.name ?? (cloudHome ? t("cloudSetup.myCloud") : t("sidebar.servers"));
   const Icon = current?.local === false || (cloudHome && !current) ? Cloud : Laptop;
-  const shown = cloudHome && !both ? `${name} · ${onLine}` : name;
+  const shown = both ? `${name} (${t("oneWorkspace.nameLong", { cloud: both.cloudName })})` : cloudHome ? `${name} · ${onLine}` : name;
   const mark = (size: number, tile: number, className?: string) => both ? <BothIcon size={size} />
     : cloudColor(current?.color) ? <CloudTile color={current?.color} size={tile} /> : <Icon size={size} aria-hidden="true" data-switcher-icon className={className} />;
   const title = current?.origin ? `${shown} · ${current.origin}` : shown;

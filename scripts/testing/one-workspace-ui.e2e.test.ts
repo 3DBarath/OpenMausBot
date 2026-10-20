@@ -19,7 +19,7 @@ if (!enabled) console.info("skipping one-workspace UI e2e: set OMB_UI_E2E=1 to i
 
 const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side-bot], [data-other-side-room]";
 
-(enabled ? it : it.skip)("shows This computer's and My Cloud's bots once each in one sidebar and Team map, opens a Cloud bot on My Cloud, and keeps an asleep Cloud's bots", async () => {
+(enabled ? it : it.skip)("shows all bots once each in one sidebar and Team map after Send everything, opens each where it lives, and keeps an asleep Cloud's bots", async () => {
   let fx: CloudSendFixture | undefined;
   let pages: OneWorkspacePages | undefined;
   let env: NodeJS.ProcessEnv | undefined;
@@ -30,6 +30,13 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await welcomed(fx);
     const ids = await seedOneWorkspace(fx, PICTURE);
     await fx.onCloud("PATCH", `/api/bots/${ids.miso}`, { computer: "cloud" });
+    // Send everything, as Keep My Cloud up to date does by itself: every bot of this computer is on My Cloud too, same id.
+    expect((await fx.call<{ result: { failed: unknown[] } }>("cloud-send:send", "local", {})).result.failed).toEqual([]);
+    // My Cloud's Juno then gets something of its own: a chat from the phone and a nightly routine.
+    const phone = (await fx.onCloud("POST", `/api/bots/${ids.juno}/tasks`, { title: "From my phone" })).body.task.threadId as string;
+    await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "Remind me at five.", threadId: phone });
+    await fx.onCloud("POST", "/api/routines", { name: "Nightly notes", prompt: "Write tonight's notes.", botId: ids.juno,
+      schedule: { type: "interval", everyMinutes: 1_440, anchorAt: Date.now() + 86_400_000 } });
     pages = await mountOneWorkspacePages(fx);
     const shots = resolve(process.env.OMB_ONE_WORKSPACE_SHOTS ?? join(fx.root, "shots"));
     mkdirSync(shots, { recursive: true });
@@ -63,8 +70,8 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     };
     await ab("set", "viewport", "1280", "800");
 
-    // This computer's page: its own Ember and Juno, My Cloud's Miso, Atlas, Kit and Launch, each once; Ember (sent to
-    // My Cloud, the same id there) shows as this computer's copy.
+    // This computer's page: its own Ember and Juno, My Cloud's Miso, Atlas, Kit and Launch, each once. Ember and Juno are
+    // on both sides and show as this computer's; Juno's line says what My Cloud's copy has of its own.
     const everything = Object.values(ids).sort();
     await openLoaded(local());
     await until<number>("document.querySelectorAll('[data-other-side-bot], [data-other-side-room]').length", (count) => count === 4);
@@ -73,8 +80,12 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     const byId = Object.fromEntries(here.map((row) => [row.id, row]));
     expect([byId[ids.ember]!.home, byId[ids.ember]!.twin, byId[ids.ember]!.other]).toEqual(["computer", true, false]);
     expect(byId[ids.ember]!.label).toBe("On this computer · also on My Cloud");
-    expect([byId[ids.juno]!.home, byId[ids.atlas]!.home, byId[ids.launch]!.home]).toEqual(["computer", "cloud", "cloud"]);
-    expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.getAttribute('aria-label')")).toBe("Switch server: This computer and My Cloud");
+    expect([byId[ids.juno]!.home, byId[ids.juno]!.twin, byId[ids.atlas]!.home, byId[ids.launch]!.home]).toEqual(["computer", true, "cloud", "cloud"]);
+    expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.getAttribute('aria-label')")).toBe("Switch server: All bots (This computer and My Cloud)");
+    expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.textContent")).toBe("All bots");
+    expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('On My Cloud'))")).toBe(true);
+    const twinLine = await until<string | null>("document.querySelector('[data-twin-work]')?.textContent ?? null", (text) => text !== null);
+    expect(twinLine).toBe("Also on My Cloud: 1 chat and 1 automation");
     await shot("1-sidebar-this-computer-light");
     await openLoaded(local("&skin=midnight"));
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
@@ -85,7 +96,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
     await evaluate("document.querySelector('[data-workspace-switcher] button').click(); true");
     const menu = await until<string[]>("[...document.querySelectorAll('[data-menu-stand-in] [role=menuitem]')].map((item) => item.textContent)", (items) => items.length > 0);
-    expect(menu).toEqual(["✓This computer and My CloudAlways on", "Office serveroffice.example.test", "✓Show This computer and My Cloud together", "Connect to a server…"]);
+    expect(menu).toEqual(["✓All botsThis computer and My Cloud · Always on", "Office serveroffice.example.test", "✓Show all bots together", "Connect to a server…"]);
     await shot("3-switcher-menu-light");
 
     // Opening a Cloud bot moves the window to My Cloud's page, which opens it from My Cloud's own server; a message sent
@@ -112,13 +123,27 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 2);
     await shot("5-sidebar-my-cloud-dark");
 
-    // A row of this computer opens it back on this computer's page.
+    // On My Cloud's page Juno is the same one row, this computer's, with the same line under it.
+    expect(await evaluate(`Boolean(document.querySelector('[data-other-side-bot="${ids.juno}"]')) && !document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')`)).toBe(true);
+    expect(await evaluate("document.querySelector('[data-twin-work]')?.textContent ?? null")).toBe("Also on My Cloud: 1 chat and 1 automation");
+
+    // A row of this computer opens it back on this computer's page, with this computer's history.
     await evaluate(`document.querySelector('[data-other-side-bot="${ids.juno}"]').click(); true`);
     await until<string>("location.href", (href) => href.startsWith(pages!.local.previewUrl));
     await until<string | null>(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current") ?? null`, (current) => current === "page");
+    expect(await evaluate("document.querySelector('textarea')?.getAttribute('aria-label')")).toBe("Message Juno");
+
+    // Juno's line opens My Cloud's own chat there: the phone chat, from My Cloud's server.
+    await until<boolean>("Boolean(document.querySelector('[data-twin-work]'))", Boolean);
+    await shot("6-both-sides-line-light");
+    await evaluate("document.querySelector('[data-twin-work]').click(); true");
+    await until<string>("location.href", (href) => href.startsWith(pages!.cloud.previewUrl));
+    await until<boolean>("document.body.innerText.includes('Remind me at five.')", Boolean, 30_000);
+    expect(await evaluate(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current")`)).toBe("page");
+    await shot("7-both-sides-phone-chat-on-my-cloud-light");
 
     // The Team map: both sides' teams and bots, My Cloud's with their computers, opening there.
-    for (const [skin, name] of [["meadow", "6-team-map-light"], ["midnight", "7-team-map-dark"]] as const) {
+    for (const [skin, name] of [["meadow", "8-team-map-light"], ["midnight", "9-team-map-dark"]] as const) {
       await openLoaded(local(`&advanced=1&skin=${skin}`));
       await until<boolean>("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Team map'))", Boolean);
       await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Team map').click(); true");
@@ -136,15 +161,25 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
       await shot(name);
     }
 
+    // Shown apart (the menu's setting off): this computer's page is exactly as before, with no badges and no My Cloud rows.
+    pages.one.menu({ id: "cloud", name: "My Cloud", origin: fx.cloudBase }).together?.onToggle();
+    await openLoaded(local());
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(await evaluate("document.querySelectorAll('[data-other-side-bot], [data-other-side-room], [data-home-badge], [data-twin-work], [data-one-workspace-status]').length")).toBe(0);
+    expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.textContent")).toBe("This computer");
+    expect((await rows()).map((row) => row.id).sort()).toEqual([ids.ember, ids.juno].sort());
+    await shot("10-shown-apart-light");
+    pages.one.menu({ id: "cloud", name: "My Cloud", origin: fx.cloudBase }).together?.onToggle();
+
     // An asleep My Cloud: its bots stay, dimmed, with a plain line; nothing calls it.
     pages.one.power.asleepNow = true;
     const before = pages.one.cloudCalls.length;
     await new Promise((resolve) => setTimeout(resolve, 5_100));
-    for (const [skin, name] of [["meadow", "8-sidebar-cloud-asleep-light"], ["midnight", "9-sidebar-cloud-asleep-dark"]] as const) {
+    for (const [skin, name] of [["meadow", "11-sidebar-cloud-asleep-light"], ["midnight", "12-sidebar-cloud-asleep-dark"]] as const) {
       await openLoaded(local(`&skin=${skin}`));
       await until<string | null>("document.querySelector('[data-one-workspace-status]')?.dataset.oneWorkspaceStatus ?? null", (status) => status === "asleep");
       expect((await rows()).filter((row) => row.other).map((row) => row.id).sort()).toEqual([ids.miso, ids.atlas, ids.kit, ids.launch].sort());
-      expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('Asleep'))")).toBe(true);
+      expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('On My Cloud · asleep'))")).toBe(true);
       expect(await evaluate("document.querySelector('[data-one-workspace-status]').textContent")).toBe("My Cloud is asleep. Opening one of its bots wakes it.");
       await shot(name);
     }
