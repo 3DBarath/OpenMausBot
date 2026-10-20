@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { openChatLink } from "@/components/ThreadRefs";
+import { stepAsideWelcome } from "@/lib/cloud-welcome";
 import { oneWorkspaceBridge } from "@/lib/one-workspace";
 import { useShowThreads } from "@/lib/thread-preferences";
 import type { Action, AppState } from "@/state/store";
@@ -12,7 +13,8 @@ export function useExternalChatLinks(state: AppState, dispatch: (action: Action)
     const bridge = oneWorkspaceBridge();
     if (!bridge) return;
     let live = true;
-    void bridge.take().then((taken) => { if (live && taken) setLink(taken); }, () => {});
+    // The person opened this bot from the other side: its chat, not My Cloud's welcome, which waits in Set up My Cloud.
+    void bridge.take().then((taken) => { if (live && taken) { stepAsideWelcome(); setLink(taken); } }, () => {});
     return () => { live = false; };
   }, []);
   useEffect(() => {
