@@ -3,66 +3,30 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 
-const fixture = { colorMine: false };
+const fixture = vi.hoisted(() => ({ colorMine: false }));
 
 vi.mock("@/state/store", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/store")>();
-  return {
-    ...original,
-    useStore: () => ({
-      state: {
-        ...original.initialState,
-        instances: [{ instanceId: "test", driverKind: "codex", displayName: "Test" } as InstanceInfo],
-      },
-      dispatch: vi.fn(),
-    }),
-  };
+  return { ...original, useStore: () => ({ state: { ...original.initialState, instances: [{ instanceId: "test", driverKind: "codex", displayName: "Test" } as InstanceInfo] }, dispatch: vi.fn() }) };
 });
-
-vi.mock("./DesktopCapabilities", async (importOriginal) => ({
-  ...await importOriginal<typeof import("./DesktopCapabilities")>(),
-  useDesktopCapabilities: () => ({
-    capabilities: {
-      dictation: { available: false },
-      host: { packaged: true, platform: "other" },
-      localComputer: { available: false },
-    },
-    ready: true,
-  }),
+vi.mock("./DesktopCapabilities", () => ({
+  useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: "other" }, localComputer: { available: false, reasonCode: "x", message: "" } }, ready: true }),
+  useCaptionChrome: () => ({}),
 }));
-
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
-
-vi.mock("@/lib/cloud-guest", () => ({
-  useCanWriteIn: () => true,
-}));
-
-vi.mock("@/lib/user-bubble-preference", () => ({
-  useColorUserBubbles: () => fixture.colorMine,
-}));
-
-vi.mock("@/lib/use-window-width", () => ({
-  useWindowWidth: () => 1024,
-}));
-
-vi.mock("@/lib/virtualizer", () => ({
-  useWindowVirtualizer: () => ({
-    getVirtualItems: () => [],
-    getTotalSize: () => 0,
-    measureElement: () => {},
-  }),
-}));
+vi.mock("@/lib/thread-preferences", () => ({ useShowThreads: () => false, useShowThreadsChoice: () => false, setShowThreads: vi.fn() }));
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => false, setAdvancedMode: vi.fn() }));
+vi.mock("@/lib/cloud-guest", () => ({ useCanWriteIn: () => true }));
+vi.mock("./CitationUI", () => ({ CitationSelectionToolbar: () => null, SentCitations: () => null }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
+vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: () => null }));
+vi.mock("@/lib/user-bubble-preference", () => ({ useColorUserBubbles: () => fixture.colorMine }));
 
 const { ChatView } = await import("./ChatView");
 const { userBubbleTone } = await import("@/lib/user-bubble-tone");
 
 const bot: Bot = {
-  title: "",
-  description: "",
-  id: "b1",
-  threadId: "selected",
-  name: "B",
-  color: "yellow",
+  id: "bot", threadId: "selected", name: "Sample", title: "", description: "", color: "yellow",
   notifications: true, unread: false, busy: false, messages: [
     { id: "u", role: "user", kind: "text", at: 1, text: "hello from me" },
     { id: "b", role: "bot", kind: "text", at: 2, text: "hello back" },
