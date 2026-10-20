@@ -38,6 +38,7 @@ import { liveActivityLabel } from "@/lib/live-activity";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
 
 import { BotAvatar } from "./Avatar";
+import { BotModelBadge, BotModelMark } from "./BotModelBadge";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { searchMatchesThreads, useSearchDisclosure } from "@/lib/search-disclosure";
@@ -111,7 +112,7 @@ import {
 import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
-import { SidebarAppsButton, SidebarFooterNav } from "./SidebarFooterNav";
+import { SidebarAppsButton, SidebarFooterNav, SidebarTodayNav } from "./SidebarFooterNav";
 import { GlassBar, GlassScrollFrame, GlassScroller } from "./GlassScrollFrame";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { OneWorkspaceStatus, OtherSideRows, OwnHomeBadge, ownSectionName, useSidebarWorkspace } from "./OneWorkspace";
@@ -1158,9 +1159,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const hasThreadList = (bot.tasks?.filter((task) => !task.routineRunId).length ?? 1) > 1 || (bot.projects?.length ?? 0) > 0 || Boolean(query);
   const iconOnly = density === "icons";
   const expanded = showThreads && !iconOnly && threadsOpen && hasThreadList;
-  useEffect(() => {
-    if (iconOnly) setRenaming(false);
-  }, [iconOnly]);
+  useEffect(() => { if (iconOnly) setRenaming(false); }, [iconOnly]);
   const simpleRow = !advanced && !showThreads && density === "comfortable";
   const railTile = iconOnly && !advanced;
   const avatarSize = iconOnly ? (railTile ? 36 : 44) : density === "compact" ? (showThreads ? 26 : 36) : (showThreads ? 32 : simpleRow ? 36 : 44);
@@ -1197,6 +1196,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
           motionKey={mascotMotion?.nonce ?? 0}
           animated={working || unread || (mascotMotion?.kind ?? "none") !== "none"}
         />
+        {advanced && iconOnly && <BotModelBadge bot={bot} instances={instances} avatarSize={avatarSize} />}
         {working && (
           <span
             data-testid="working-dot"
@@ -1226,7 +1226,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
             </Phone>
           </span>
         )}
-        <OwnHomeBadge id={bot.id} />
+        {!(advanced && iconOnly && bot.chiefOfStaff) && <OwnHomeBadge id={bot.id} corner={advanced && iconOnly ? "top" : "bottom"} />}
       </span>
       <div className={cn("min-w-0 flex-1", iconOnly && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
@@ -1265,6 +1265,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
               {formatTime(last.at)}
             </span>
           )}
+          {advanced && density === "compact" && <BotModelMark bot={bot} instances={instances} />}
           {(expanded || (quiet && !statusLine)) && unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {(!expanded || deleting) && (!quiet || statusLine) && <div className="flex items-center justify-between gap-2">
@@ -1285,9 +1286,8 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
               )}
             </span>
           )}
-          {unread && (
-            <span className="size-2 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />
-          )}
+          {advanced && density === "comfortable" && <BotModelMark bot={bot} instances={instances} />}
+          {unread && <span className="size-2 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>}
       </div>
     </>
@@ -1900,7 +1900,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           />
         </div>
       </div>}
-
+      <SidebarTodayNav density={density} />
       {universalPins && pinnedBots.length > 0 && (
         <div
           data-sidebar-universal-pins=""

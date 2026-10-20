@@ -54,6 +54,8 @@ describe("this page's own rows", () => {
     expect(render(createElement(OwnHomeBadge, { id: "juno" }))).toContain('aria-label="On this computer"');
     setOneWorkspaceForTests({ view: view({ side: "computer" }, { page: "cloud", cloudName: "Amit's Cloud" }) });
     expect(render(createElement(OwnHomeBadge, { id: "atlas", inline: true }))).toContain("On Amit&#x27;s Cloud");
+    expect(render(createElement(OwnHomeBadge, { id: "atlas" }))).toContain("-bottom-1");
+    expect(render(createElement(OwnHomeBadge, { id: "atlas", corner: "top" }))).toContain("-top-1");
   });
 
   it("keep their team menu only for teams this page has", () => {

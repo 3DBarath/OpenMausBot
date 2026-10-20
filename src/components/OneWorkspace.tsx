@@ -43,26 +43,27 @@ export function homeLabel(home: Home, cloudName: string): string {
   return `${where} · ${home.side === "cloud" ? t("oneWorkspace.alsoOnComputer") : t("oneWorkspace.alsoOnCloud", { cloud: cloudName })}`;
 }
 
-/** The small home mark on a row's avatar (or beside a room's name, `inline`). */
-export function HomeBadge({ home, cloudName, inline = false }: { home: Home; cloudName: string; inline?: boolean }) {
+/** The small home mark on a row's avatar, at its bottom-left `corner` or top-left where the model mark sits below (or
+ * beside a room's name, `inline`). */
+export function HomeBadge({ home, cloudName, inline = false, corner = "bottom" }: { home: Home; cloudName: string; inline?: boolean; corner?: "bottom" | "top" }) {
   const Icon = home.side === "cloud" ? Cloud : Laptop;
   const label = homeLabel(home, cloudName);
   return (
     <span data-home-badge={home.side} data-home-twin={home.twin || undefined} role="img" aria-label={label} title={label}
       className={inline
         ? "inline-flex shrink-0 items-center text-ink-secondary"
-        : "pointer-events-none absolute -bottom-1 -left-1 flex size-[19px] items-center justify-center rounded-full border-2 border-panel bg-raised text-ink-secondary"}>
+        : cn("pointer-events-none absolute -left-1 flex size-[19px] items-center justify-center rounded-full border-2 border-panel bg-raised text-ink-secondary", corner === "top" ? "-top-1" : "-bottom-1")}>
       <Icon size={inline ? 12 : 11} strokeWidth={2.25} aria-hidden="true" />
     </span>
   );
 }
 
 /** The badge on a row of this page's own, while This computer and My Cloud show together. */
-export function OwnHomeBadge({ id, inline = false }: { id: string; inline?: boolean }) {
+export function OwnHomeBadge({ id, inline = false, corner }: { id: string; inline?: boolean; corner?: "bottom" | "top" }) {
   const home = useOwnHome(id);
   const { view } = useOneWorkspace();
   if (!home || !view) return null;
-  return <HomeBadge home={home} cloudName={view.cloudName} inline={inline} />;
+  return <HomeBadge home={home} cloudName={view.cloudName} inline={inline} corner={corner} />;
 }
 
 function stateNote(merged: MergedWorkspace): string | null {
