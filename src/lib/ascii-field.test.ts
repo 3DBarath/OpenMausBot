@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ASCII_CELL, ASCII_GLYPHS, asciiGrid, asciiLevel, botTint, hexRgb, luminance, sameLevel, stepFade, stepLevel } from "./ascii-field";
+import { ASCII_CELL, ASCII_GLYPHS, ASCII_IDLE_MS, asciiGrid, asciiIdle, asciiLevel, botTint, createFieldClock, hexRgb, luminance, sameLevel, stepFade, stepLevel } from "./ascii-field";
 import { userBubbleTone } from "./user-bubble-tone";
 
 describe("ascii field grid", () => {
@@ -54,6 +54,35 @@ describe("ascii field fade", () => {
   it("stays put with no elapsed time and jumps with no duration", () => {
     expect(stepFade(0.3, 1, 0, 700)).toBe(0.3);
     expect(stepFade(0.3, 1, 16, 0)).toBe(1);
+  });
+});
+
+describe("ascii field idle", () => {
+  it("keeps drawing until input has been quiet for the idle time", () => {
+    expect(asciiIdle(1_000 + ASCII_IDLE_MS - 1, 1_000)).toBe(false);
+    expect(asciiIdle(1_000 + ASCII_IDLE_MS, 1_000)).toBe(true);
+  });
+
+  it("advances the clock by the time between draws", () => {
+    const clock = createFieldClock(10);
+    expect(clock(1_000)).toBe(10);
+    expect(clock(1_033)).toBeCloseTo(10.033);
+    expect(clock(1_066)).toBeCloseTo(10.066);
+  });
+
+  it("resumes where it stopped after an idle pause instead of jumping ahead", () => {
+    const clock = createFieldClock(10);
+    clock(1_000);
+    const held = clock(1_050);
+    expect(clock(1_050 + 60_000) - held).toBeCloseTo(0.1);
+  });
+
+  it("does not run faster when two fields draw in the same frame", () => {
+    const clock = createFieldClock(0);
+    clock(1_000);
+    expect(clock(1_040)).toBeCloseTo(0.04);
+    expect(clock(1_040)).toBeCloseTo(0.04);
+    expect(clock(1_020)).toBeCloseTo(0.04);
   });
 });
 

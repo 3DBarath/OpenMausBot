@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 
 import { useAsciiBackground } from "@/lib/ascii-background-preference";
 import {
+  asciiIdle,
   asciiLevel,
   botTint,
   botTintHex,
   createAsciiRenderer,
+  createFieldClock,
   luminance,
   sameLevel,
   stepLevel,
@@ -20,7 +22,8 @@ const FOCUSED_FRAME_MS = 1000 / 30;
 const UNFOCUSED_FRAME_MS = 1000 / 10;
 const FADE_MS = 700;
 const REDUCED_MOTION_TIME = 30;
-const SESSION_CLOCK_OFFSET = 200 + Math.random() * 600;
+const fieldClock = createFieldClock(200 + Math.random() * 600);
+const WAKE_EVENTS = ["pointermove", "pointerdown", "keydown", "wheel"] as const;
 const MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 function reducedMotion(): boolean {
@@ -111,6 +114,7 @@ function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
     let shown: AsciiLevel = { brightness: 0, clearCenter: asciiLevel(modeRef.current).clearCenter };
     let raf = 0;
     let last = 0;
+    let lastInput = performance.now();
 
     const size = () => {
       const box = canvas.getBoundingClientRect();
@@ -131,8 +135,9 @@ function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
       }
       const target = asciiLevel(modeRef.current);
       shown = still ? target : stepLevel(shown, target, dt, FADE_MS);
-      renderer.draw(still ? REDUCED_MOTION_TIME : now / 1000 + SESSION_CLOCK_OFFSET, shown, palette);
-      if (still && sameLevel(shown, target)) {
+      renderer.draw(still ? REDUCED_MOTION_TIME : fieldClock(now), shown, palette);
+      // A still or idle field keeps its last frame and wakes on input, so an untouched window draws nothing.
+      if ((still || asciiIdle(now, lastInput)) && sameLevel(shown, target)) {
         last = 0;
         return;
       }
@@ -143,6 +148,10 @@ function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
       if (!raf) raf = requestAnimationFrame(frame);
     };
     kickRef.current = kick;
+    const wake = () => {
+      lastInput = performance.now();
+      kick();
+    };
 
     const restyle = () => {
       palette = readPalette(canvas, colorsRef.current);
@@ -165,6 +174,8 @@ function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
     root.observe(document.documentElement, { attributes: true, attributeFilter: ["data-skin", "data-reduced-motion", "data-font", "class"] });
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     motion.addEventListener("change", restyle);
+    for (const type of WAKE_EVENTS) window.addEventListener(type, wake, { passive: true });
+    window.addEventListener("focus", wake);
     const lost = (event: Event) => {
       event.preventDefault();
       if (raf) cancelAnimationFrame(raf);
@@ -181,6 +192,8 @@ function AsciiCanvas({ mode, colors }: Required<AsciiFieldProps>) {
       resize.disconnect();
       root.disconnect();
       motion.removeEventListener("change", restyle);
+      for (const type of WAKE_EVENTS) window.removeEventListener(type, wake);
+      window.removeEventListener("focus", wake);
       canvas.removeEventListener("webglcontextlost", lost);
       canvas.removeEventListener("webglcontextrestored", restored);
       renderer.dispose();

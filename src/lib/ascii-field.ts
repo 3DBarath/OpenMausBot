@@ -102,6 +102,26 @@ export function sameLevel(a: AsciiLevel, b: AsciiLevel): boolean {
   return a.brightness === b.brightness && a.clearCenter === b.clearCenter;
 }
 
+/** With no pointer, key or wheel input for this long the field holds its last frame and stops drawing. */
+export const ASCII_IDLE_MS = 20_000;
+
+export function asciiIdle(now: number, lastInput: number): boolean {
+  return now - lastInput >= ASCII_IDLE_MS;
+}
+
+/** The field's time in seconds. It advances only while some field draws, at most
+ * `maxStepMs` per call, so a field that held still resumes where it stopped and
+ * two fields drawing in the same frame do not double its speed. */
+export function createFieldClock(startSeconds: number, maxStepMs = 100): (now: number) => number {
+  let seconds = startSeconds;
+  let at: number | undefined;
+  return (now) => {
+    if (at !== undefined && now > at) seconds += Math.min(now - at, maxStepMs) / 1000;
+    if (at === undefined || now > at) at = now;
+    return seconds;
+  };
+}
+
 export function luminance([r, g, b]: Rgb): number {
   const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
   return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
