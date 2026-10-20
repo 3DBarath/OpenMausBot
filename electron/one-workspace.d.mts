@@ -5,9 +5,10 @@ export const READ_WAIT_MS: number;
 export const OPEN_FOR_MS: number;
 export const PICTURE_MAX_BYTES: number;
 export const AUTOMATIONS_FRESH_MS: number;
+export const CHATS_PER_LOOK: number;
 export function automationCounts(...bodies: unknown[]): Map<string, number>;
 export function threadTimes(body: unknown): Map<string, Map<string, number>>;
-export function aheadCounts(cloud: ReadonlyArray<{ id: string; at: number }>, computer: ReadonlyArray<{ id: string; at: number }>): { cloud: number; computer: number };
+export function unsharedCounts(cloud: ReadonlyArray<{ id: string; at: number }>, computer: ReadonlyArray<{ id: string; at: number }>): { cloud: number; computer: number };
 
 export function otherSide(side: WorkspaceSide): WorkspaceSide;
 export function rosterBot(bot: unknown): RosterBot | null;
@@ -38,6 +39,7 @@ export function createOneWorkspace(deps: {
   localDefault?(): boolean;
   twinHome?(): WorkspaceSide;
   reason?(): string | null;
+  chatsArrive?(botId: string): boolean;
   now?(): number;
   readWaitMs?: number;
   onChange?(): void;
@@ -63,6 +65,7 @@ export function installOneWorkspace(deps: {
   localDefault(): boolean;
   twinHome(): WorkspaceSide;
   reason?(): string | null;
+  chatsArrive?(botId: string): boolean;
   goCloud(): Promise<unknown>;
   goLocal(): Promise<unknown>;
   files?: typeof import("node:fs");

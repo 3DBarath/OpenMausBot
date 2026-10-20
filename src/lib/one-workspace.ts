@@ -15,12 +15,12 @@ export interface Home {
 }
 
 /** What the copy out of sight has that the copy its row opens lacks, on `side`: conversations of its own (chats from a
- * phone, its routines' and webhooks' reports), newer messages in conversations both have, whether any of that is
- * unread, the conversation to open for it, and its switched-on automations. */
+ * phone, its routines' and webhooks' reports), messages only it has in conversations both have, whether any of that
+ * is unread, the conversation to open for it, and its switched-on automations. */
 export interface TwinWork {
   side: WorkspaceSide;
   chats: number;
-  newer: number;
+  unshared: number;
   unread: boolean;
   automations: number;
   threadId?: string;
@@ -34,17 +34,17 @@ export function threadsOf(bot: Conversations): string[] {
   return [...new Set([...(bot.threadId ? [bot.threadId] : []), ...open])];
 }
 
-/** `newer`: per conversation both copies have, how many messages the copy out of sight has after the shown copy's newest. */
+/** `unshared`: per conversation both copies have, how many messages only the copy out of sight has. */
 export function ownWork(hidden: { threads?: readonly string[]; unreadThreads?: readonly string[]; automations?: number }, shownThreads: readonly string[], side: WorkspaceSide,
-  newer: ReadonlyMap<string, number> = new Map()): TwinWork | null {
+  unshared: ReadonlyMap<string, number> = new Map()): TwinWork | null {
   const shown = new Set(shownThreads);
   const own = (hidden.threads ?? []).filter((id) => !shown.has(id));
-  const ahead = (hidden.threads ?? []).filter((id) => shown.has(id) && (newer.get(id) ?? 0) > 0);
+  const ahead = (hidden.threads ?? []).filter((id) => shown.has(id) && (unshared.get(id) ?? 0) > 0);
   const automations = hidden.automations ?? 0;
   if (!own.length && !ahead.length && !automations) return null;
   const threadId = (hidden.threads ?? []).find((id) => own.includes(id) || ahead.includes(id));
   return {
-    side, chats: own.length, newer: ahead.reduce((sum, id) => sum + (newer.get(id) ?? 0), 0),
+    side, chats: own.length, unshared: ahead.reduce((sum, id) => sum + (unshared.get(id) ?? 0), 0),
     unread: (hidden.unreadThreads ?? []).some((id) => own.includes(id) || ahead.includes(id)), automations, ...(threadId ? { threadId } : {}),
   };
 }
@@ -57,9 +57,9 @@ export function awayFromHome(view: OneWorkspaceView | null, id: string): boolean
   return view.other.bots.some((bot) => bot.id === id) || view.other.rooms.some((room) => room.id === id);
 }
 
-/** Newer-message counts for one bot, from the copy on `side`'s point of view. */
-export function newerOn(view: OneWorkspaceView, id: string, side: WorkspaceSide): Map<string, number> {
-  return new Map((view.newer?.[id] ?? []).map((entry) => [entry.threadId, entry[side]]));
+/** Per conversation of one bot, how many messages only its copy on `side` has. */
+export function unsharedOn(view: OneWorkspaceView, id: string, side: WorkspaceSide): Map<string, number> {
+  return new Map((view.unshared?.[id] ?? []).map((entry) => [entry.threadId, entry[side]]));
 }
 
 /** One page's own bots and rooms (its store) beside the other side's, each id once. */
@@ -124,8 +124,8 @@ export function mergeWorkspace(view: OneWorkspaceView, here: HereSide): MergedWo
     const ownThreads = threadsOf(ownBot);
     const work = hidden.has(theirBot.id)
       ? ownWork({ threads: ownThreads, unreadThreads: (ownBot.tasks ?? []).filter((task) => task.unread && task.archivedAt === undefined).map((task) => task.threadId), automations: here.automations?.get(ownBot.id) },
-        theirBot.threads ?? [], page, newerOn(view, theirBot.id, page))
-      : ownWork(theirBot, ownThreads, other, newerOn(view, theirBot.id, other));
+        theirBot.threads ?? [], page, unsharedOn(view, theirBot.id, page))
+      : ownWork(theirBot, ownThreads, other, unsharedOn(view, theirBot.id, other));
     if (work) twinWork.set(theirBot.id, work);
   }
   const openedId = here.selectedId && hidden.has(here.selectedId) ? here.selectedId : null;
@@ -273,7 +273,7 @@ export const automationsByBot = lastOf((routines: ReadonlyArray<{ botId: string;
 export function useTwinWork(bot: { id: string } & Conversations): TwinWork | null {
   const { view } = useOneWorkspace();
   const theirs = view?.other.bots.find((entry) => entry.id === bot.id);
-  return view && theirs ? ownWork(theirs, threadsOf(bot), view.other.side, newerOn(view, bot.id, view.other.side)) : null;
+  return view && theirs ? ownWork(theirs, threadsOf(bot), view.other.side, unsharedOn(view, bot.id, view.other.side)) : null;
 }
 
 export function useOwnHome(id: string): Home | null {

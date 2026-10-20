@@ -127,17 +127,17 @@ describe("a bot both sides have", () => {
     expect(line).toContain("Also on My Cloud: 1 chat and 1 automation");
     expect(line).toContain('aria-label="Unread"');
     expect(render(createElement(TwinWorkLine, { work: fromComputer.twinWork.get("ember")!, cloudName: "My Cloud", density: "icons", onOpen: () => {} }))).toBe("");
-    expect(render(createElement(TwinWorkLine, { work: { side: "computer", chats: 3, newer: 0, unread: false, automations: 0 }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} })))
+    expect(render(createElement(TwinWorkLine, { work: { side: "computer", chats: 3, unshared: 0, unread: false, automations: 0 }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} })))
       .toContain("Also on this computer: 3 chats");
   });
 });
 
 describe("the line under a bot on both sides, and the line above its copy's chat", () => {
-  it("lists what the copy out of sight has: its own chats, newer messages in chats both have, its automations", () => {
-    const line = (work: Partial<TwinWork>) => render(createElement(TwinWorkLine, { work: { side: "cloud", chats: 0, newer: 0, unread: false, automations: 0, ...work }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} }));
-    expect(line({ newer: 2 })).toContain("Also on My Cloud: 2 newer messages");
-    expect(line({ newer: 1 })).toContain("Also on My Cloud: 1 newer message");
-    expect(line({ chats: 1, newer: 2, automations: 1 })).toContain("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
+  it("lists what the copy out of sight has: its own chats, messages only it has in chats both have, its automations", () => {
+    const line = (work: Partial<TwinWork>) => render(createElement(TwinWorkLine, { work: { side: "cloud", chats: 0, unshared: 0, unread: false, automations: 0, ...work }, cloudName: "My Cloud", density: "comfortable", onOpen: () => {} }));
+    expect(line({ unshared: 2 })).toContain("Also on My Cloud: 2 messages only there");
+    expect(line({ unshared: 1 })).toContain("Also on My Cloud: 1 message only there");
+    expect(line({ chats: 1, unshared: 2, automations: 1 })).toContain("Also on My Cloud: 1 chat, 2 messages only there and 1 automation");
   });
 
   it("says above a copy's chat whose copy it is and where the chat is, only for a bot whose home is the other side", () => {

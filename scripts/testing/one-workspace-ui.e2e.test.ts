@@ -94,7 +94,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     expect(await evaluate("document.querySelector('[data-workspace-switcher] button')?.textContent")).toBe("All bots");
     expect(await evaluate("[...document.querySelectorAll('[data-other-side-bot]')].every((row) => row.textContent.includes('On My Cloud'))")).toBe(true);
     const twinLine = await until<string | null>("document.querySelector('[data-twin-work]')?.textContent ?? null", (text) => text !== null);
-    expect(twinLine).toBe("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
+    expect(twinLine).toBe("Also on My Cloud: 1 chat, 2 messages only there and 1 automation");
     await shot("1-sidebar-this-computer-light");
     await openLoaded(local("&skin=midnight"));
     await until<number>("document.querySelectorAll('[data-other-side-bot]').length", (count) => count === 3);
@@ -134,7 +134,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
 
     // On My Cloud's page Juno is the same one row, this computer's, with the same line under it.
     expect(await evaluate(`Boolean(document.querySelector('[data-other-side-bot="${ids.juno}"]')) && !document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')`)).toBe(true);
-    expect(await evaluate("document.querySelector('[data-twin-work]')?.textContent ?? null")).toBe("Also on My Cloud: 1 chat, 2 newer messages and 1 automation");
+    expect(await evaluate("document.querySelector('[data-twin-work]')?.textContent ?? null")).toBe("Also on My Cloud: 1 chat, 2 messages only there and 1 automation");
 
     // A row of this computer opens it back on this computer's page, with this computer's history.
     await evaluate(`document.querySelector('[data-other-side-bot="${ids.juno}"]').click(); true`);
@@ -142,7 +142,7 @@ const ROWS = "[data-sidebar-bot-row], [data-sidebar-group-row], [data-other-side
     await until<string | null>(`document.querySelector('[data-sidebar-bot-row="${ids.juno}"]')?.getAttribute("aria-current") ?? null`, (current) => current === "page");
     expect(await evaluate("document.querySelector('textarea')?.getAttribute('aria-label')")).toBe("Message Juno");
 
-    // Juno's line opens My Cloud's copy there, at what this computer doesn't have: a phone chat or the newer messages.
+    // Juno's line opens My Cloud's copy there, at what this computer doesn't have: a phone chat or the messages only there.
     await until<boolean>("Boolean(document.querySelector('[data-twin-work]'))", Boolean);
     await shot("6-both-sides-line-dark");
     await evaluate("document.querySelector('[data-twin-work]').click(); true");

@@ -95,11 +95,11 @@ function otherLine(merged: MergedWorkspace, title = ""): string {
   return [where, status].filter(Boolean).join(" · ");
 }
 
-/** "1 chat", "2 newer messages and 1 automation", "1 chat, 2 newer messages and 1 automation". */
+/** "1 chat", "2 messages only there and 1 automation", "1 chat, 2 messages only there and 1 automation". */
 function workParts(work: TwinWork): string {
   const parts = [
     work.chats ? (work.chats === 1 ? t("oneWorkspace.chatsOne") : t("oneWorkspace.chatsMany", { count: work.chats })) : "",
-    work.newer ? (work.newer === 1 ? t("oneWorkspace.newerOne") : t("oneWorkspace.newerMany", { count: work.newer })) : "",
+    work.unshared ? (work.unshared === 1 ? t("oneWorkspace.onlyThereOne") : t("oneWorkspace.onlyThereMany", { count: work.unshared })) : "",
     work.automations ? (work.automations === 1 ? t("oneWorkspace.automationsOne") : t("oneWorkspace.automationsMany", { count: work.automations })) : "",
   ].filter(Boolean);
   if (parts.length < 2) return parts[0] ?? "";

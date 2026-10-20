@@ -4,9 +4,11 @@ The desktop app shows This computer's bots and My Cloud's in one sidebar and
 one Team map ("All bots"), each with its home. A bot on both sides (Send keeps
 its id) shows once and always opens at its home: where it was made, or where
 the bots were last moved. What its copy out of sight has that the home lacks
-(its own chats, newer messages in a chat both have, its automations) shows as
-one line under it, and that copy, if opened anyway, says above its chat where
-the chat is. Main reads the other side's bots and rooms
+(its own chats, messages only it has in a chat both have, its automations)
+shows as one line under it, and that copy, if opened anyway, says above its chat
+where the chat is. Main compares a chat both have only while My Cloud answered
+that look, never waking it, and reads a side's messages again only when that
+side's newest message moved. Main reads the other side's bots and rooms
 for the page the window shows (`electron/one-workspace.mjs`) and moves the
 window to the other side when one of them is opened there. Every check below
 runs on two real servers in disposable homes; nothing reaches the user's app,
@@ -30,8 +32,11 @@ model, that opening a Cloud bot hands My Cloud's page a link its own server
 resolves, that after Send everything each bot still shows once at its home
 with its own history (a message lands there and reaches My Cloud's copy only
 with the next send, under the same id) and a chat or routine made on My Cloud's
-copy shows as the line that opens it there, and that an unreachable or asleep
-Cloud keeps its bots (an asleep one is never called), also after a restart.
+copy shows as the line that opens it there, that a phone message into a chat
+both have counts as a message only there and still does after this computer
+replies, right after a send and after a restart, and that an unreachable or
+asleep Cloud keeps its bots (an asleep one is never called), also after a
+restart.
 
 ## The real renderer
 

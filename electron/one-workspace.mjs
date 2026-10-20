@@ -20,6 +20,8 @@ export const AUTOMATIONS_FRESH_MS = 60_000;
 const MAX_THREADS = 300;
 /** How much of a conversation both copies have is compared: its newest messages. */
 const THREAD_PAGE = 200;
+/** At most this many conversations' messages are read per look at the other side; the rest wait for the next look. */
+export const CHATS_PER_LOOK = 10;
 const ACTIVITIES = new Set(["working", "waiting-on-you", "idle", "no-signal", "dead", "parked.computer"]);
 const PICTURE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const ID = /^[\w-]{1,128}$/;
@@ -89,16 +91,17 @@ export function threadTimes(body) {
   return times;
 }
 
-/** Of two copies of one conversation (each its newest text messages, oldest first), how many messages each has after
- * the newest one the other has. A message both have keeps its id there; without one in common, time decides. */
-export function aheadCounts(cloudMessages, computerMessages) {
-  const after = (mine, theirs) => {
-    const last = theirs.at(-1);
-    if (!last) return mine.length;
-    const index = mine.findIndex((message) => message.id === last.id);
-    return index >= 0 ? mine.length - index - 1 : mine.filter((message) => message.at > last.at).length;
+/** Of two copies of one conversation (each its newest text messages, oldest first), how many messages each copy has
+ * that the other lacks. Send keeps a message's id. One older than all that was read of the other copy may only be past
+ * what was read, so it is not counted; two copies without a message in common are compared by time. */
+export function unsharedCounts(cloudMessages, computerMessages) {
+  const only = (mine, theirs) => {
+    if (!theirs.length) return mine.length;
+    const ids = new Set(theirs.map((message) => message.id));
+    if (!mine.some((message) => ids.has(message.id))) return mine.filter((message) => message.at > theirs.at(-1).at).length;
+    return mine.filter((message) => !ids.has(message.id) && message.at >= theirs[0].at).length;
   };
-  return { cloud: after(cloudMessages, computerMessages), computer: after(computerMessages, cloudMessages) };
+  return { cloud: only(cloudMessages, computerMessages), computer: only(computerMessages, cloudMessages) };
 }
 
 /** How many switched-on routines and webhooks each bot has, from GET /api/routines and GET /api/webhooks. */
@@ -148,9 +151,10 @@ function savedRoster(value, origin) {
  * (a Response); `cloud()` is My Cloud as main verified it ({ origin, name }) or null; `power` is My Cloud's power gate.
  * `localDefault()`: the server this computer runs is its default workspace, the one the merged view stands for.
  * `twinHome()`: which copy a bot on both sides shows as. `reason()`: the Admin's words for an unreachable Cloud.
+ * `chatsArrive(botId)`: this computer's messages with that bot reach My Cloud by themselves, so they are never counted.
  */
 export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, localDefault = () => true, twinHome = () => "computer",
-  reason = () => null, now = Date.now, readWaitMs = READ_WAIT_MS, onChange = () => {} }) {
+  reason = () => null, chatsArrive = () => false, now = Date.now, readWaitMs = READ_WAIT_MS, onChange = () => {} }) {
   let saved = null;
   const kept = () => {
     if (saved) return saved;
@@ -158,9 +162,16 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
     return saved;
   };
   const sides = Object.fromEntries(SIDES.map((side) => [side, { roster: null, refreshing: null, pictures: new Map(), automations: null, times: null, timesAt: null, reading: null }]));
-  /** Conversations both copies of a bot have, with the messages each copy has after the other's newest. */
-  let newer = new Map(), mirroring = null;
+  /** Per bot on both sides, its conversations where one copy has messages the other lacks. */
+  let unshared = new Map(), comparing = null;
+  /** Per conversation both copies have, once compared: its last counts. */
   const counted = new Map();
+  /** Conversations whose copies were apart when last compared, kept across restarts: a send that gives both copies the
+   * same newest message leaves them apart, and only this says to compare them again. */
+  let apart = null;
+  const apartKeys = () => (apart ??= new Set((Array.isArray(kept().apart) ? kept().apart : []).filter((key) => typeof key === "string").slice(0, MAX_THREADS)));
+  /** Per side and conversation: the message ids read there, with that side's newest-message time when they were read. */
+  const messageIds = new Map();
   let pending = null;
 
   const save = (patch) => { saved = { ...kept(), ...patch }; try { store.write(saved); } catch {} };
@@ -273,8 +284,10 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
     return entry.reading;
   }
 
-  async function texts(side, threadId) {
+  /** A conversation's newest text messages on `side`: ids and times, nothing else kept. */
+  async function messagesOf(side, threadId) {
     const response = await readerOf(side)(`/api/threads/${threadId}/messages?limit=${THREAD_PAGE}`);
+    if (side === "cloud" && asleepAnswer(response)) { await response.body?.cancel?.(); power?.hold?.(); throw new Error("asleep"); }
     if (!response.ok) { await response.body?.cancel?.(); throw new Error(`${response.status}`); }
     const body = await response.json();
     return (Array.isArray(body?.messages) ? body.messages : [])
@@ -282,39 +295,63 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       .map((message) => ({ id: message.id, at: number(message.at) ?? 0 }));
   }
 
-  /** Reads a conversation's messages on both sides only when their newest-message times differ, once per change. */
-  async function readNewer() {
+  /** My Cloud answered within this look and is not going to sleep: reading it then neither wakes it nor keeps it up. */
+  const cloudAnswered = () => !power?.asleep() && sides.cloud.timesAt !== null && now() - sides.cloud.timesAt < ROSTER_FRESH_MS;
+
+  /** The conversations both copies of a bot have. One whose newest-message times match and that was never compared nor
+   * seen apart is not read. Otherwise a side's messages are read again only when its newest-message time there moved,
+   * while My Cloud answered this look, for at most CHATS_PER_LOOK conversations per look, the most recent first; the
+   * others keep their last counts until a later look. */
+  async function compare() {
     const cloudTimes = sides.cloud.times, computerTimes = sides.computer.times;
-    if (!cloudTimes || !computerTimes) return newer;
-    const next = new Map();
+    if (!cloudTimes || !computerTimes) return unshared;
+    const both = [];
     for (const [botId, cloudThreads] of cloudTimes) {
       const computerThreads = computerTimes.get(botId);
       if (!computerThreads) continue;
       for (const [threadId, cloudAt] of cloudThreads) {
         const computerAt = computerThreads.get(threadId);
-        if (computerAt === undefined || computerAt === cloudAt) continue;
-        const key = `${botId}:${threadId}`, version = `${cloudAt}:${computerAt}`;
-        let entry = counted.get(key);
-        if (entry?.version !== version && !power?.asleep()) {
-          try {
-            const [onCloud, onComputer] = await Promise.all([texts("cloud", threadId), texts("computer", threadId)]);
-            entry = { version, counts: aheadCounts(onCloud, onComputer) };
-            counted.set(key, entry);
-          } catch {}
-        }
-        if (entry && (entry.counts.cloud || entry.counts.computer)) next.set(botId, [...(next.get(botId) ?? []), { threadId, ...entry.counts }]);
+        if (computerAt !== undefined) both.push({ botId, threadId, at: { cloud: cloudAt, computer: computerAt } });
       }
     }
+    both.sort((a, b) => Math.max(b.at.cloud, b.at.computer) - Math.max(a.at.cloud, a.at.computer));
+    const next = new Map(), listed = new Set();
+    let reads = 0;
+    for (const { botId, threadId, at } of both) {
+      const key = `${botId}:${threadId}`;
+      listed.add(key);
+      let counts = counted.get(key) ?? null;
+      if (at.cloud === at.computer && !counts && !apartKeys().has(key)) continue;
+      const moved = ["cloud", "computer"].filter((side) => messageIds.get(`${side}:${key}`)?.at !== at[side]);
+      if (moved.length && reads < CHATS_PER_LOOK && cloudAnswered()) {
+        reads++;
+        try {
+          for (const side of moved) messageIds.set(`${side}:${key}`, { at: at[side], messages: await messagesOf(side, threadId) });
+          counts = unsharedCounts(messageIds.get(`cloud:${key}`).messages, messageIds.get(`computer:${key}`).messages);
+        } catch {}
+      }
+      if (!counts) continue;
+      counted.set(key, counts);
+      if (counts.cloud || counts.computer) apartKeys().add(key);
+      else apartKeys().delete(key);
+      const shown = { cloud: counts.cloud, computer: chatsArrive(botId) === true ? 0 : counts.computer };
+      if (shown.cloud || shown.computer) next.set(botId, [...(next.get(botId) ?? []), { threadId, ...shown }]);
+    }
+    for (const key of counted.keys()) if (!listed.has(key)) counted.delete(key);
+    for (const key of apartKeys()) if (!listed.has(key)) apartKeys().delete(key);
+    for (const key of messageIds.keys()) if (!counted.has(key.slice(key.indexOf(":") + 1))) messageIds.delete(key);
+    const keep = [...apartKeys()].slice(0, MAX_THREADS);
+    if (JSON.stringify(keep) !== JSON.stringify(kept().apart ?? [])) save({ apart: keep });
     return next;
   }
 
-  function refreshNewer() {
-    mirroring ??= readNewer().then((next) => {
-      const changed = JSON.stringify([...next]) !== JSON.stringify([...newer]);
-      newer = next;
+  function refreshUnshared() {
+    comparing ??= compare().then((next) => {
+      const changed = JSON.stringify([...next]) !== JSON.stringify([...unshared]);
+      unshared = next;
       if (changed) onChange();
-    }).finally(() => { mirroring = null; });
-    return mirroring;
+    }).catch(() => {}).finally(() => { comparing = null; });
+    return comparing;
   }
 
   const comparable = (roster) => roster && JSON.stringify({ ...roster, at: null });
@@ -333,7 +370,7 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
   function snapshot(page, roster) {
     const target = cloud();
     return { page, twinHome: twinHome() === "cloud" ? "cloud" : "computer", cloudName: text(target?.name, 60) || "My Cloud", other: roster,
-      ...(newer.size ? { newer: Object.fromEntries(newer) } : {}) };
+      ...(unshared.size ? { unshared: Object.fromEntries(unshared) } : {}) };
   }
 
   function rosterFor(side) {
@@ -360,7 +397,7 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
       const stale = !entry.roster || entry.roster.at === null || now() - entry.roster.at >= ROSTER_FRESH_MS || entry.roster.state !== "ready";
       if (stale) {
         let timer;
-        const reading = Promise.all([refresh(side), readTimes(page)]).then(refreshNewer);
+        const reading = Promise.all([refresh(side), readTimes(page)]).then(refreshUnshared);
         await Promise.race([reading, new Promise((resolve) => { timer = setTimeout(resolve, readWaitMs); timer.unref?.(); })]);
         clearTimeout(timer);
       }
@@ -414,6 +451,7 @@ export function oneWorkspaceMenu(one, entry, onToggle) {
  *   localDefault: () => boolean,
  *   twinHome: () => "computer" | "cloud",
  *   reason?: () => string | null,
+ *   chatsArrive?: (botId: string) => boolean,
  *   goCloud: () => Promise<unknown>,
  *   goLocal: () => Promise<unknown>,
  *   files?: typeof import("node:fs"),
@@ -421,7 +459,7 @@ export function oneWorkspaceMenu(one, entry, onToggle) {
  * main's own ways to show that side (waking and signing in to My Cloud included).
  */
 export function installOneWorkspace({ ipcMain, page, window, localOrigin, file, cloud, cookieFetch, reconnect, power, local, localDefault, twinHome,
-  reason = () => null, goCloud, goLocal, files }) {
+  reason = () => null, chatsArrive = () => false, goCloud, goLocal, files }) {
   const readCloud = async (route) => {
     const target = cloud();
     if (!target) throw new Error("no Cloud");
@@ -442,7 +480,7 @@ export function installOneWorkspace({ ipcMain, page, window, localOrigin, file, 
   };
   const one = createOneWorkspace({
     store: { read: () => jsonFile(file(), files).read(), write: (value) => jsonFile(file(), files).write(value) }, cloud, readCloud, readLocal: local, power, localDefault, twinHome, reason,
-    onChange: () => { const side = shown(); if (side) window().webContents.send("one-workspace:view", one.peek(side)); },
+    chatsArrive, onChange: () => { const side = shown(); if (side) window().webContents.send("one-workspace:view", one.peek(side)); },
   });
   const asking = (channel, event) => {
     const which = page(event);

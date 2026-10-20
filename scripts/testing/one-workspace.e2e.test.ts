@@ -10,6 +10,7 @@ import { automationsByBot, mergeWorkspace } from "../../src/lib/one-workspace.ts
 import { initialState, type Action, type AppState, type Bot, type Group } from "../../src/state/store.tsx";
 import { launchCloudSendFixture, type CloudSendFixture } from "./cloud-send-fixture.ts";
 import { seedOneWorkspace, wireOneWorkspace, type OneWorkspaceWiring } from "./one-workspace-fixture.ts";
+import { ROSTER_FRESH_MS } from "../../electron/one-workspace.mjs";
 import { freePortBlock } from "../../server/testing/ports.ts";
 import { hostTimeout } from "../../server/testing/host-timeout.ts";
 
@@ -171,26 +172,49 @@ it("after Send everything every bot is on both sides with the same id: each show
   expect(openOnCloud.opened).toEqual(cloudJunoThread === here?.threadId ? { id: ids.juno, threadId: cloudJunoThread } : { id: ids.juno });
 
   // A phone message into the chat both copies have (the same conversation id) is never invisible here: the line counts
-  // the newer messages My Cloud has there and opens My Cloud at that chat.
+  // the messages only My Cloud has there and opens My Cloud at that chat.
   const shared = here!.threadId;
   expect((await fx.onCloud("POST", `/api/bots/${ids.juno}/messages`, { text: "(from my phone) Also add the venue.", threadId: shared })).status).toBe(202);
   await settled("onCloud", ids.juno);
-  const phoneLater = wireOneWorkspace(fx, { file: join(fx.root, "twins-phone.json") });
-  const withNewer = rows(await phoneLater.call<OneWorkspaceView>("one-workspace:view", "local"), await storeOf("local"));
-  expect(withNewer.merged.twinWork.get(ids.juno)).toMatchObject({ side: "cloud", chats: 1, newer: 2, automations: 1 });
+  const phoneFile = join(fx.root, "twins-phone.json");
+  const phoneLater = wireOneWorkspace(fx, { file: phoneFile });
+  const onlyThere = async (wiring: OneWorkspaceWiring) => rows(await wiring.call<OneWorkspaceView>("one-workspace:view", "local"), await storeOf("local")).merged.twinWork.get(ids.juno);
+  expect(await onlyThere(phoneLater)).toMatchObject({ side: "cloud", chats: 1, unshared: 2, automations: 1 });
   await phoneLater.call("one-workspace:open", "local", { side: "cloud", id: ids.juno, threadId: shared });
   expect(await phoneLater.call<string>("one-workspace:take", "cloud")).toBe(`openmausbot://thread/${shared}?bot=${ids.juno}`);
   // Nothing of it came to this computer's chat: Phase 1 only shows where it is.
   expect(said((await bots("local")).find((bot) => bot.id === ids.juno), "(from my phone) Also add the venue.")).toBeUndefined();
-}, hostTimeout(120_000));
+
+  // This computer replies in that chat afterwards: the two phone messages still count.
+  expect((await fx.local("POST", `/api/bots/${ids.juno}/messages`, { text: "Use the town hall.", threadId: shared })).status).toBe(202);
+  await settled("local", ids.juno);
+  await new Promise((resolve) => setTimeout(resolve, ROSTER_FRESH_MS));
+  expect(await onlyThere(phoneLater)).toMatchObject({ unshared: 2 });
+  // Right after a send copies the reply to My Cloud, both copies' newest message is the same: still two, and after a restart.
+  const inShared = async (side: "local" | "onCloud") => ((await fx[side]("GET", `/api/threads/${shared}/messages?limit=200`)).body.messages as Array<{ id: string; text?: string; at: number }>);
+  const sent = await fx.call<{ result: { failed: unknown[] } }>("cloud-send:send", "local", {});
+  expect(sent.result.failed).toEqual([]);
+  const [hereNow, thereNow] = [await inShared("local"), await inShared("onCloud")];
+  expect(thereNow.find((row) => row.text === "Use the town hall.")?.id).toBe(hereNow.find((row) => row.text === "Use the town hall.")?.id);
+  const newestAt = async (side: "local" | "onCloud") => (await storeOf(side)).bots.find((bot) => bot.id === ids.juno)?.tasks?.find((task) => task.threadId === shared)?.updatedAt;
+  expect(await newestAt("onCloud")).toBe(await newestAt("local"));
+  await new Promise((resolve) => setTimeout(resolve, ROSTER_FRESH_MS));
+  expect(await onlyThere(phoneLater)).toMatchObject({ unshared: 2 });
+  expect(await onlyThere(wireOneWorkspace(fx, { file: phoneFile }))).toMatchObject({ unshared: 2 });
+}, hostTimeout(150_000));
 
 it("an unreachable or asleep My Cloud keeps its bots (an asleep one is never called), then and after a restart", async () => {
-  await one.call("one-workspace:view", "local");
+  // Whatever the tests before sent there: the roster main holds is My Cloud's as it is now.
+  const cloudNames = (await storeOf("onCloud")).bots.filter((bot) => !bot.hidden).map((bot) => bot.name).sort();
+  const names = (view: OneWorkspaceView) => view.other.bots.map((bot) => bot.name).sort();
+  for (let tries = 0; tries < 60 && JSON.stringify(names(await one.call<OneWorkspaceView>("one-workspace:view", "local"))) !== JSON.stringify(cloudNames); tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
   one.network.down = true;
-  await new Promise((resolve) => setTimeout(resolve, 5_100));
+  await new Promise((resolve) => setTimeout(resolve, ROSTER_FRESH_MS + 100));
   const offline = await one.call<OneWorkspaceView>("one-workspace:view", "local");
   expect(offline.other.state).toBe("unreachable");
-  expect(offline.other.bots.map((bot) => bot.name).sort()).toEqual(["Atlas", "Ember", "Kit", "Miso"]);
+  expect(names(offline)).toEqual(cloudNames);
   expect(mergeWorkspace(offline, await storeOf("local")).bots.map((bot) => bot.name).sort()).toEqual(["Atlas", "Kit", "Miso"]);
 
   one.network.down = false;
@@ -199,7 +223,7 @@ it("an unreachable or asleep My Cloud keeps its bots (an asleep one is never cal
   const asleep = await one.call<OneWorkspaceView>("one-workspace:view", "local");
   expect(one.cloudCalls.length).toBe(before);
   expect(asleep.other.state).toBe("asleep");
-  expect(asleep.other.bots.map((bot) => bot.name).sort()).toEqual(["Atlas", "Ember", "Kit", "Miso"]);
+  expect(names(asleep)).toEqual(cloudNames);
   // Opening one is what wakes it.
   await one.call("one-workspace:open", "local", { side: "cloud", id: ids.kit });
   expect(one.went.at(-1)).toBe("cloud");
@@ -209,7 +233,7 @@ it("an unreachable or asleep My Cloud keeps its bots (an asleep one is never cal
   const atLaunch = await restarted.call<OneWorkspaceView>("one-workspace:view", "local");
   expect(restarted.cloudCalls).toEqual([]);
   expect(atLaunch.other.state).toBe("asleep");
-  expect(atLaunch.other.bots.map((bot) => bot.name).sort()).toEqual(["Atlas", "Ember", "Kit", "Miso"]);
+  expect(names(atLaunch)).toEqual(cloudNames);
 
   const never = wireOneWorkspace(fx, { cloudOrigin: `http://127.0.0.1:${await freePortBlock([0])}`, file: join(fx.root, "never-read.json") });
   expect((await never.call<OneWorkspaceView>("one-workspace:view", "local")).other).toMatchObject({ state: "unreachable", bots: [] });

@@ -150,7 +150,7 @@ describe("one workspace: what a bot's copy out of sight has of its own", () => {
 
   it("counts My Cloud's own conversations (a phone chat, a routine's report) and automations, newest first, unread included", () => {
     const merged = mergeWorkspace(view({ bots: [sent({ threads: ["phone-1", "t-ember", "run-2", "t-report"], unreadThreads: ["run-2"], automations: 2 })] }), here([local]));
-    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 2, newer: 0, unread: true, automations: 2, threadId: "phone-1" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 2, unshared: 0, unread: true, automations: 2, threadId: "phone-1" });
   });
 
   it("on My Cloud's page, where this computer's copy shows, counts My Cloud's own copy's conversations and automations", () => {
@@ -158,32 +158,32 @@ describe("one workspace: what a bot's copy out of sight has of its own", () => {
     const cloudCopy = { id: "ember", threadId: "phone-1", tasks: [{ threadId: "phone-1", unread: true }, { threadId: "t-ember" }, { threadId: "t-report" }, { threadId: "gone", archivedAt: 1 }] };
     const merged = mergeWorkspace(fromCloud, { ...here([cloudCopy]), automations: new Map([["ember", 1]]) });
     expect([...merged.hidden]).toEqual(["ember"]);
-    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 1, newer: 0, unread: true, automations: 1, threadId: "phone-1" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "cloud", chats: 1, unshared: 0, unread: true, automations: 1, threadId: "phone-1" });
   });
 
   it("after the bots moved to My Cloud, this computer's own conversations are the ones out of sight", () => {
     const merged = mergeWorkspace(view({ bots: [rosterBot("ember", { threads: ["t-ember"] })] }, { twinHome: "cloud" }), here([{ id: "ember", threadId: "t-ember", tasks: [{ threadId: "t-ember" }, { threadId: "local-only" }] }]));
-    expect(merged.twinWork.get("ember")).toEqual({ side: "computer", chats: 1, newer: 0, unread: false, automations: 0, threadId: "local-only" });
+    expect(merged.twinWork.get("ember")).toEqual({ side: "computer", chats: 1, unshared: 0, unread: false, automations: 0, threadId: "local-only" });
   });
 });
 
-describe("one workspace: newer messages in a conversation both copies have", () => {
+describe("one workspace: messages only one copy has, in a conversation both copies have", () => {
   const local = { id: "scout", threadId: "t-scout", tasks: [{ threadId: "t-scout" }, { threadId: "t-trip" }] };
   const cloudScout = rosterBot("scout", { threads: ["t-trip", "t-scout"], unreadThreads: ["t-trip"] });
 
-  it("counts what My Cloud's copy has after this computer's newest, and opens My Cloud at that conversation", () => {
-    const merged = mergeWorkspace(view({ bots: [cloudScout] }, { newer: { scout: [{ threadId: "t-trip", cloud: 2, computer: 0 }] } }), here([local]));
-    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 0, newer: 2, unread: true, automations: 0, threadId: "t-trip" });
+  it("counts the messages only My Cloud's copy has, and opens My Cloud at that conversation", () => {
+    const merged = mergeWorkspace(view({ bots: [cloudScout] }, { unshared: { scout: [{ threadId: "t-trip", cloud: 2, computer: 0 }] } }), here([local]));
+    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 0, unshared: 2, unread: true, automations: 0, threadId: "t-trip" });
   });
 
   it("never counts what this computer has that My Cloud's copy is still waiting for", () => {
-    expect(mergeWorkspace(view({ bots: [cloudScout] }, { newer: { scout: [{ threadId: "t-trip", cloud: 0, computer: 3 }] } }), here([local])).twinWork.size).toBe(0);
+    expect(mergeWorkspace(view({ bots: [cloudScout] }, { unshared: { scout: [{ threadId: "t-trip", cloud: 0, computer: 3 }] } }), here([local])).twinWork.size).toBe(0);
   });
 
-  it("on My Cloud's page counts the same newer messages for this page's own copy out of sight", () => {
-    const fromCloud = view({ side: "computer", bots: [rosterBot("scout", { threads: ["t-scout", "t-trip"] })] }, { page: "cloud", newer: { scout: [{ threadId: "t-scout", cloud: 1, computer: 0 }] } });
+  it("on My Cloud's page counts the same messages for this page's own copy out of sight", () => {
+    const fromCloud = view({ side: "computer", bots: [rosterBot("scout", { threads: ["t-scout", "t-trip"] })] }, { page: "cloud", unshared: { scout: [{ threadId: "t-scout", cloud: 1, computer: 0 }] } });
     const merged = mergeWorkspace(fromCloud, here([{ id: "scout", threadId: "t-scout", tasks: [{ threadId: "t-scout" }, { threadId: "t-trip" }, { threadId: "phone-1" }] }]));
-    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 1, newer: 1, unread: false, automations: 0, threadId: "t-scout" });
+    expect(merged.twinWork.get("scout")).toEqual({ side: "cloud", chats: 1, unshared: 1, unread: false, automations: 0, threadId: "t-scout" });
   });
 });
 

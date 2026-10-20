@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { aheadCounts, automationCounts, AUTOMATIONS_FRESH_MS, createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot } from "./one-workspace.mjs";
+import { automationCounts, AUTOMATIONS_FRESH_MS, CHATS_PER_LOOK, createOneWorkspace, installOneWorkspace, oneWorkspaceMenu, OPEN_FOR_MS, parseRoster, PICTURE_MAX_BYTES, ROSTER_FRESH_MS, rosterBot, unsharedCounts } from "./one-workspace.mjs";
+import { chatsArrive } from "./cloud-send-main.mjs";
+import { AUTO_SENDS_CHATS } from "./cloud-send.mjs";
 
 const CLOUD = "https://omb-u-1.fly.dev";
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -360,37 +362,167 @@ test("opening the other copy's own conversation hands that side's page the conve
   assert.equal(one.take("cloud"), "openmausbot://bot/ember");
 });
 
-test("a message My Cloud has after this computer's newest in a conversation both have is counted, read only when that conversation's times differ", async () => {
+/** Two copies of Scout, each with its own messages in `t` (and a conversation `same` whose copies match): every route
+ * either side is asked, and a look at the other side from this computer's page. */
+function twins({ cloud, computer, power: gate, cloudAnswer, store } = {}) {
   const thread = (id) => `/api/threads/${id}/messages?limit=200`;
-  const message = (id, at, kind = "text") => ({ id, at, kind, role: "user" });
-  let cloudAt = 20, cloudMessages = [message("m1", 1), message("m2", 2), message("phone", 3), message("reply", 4), message("card", 5, "options")];
-  const computerMessages = [message("m1", 1), message("m2", 2)];
+  const messages = { cloud, computer };
   const routes = [];
-  const scout = (at) => ({ id: "scout", threadId: "t", name: "Scout", title: "", color: "blue", unread: false, avatarUrl: null, tasks: [{ threadId: "t", updatedAt: at }, { threadId: "same", updatedAt: 7 }] });
-  const { one, tick } = harness({
-    cloudBody: (route) => { routes.push(`cloud ${route}`); return route === thread("t") ? { messages: cloudMessages } : route.startsWith("/api/bots") ? { bots: [scout(cloudAt)], groups: [], sections: [] } : { routines: [], webhooks: [] }; },
-    localBody: (route) => { routes.push(`local ${route}`); return route === thread("t") ? { messages: computerMessages } : route.startsWith("/api/bots") ? { bots: [scout(10)], groups: [], sections: [] } : { routines: [], webhooks: [] }; },
-  });
-  await one.view("computer");
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(one.peek("computer").newer, { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
-  assert.equal(routes.filter((route) => route.includes("/api/threads/same/")).length, 0);
-  tick(ROSTER_FRESH_MS);
-  await one.view("computer");
-  assert.equal(routes.filter((route) => route.includes(thread("t"))).length, 2);
-  // Once this computer has the same newest message, nothing is newer.
-  cloudAt = 10;
-  cloudMessages = computerMessages;
-  tick(ROSTER_FRESH_MS);
-  await one.view("computer");
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(one.peek("computer").newer, undefined);
+  const newest = (list) => Math.max(0, ...list.map((entry) => entry.at));
+  const scout = (list) => ({ id: "scout", threadId: "t", name: "Scout", title: "", color: "blue", unread: false, avatarUrl: null, tasks: [{ threadId: "t", updatedAt: newest(list) }, { threadId: "same", updatedAt: 7 }] });
+  const body = (side) => (route) => {
+    routes.push(`${side} ${route}`);
+    if (side === "cloud" && cloudAnswer) { const answer = cloudAnswer(route); if (answer) return answer; }
+    return route === thread("t") ? { messages: messages[side] } : route.startsWith("/api/bots") ? { bots: [scout(messages[side])], groups: [], sections: [] } : { routines: [], webhooks: [] };
+  };
+  const made = harness({ cloudBody: body("cloud"), localBody: body("computer"), ...(store ? { store } : {}) });
+  if (gate) Object.assign(made.power, gate);
+  const look = async () => {
+    made.tick(ROSTER_FRESH_MS);
+    await made.one.view("computer");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return made.one.peek("computer").unshared;
+  };
+  const reads = () => [routes.filter((route) => route === `cloud ${thread("t")}`).length, routes.filter((route) => route === `computer ${thread("t")}`).length];
+  return { ...made, messages, routes, look, reads };
+}
+const message = (id, at, kind = "text") => ({ id, at, kind, role: "user" });
+const earlier = [message("m1", 1), message("m2", 2)];
+const fromPhone = [message("phone", 3), message("reply", 4), message("card", 5, "options")];
+
+test("My Cloud's phone messages in a conversation both have count, and still do after this computer replies and right after a send", async () => {
+  const { messages, routes, look, reads, store } = twins({ cloud: [...earlier, ...fromPhone], computer: earlier });
+  assert.deepEqual(await look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  assert.equal(routes.some((route) => route.includes("/api/threads/same/")), false);
+  // This computer replies after the phone messages: My Cloud still has two of its own, this computer one.
+  messages.computer = [...earlier, message("mine", 6)];
+  assert.deepEqual(await look(), { scout: [{ threadId: "t", cloud: 2, computer: 1 }] });
+  // A send copies the reply to My Cloud: both copies' newest message is the same now, the phone messages still count.
+  messages.cloud = [...messages.cloud, message("mine", 6)];
+  assert.deepEqual(await look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  assert.deepEqual(reads(), [2, 2]);
+  // And after this app restarts, though both copies' newest message is the same.
+  const restarted = twins({ cloud: messages.cloud, computer: messages.computer, store: memoryStore(structuredClone(store.value)) });
+  assert.deepEqual(await restarted.look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
 });
 
-test("two copies of a conversation are compared by the newest message each has; without one in common, by time", () => {
+test("a conversation is read again on a side only when its newest message there moved, never while it just stays different", async () => {
+  const { messages, look, reads } = twins({ cloud: [...earlier, ...fromPhone], computer: earlier });
+  await look();
+  assert.deepEqual(reads(), [1, 1]);
+  await look();
+  await look();
+  assert.deepEqual(reads(), [1, 1]);
+  messages.computer = [...earlier, message("mine", 6)];
+  await look();
+  assert.deepEqual(reads(), [1, 2]);
+  messages.cloud = [...messages.cloud, message("mine", 6)];
+  await look();
+  await look();
+  assert.deepEqual(reads(), [2, 2]);
+  // Both copies end up with the same messages: nothing counts, and nothing is read again while neither moves.
+  const same = [...earlier, message("phone", 3), message("reply", 4), message("mine", 6), message("both", 9)];
+  messages.cloud = same;
+  messages.computer = same;
+  assert.equal(await look(), undefined);
+  await look();
+  assert.deepEqual(reads(), [3, 3]);
+});
+
+test("asleep: My Cloud is never read to compare, nor once it says it goes to sleep or did not answer this look, and the last counts stay", async () => {
+  const asleep = twins({ cloud: [...earlier, ...fromPhone], computer: earlier });
+  assert.deepEqual(await asleep.look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  asleep.power.asleepNow = true;
+  asleep.messages.cloud = [...asleep.messages.cloud, message("later", 8)];
+  const before = asleep.calls.cloud.length;
+  assert.deepEqual(await asleep.look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  assert.equal(asleep.calls.cloud.length, before);
+
+  const goingToSleep = twins({
+    cloud: [...earlier, ...fromPhone], computer: earlier,
+    power: { hold() { this.held++; this.asleepNow = true; } },
+    cloudAnswer: (route) => (route.startsWith("/api/threads/") ? new Response("", { status: 503, headers: { "x-omb-cloud-power": "asleep" } }) : null),
+  });
+  assert.equal(await goingToSleep.look(), undefined);
+  assert.equal(goingToSleep.power.held, 1);
+  assert.deepEqual(goingToSleep.reads(), [1, 0]);
+  await goingToSleep.look();
+  assert.deepEqual(goingToSleep.reads(), [1, 0]);
+
+  let answering = true;
+  const notAnswering = twins({ cloud: [...earlier, ...fromPhone], computer: earlier, cloudAnswer: () => (answering ? null : new Response("", { status: 500 })) });
+  assert.deepEqual(await notAnswering.look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  answering = false;
+  notAnswering.messages.computer = [...earlier, message("mine", 6)];
+  assert.deepEqual(await notAnswering.look(), { scout: [{ threadId: "t", cloud: 2, computer: 0 }] });
+  assert.deepEqual(notAnswering.reads(), [1, 1]);
+});
+
+test("at most CHATS_PER_LOOK conversations are read per look, the most recent first; the others on the next look", async () => {
+  const chats = Array.from({ length: CHATS_PER_LOOK + 2 }, (_, index) => `c${index}`);
+  const routes = [];
+  const scout = (side) => ({ id: "scout", threadId: "c0", name: "Scout", title: "", color: "blue", unread: false, avatarUrl: null,
+    tasks: chats.map((threadId, index) => ({ threadId, updatedAt: side === "cloud" ? 100 + index : 2 })) });
+  const body = (side) => (route) => {
+    routes.push(`${side} ${route}`);
+    const thread = /^\/api\/threads\/(c\d+)\/messages/.exec(route)?.[1];
+    if (thread) return { messages: side === "cloud" ? [...earlier, message(`phone-${thread}`, 3)] : earlier };
+    return route.startsWith("/api/bots") ? { bots: [scout(side)], groups: [], sections: [] } : { routines: [], webhooks: [] };
+  };
+  const { one, tick } = harness({ cloudBody: body("cloud"), localBody: body("computer") });
+  const look = async () => { tick(ROSTER_FRESH_MS); await one.view("computer"); await new Promise((resolve) => setTimeout(resolve, 10)); return one.peek("computer").unshared.scout; };
+  const first = await look();
+  assert.equal(first.length, CHATS_PER_LOOK);
+  assert.deepEqual(first.map((entry) => entry.threadId), chats.slice(2).reverse());
+  assert.equal(new Set(routes.filter((route) => route.startsWith("cloud /api/threads/")).map((route) => route.split("/")[3])).size, CHATS_PER_LOOK);
+  assert.equal((await look()).length, CHATS_PER_LOOK + 2);
+});
+
+test("this computer's messages My Cloud is about to get by itself are never counted; only those Send leaves out are", async () => {
+  let arrive = true, clock = 1_000_000;
+  const thread = "/api/threads/t/messages?limit=200";
+  const routes = [];
+  const scout = (at) => ({ id: "scout", threadId: "t", name: "Scout", title: "", color: "blue", unread: false, avatarUrl: null, tasks: [{ threadId: "t", updatedAt: at }] });
+  const side = (name, messages, at) => async (route) => {
+    routes.push(`${name} ${route}`);
+    return json(route === thread ? { messages } : route.startsWith("/api/bots") ? { bots: [scout(at)], groups: [], sections: [] } : { routines: [], webhooks: [] });
+  };
+  const one = createOneWorkspace({
+    store: memoryStore(), cloud: () => ({ origin: CLOUD, name: "My Cloud" }), now: () => clock, readWaitMs: 50, chatsArrive: (botId) => botId === "scout" && arrive,
+    readCloud: side("cloud", earlier, 2), readLocal: side("computer", [...earlier, message("mine", 6)], 6),
+  });
+  const look = async () => { clock += ROSTER_FRESH_MS; await one.view("cloud"); await new Promise((resolve) => setTimeout(resolve, 10)); return one.peek("cloud").unshared; };
+  assert.equal(await look(), undefined);
+  arrive = false;
+  assert.deepEqual(await look(), { scout: [{ threadId: "t", cloud: 0, computer: 1 }] });
+  assert.equal(routes.filter((route) => route.endsWith(thread)).length, 2);
+});
+
+test("Send brings this computer's messages by itself only while Keep My Cloud up to date sends chats, the bot's switch is on and its last send went", () => {
+  const snapshot = (extra = {}) => ({ auto: true, rows: [{ key: "bot:scout", state: "on-both" }], last: { at: 1, reason: "auto", result: { failed: [] } }, ...extra });
+  const failed = (...entries) => snapshot({ last: { at: 1, reason: "auto", result: { failed: entries } } });
+  assert.equal(chatsArrive(snapshot(), "scout", true), true);
+  assert.equal(chatsArrive(snapshot(), "scout", false), false);
+  assert.equal(chatsArrive(snapshot(), "scout"), AUTO_SENDS_CHATS);
+  assert.equal(chatsArrive(snapshot({ auto: false }), "scout", true), false);
+  assert.equal(chatsArrive(snapshot({ last: null }), "scout", true), false);
+  assert.equal(chatsArrive(snapshot({ last: { at: 1, reason: "auto", result: { failed: [] }, error: "My Cloud did not answer." } }), "scout", true), false);
+  assert.equal(chatsArrive(failed({ key: "chats", kind: "chats" }), "scout", true), false);
+  assert.equal(chatsArrive(failed({ key: "bot:scout", kind: "bot" }), "scout", true), false);
+  assert.equal(chatsArrive(failed({ key: "bot:juno", kind: "bot" }), "scout", true), true);
+  assert.equal(chatsArrive(snapshot({ rows: [{ key: "bot:scout", state: "off" }] }), "scout", true), false);
+});
+
+test("two copies of a conversation count the messages each has that the other lacks", () => {
   const m = (id, at) => ({ id, at });
-  assert.deepEqual(aheadCounts([m("a", 1), m("b", 2), m("c", 3)], [m("a", 1), m("b", 2)]), { cloud: 1, computer: 0 });
-  assert.deepEqual(aheadCounts([m("a", 1)], [m("a", 1), m("x", 5)]), { cloud: 0, computer: 1 });
-  assert.deepEqual(aheadCounts([m("p", 9), m("q", 10)], [m("x", 5)]), { cloud: 2, computer: 0 });
-  assert.deepEqual(aheadCounts([], []), { cloud: 0, computer: 0 });
+  const both = [m("a", 1), m("b", 2)];
+  assert.deepEqual(unsharedCounts([...both, m("p1", 3), m("p2", 4)], both), { cloud: 2, computer: 0 });
+  assert.deepEqual(unsharedCounts([...both, m("p1", 3), m("p2", 4)], [...both, m("c3", 5)]), { cloud: 2, computer: 1 });
+  assert.deepEqual(unsharedCounts([...both, m("p1", 3), m("p2", 4), m("c3", 5)], [...both, m("c3", 5)]), { cloud: 2, computer: 0 });
+  // Older than all that was read of the other copy: perhaps only past what was read, so not counted.
+  assert.deepEqual(unsharedCounts([m("old", 0), ...both, m("p1", 3)], both), { cloud: 1, computer: 0 });
+  // Without a message in common, by time.
+  assert.deepEqual(unsharedCounts([m("p", 9), m("q", 10)], [m("x", 5)]), { cloud: 2, computer: 0 });
+  assert.deepEqual(unsharedCounts([], [m("x", 5)]), { cloud: 0, computer: 1 });
+  assert.deepEqual(unsharedCounts([], []), { cloud: 0, computer: 0 });
 });
