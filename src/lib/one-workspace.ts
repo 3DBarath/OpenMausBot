@@ -93,16 +93,14 @@ export function otherSideNeeds(merged: MergedWorkspace | null): { bots: boolean;
   return { bots: Boolean(merged?.bots.some((bot) => !bot.section)), channels: Boolean(merged?.rooms.some((room) => !room.section)) };
 }
 
-/** The other side's rows a sidebar search keeps. */
+/** The other side's rows a sidebar search keeps; its `sections` are every team those rows sit in, so a match in a team
+ * both sides have still shows when this page has no match there. */
 export function searchMerged(merged: MergedWorkspace | null, query: string): MergedWorkspace | null {
   const q = query.trim().toLowerCase();
   if (!merged || !q) return merged;
-  return {
-    ...merged,
-    bots: merged.bots.filter((bot) => bot.name.toLowerCase().includes(q) || bot.title.toLowerCase().includes(q)),
-    rooms: merged.rooms.filter((room) => room.name.toLowerCase().includes(q)),
-    sections: merged.sections.filter((name) => name.toLowerCase().includes(q) || [...merged.bots, ...merged.rooms].some((item) => item.section === name && item.name.toLowerCase().includes(q))),
-  };
+  const bots = merged.bots.filter((bot) => bot.name.toLowerCase().includes(q) || bot.title.toLowerCase().includes(q));
+  const rooms = merged.rooms.filter((room) => room.name.toLowerCase().includes(q));
+  return { ...merged, bots, rooms, sections: [...new Set([...bots, ...rooms].flatMap((item) => item.section ? [item.section] : []))] };
 }
 
 export function oneWorkspaceBridge(): OneWorkspaceBridge | undefined {

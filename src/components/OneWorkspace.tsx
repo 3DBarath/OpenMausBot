@@ -74,8 +74,14 @@ function stateNote(merged: MergedWorkspace): string | null {
   return merged.reason ?? t("oneWorkspace.cloudUnreachable", { cloud: merged.cloudName });
 }
 
-function placeName(merged: MergedWorkspace): string {
-  return merged.other === "cloud" ? merged.cloudName : t("oneWorkspace.thisComputer");
+/** "Open Atlas on My Cloud", "Open Ember on this computer": what a row of the other side does. */
+function openLabel(merged: MergedWorkspace, name: string): string {
+  return merged.other === "cloud" ? t("oneWorkspace.openOnCloud", { name, cloud: merged.cloudName }) : t("oneWorkspace.openOnComputer", { name });
+}
+
+/** "On My Cloud" or "On this computer": where a row of the other side lives. */
+function otherPlace(merged: MergedWorkspace): string {
+  return homeLabel({ side: merged.other, twin: false }, merged.cloudName);
 }
 
 /** The other side's state while it is not answering, and an open on its way or refused. */
@@ -119,10 +125,9 @@ export function OtherSideBotRow({ bot, merged, density }: { bot: RosterBot; merg
   const unread = ready && bot.unread;
   const thisOne = opening?.id === bot.id;
   const size = iconOnly ? (simple ? 36 : 44) : density === "compact" ? 36 : simple ? 36 : 44;
-  const place = placeName(merged);
   const line = thisOne ? (merged.other === "cloud" ? t("oneWorkspace.openingCloud", { cloud: merged.cloudName }) : t("oneWorkspace.openingComputer"))
-    : waiting ? t("sidebar.preview.waiting") : !ready ? (merged.state === "asleep" ? t("oneWorkspace.asleepBadge") : t("oneWorkspace.unreachableBadge")) : bot.title || place;
-  const label = t("oneWorkspace.openOn", { name: bot.name, place });
+    : waiting ? t("sidebar.preview.waiting") : !ready ? (merged.state === "asleep" ? t("oneWorkspace.asleepBadge") : t("oneWorkspace.unreachableBadge")) : bot.title || otherPlace(merged);
+  const label = openLabel(merged, bot.name);
   return (
     <div className={cn("group relative", iconOnly && simple && "mx-auto w-[52px]")}>
       <button type="button" data-other-side-bot={bot.id} data-home={home.side} aria-label={`${label} · ${homeLabel(home, merged.cloudName)}${unread ? ` · ${t("task.unread")}` : ""}`}
@@ -161,7 +166,7 @@ export function OtherSideRoomRow({ room, merged, density }: { room: RosterRoom; 
   const iconOnly = density === "icons";
   const simple = !advanced;
   const members = room.memberIds.map((id) => merged.bots.find((bot) => bot.id === id)).filter((bot): bot is RosterBot => Boolean(bot)).slice(0, 2);
-  const label = t("oneWorkspace.openOn", { name: room.name, place: placeName(merged) });
+  const label = openLabel(merged, room.name);
   const unread = ready && room.unread;
   return (
     <div className={cn("group relative", iconOnly && simple && "mx-auto w-[52px]")}>
@@ -177,7 +182,7 @@ export function OtherSideRoomRow({ room, merged, density }: { room: RosterRoom; 
             <span className={cn("truncate", ready ? "text-ink" : "text-ink-secondary")}>{room.name}</span>
             {unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
           </span>
-          {density !== "compact" && <span className="block truncate text-[13px] leading-[18px] text-ink-secondary">{!ready ? (merged.state === "asleep" ? t("oneWorkspace.asleepBadge") : t("oneWorkspace.unreachableBadge")) : room.working ? t("sidebar.preview.working") : placeName(merged)}</span>}
+          {density !== "compact" && <span className="block truncate text-[13px] leading-[18px] text-ink-secondary">{!ready ? (merged.state === "asleep" ? t("oneWorkspace.asleepBadge") : t("oneWorkspace.unreachableBadge")) : room.working ? t("sidebar.preview.working") : otherPlace(merged)}</span>}
         </span>}
       </button>
     </div>
@@ -225,8 +230,7 @@ export function ElsewhereCard({ bot, merged }: { bot: Bot; merged: MergedWorkspa
   const { opening } = useOneWorkspace();
   const home = merged.homes.get(bot.id) ?? { side: merged.other, twin: false };
   const ready = merged.state === "ready";
-  const place = placeName(merged);
-  const label = t("oneWorkspace.openOn", { name: bot.name, place });
+  const label = openLabel(merged, bot.name);
   const thisOne = opening?.id === bot.id;
   const status = !ready ? (merged.state === "asleep" ? t("oneWorkspace.asleepBadge") : t("oneWorkspace.unreachableBadge"))
     : bot.activity === "waiting-on-you" ? t("sidebar.preview.waiting") : bot.busy ? t("sidebar.preview.working") : null;

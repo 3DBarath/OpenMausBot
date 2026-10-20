@@ -110,6 +110,9 @@ describe("one workspace: teams and sections", () => {
     expect(found.sections).toEqual(["Ops"]);
     expect(otherSideNeeds(found)).toEqual({ bots: false, channels: false });
     expect(searchMerged(merged, "  ")).toBe(merged);
+    // Kit sits in Research, a team this page has too: the search still lists that team for it.
+    expect(searchMerged(merged, "kit")!.sections).toEqual(["Research"]);
+    expect(ids(searchMerged(merged, "kit")!.bots)).toEqual(["kit"]);
     expect(searchMerged(null, "x")).toBeNull();
   });
 });

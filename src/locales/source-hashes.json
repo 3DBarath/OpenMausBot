@@ -1601,12 +1601,10 @@
       "room.holds.stopTitle": "839bb3d62635029c1a325673b80f91cb1f16f55ef6179bb37d54f65b634cfa90",
       "room.holds.avatarHeld": "f11b17aba2842c436d93b02f138b32041eaed0abed7ce03e68e8aefbf671fe73",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -1614,7 +1612,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "es": {
       "whop.description": "1a07cf04ef17029448d3781415cbac16d54e66b821907a40d94e0e6349710e70",
@@ -6715,12 +6715,10 @@
       "cloudSend.strip.retry": "d8b8392e2c542950ca64867168e4ef87d4ad606882d5898f826b51c6d553988f",
       "cloudSend.list.bots": "fc1da572d3f0b2c7e2cdfa7f85a2c1f6b2aceb1969b9cac6ec4391422887a64b",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -6728,7 +6726,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "fr": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -8312,12 +8312,10 @@
       "room.holds.stopTitle": "839bb3d62635029c1a325673b80f91cb1f16f55ef6179bb37d54f65b634cfa90",
       "room.holds.avatarHeld": "f11b17aba2842c436d93b02f138b32041eaed0abed7ce03e68e8aefbf671fe73",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -8325,7 +8323,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "hi": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -9909,12 +9909,10 @@
       "room.holds.stopTitle": "839bb3d62635029c1a325673b80f91cb1f16f55ef6179bb37d54f65b634cfa90",
       "room.holds.avatarHeld": "f11b17aba2842c436d93b02f138b32041eaed0abed7ce03e68e8aefbf671fe73",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -9922,7 +9920,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "ja": {
       "whop.description": "1a07cf04ef17029448d3781415cbac16d54e66b821907a40d94e0e6349710e70",
@@ -15655,12 +15655,10 @@
       "call.live.openApiKeys": "3bde85282febbce927de815dbea17b921ecdff743bf2460b9f892b692078dbe7",
       "call.live.keyFromApiKeys": "f7777cbe98f7763a643526cbbf1a8e49fc59a19fc64735c7270bfe44cc9368cc",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -15668,7 +15666,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "pt-br": {
       "whop.description": "1a07cf04ef17029448d3781415cbac16d54e66b821907a40d94e0e6349710e70",
@@ -21504,12 +21504,10 @@
       "cloudSend.strip.retry": "d8b8392e2c542950ca64867168e4ef87d4ad606882d5898f826b51c6d553988f",
       "cloudSend.list.bots": "fc1da572d3f0b2c7e2cdfa7f85a2c1f6b2aceb1969b9cac6ec4391422887a64b",
       "oneWorkspace.name": "1b751631a36427d068cc6bfa7b8c3fa520070144ebbb79f02745ca9c545b6fcd",
-      "oneWorkspace.thisComputer": "058bf37c9767891850a04e77e252c5bcd5036c4a1d0cec568d498dc4c8437379",
       "oneWorkspace.onComputer": "e6af7ee2bde2d5b5d9fd1441db828be287079871bc7d14aebab3ee6a73579a9e",
       "oneWorkspace.onCloud": "1fb7903dfdbe1e393ae26a07b79b17844f3531bbf8996ffa9f30e06c5380dc05",
       "oneWorkspace.alsoOnComputer": "654a021b16b87328b9da0c2d9cef0690ddcdd76db4d550d304ac849cccd7a276",
       "oneWorkspace.alsoOnCloud": "dc9f6e75ba050ae657f4713551c26b7928a460628f29ce773f973e800bbd56ef",
-      "oneWorkspace.openOn": "a0697aa8b4174a3d7364efd89c3fc267ee8f33fc9702f9e9452bc87adf3ca2d9",
       "oneWorkspace.openingCloud": "9aa648f201e1f87a73f76d7f19182b7abc818301ebb21bfea73fea668cb66993",
       "oneWorkspace.openingComputer": "f84dc3a9f274150010c3b7e5046a9bb61a49f38a2803fd50c63a5c9369b3e329",
       "oneWorkspace.asleepBadge": "99c839c58235d05f05bf814f5422510a0aa8d2fe353c305024ae72db670bbb7a",
@@ -21517,7 +21515,9 @@
       "oneWorkspace.cloudAsleep": "d488b496c179bbd7c3c5819b7cdef5204e45d251d44a5dc552f946333179d009",
       "oneWorkspace.cloudUnreachable": "1a50a76bde4858b7342b056cddac817de65571b635af34e098c83834385bf143",
       "oneWorkspace.cloudSignedOut": "6b550c6b3d00fb3ea45d02a9e18ba10988628bc4087855e1f746b8ae47d866b9",
-      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea"
+      "oneWorkspace.computerUnreachable": "bedea36549d3d6d9a23e4b01a7f0c519b326e86e42ecc5cbd6368731921195ea",
+      "oneWorkspace.openOnCloud": "459a66bb4b11223bf09bcb7a0397b9f38d17ce330676f9948adad41fbbb860a8",
+      "oneWorkspace.openOnComputer": "24fd9f8199f26f309ecde85a369303bb90f39de98c1ea5efbfdc14b37fb4c893"
     },
     "zh": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",

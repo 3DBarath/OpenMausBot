@@ -114,19 +114,22 @@ export function createOneWorkspace({ store, cloud, readCloud, readLocal, power, 
   const available = () => together() && possible();
   const readerOf = (side) => (side === "cloud" ? readCloud : readLocal);
 
+  /** A picture is kept once its side answered for it (an image, or a definite no); a failed read is tried again. */
   async function picture(side, url) {
     const kept = sides[side].pictures;
     if (kept.has(url)) return kept.get(url);
-    let value = null;
+    let value = null, answered = false;
     try {
       const response = await readerOf(side)(url);
       const type = (response.headers?.get?.("content-type") ?? "").split(";")[0].trim().toLowerCase();
       const length = Number(response.headers?.get?.("content-length") ?? 0);
+      answered = response.ok || (response.status >= 400 && response.status < 500 && response.status !== 401 && response.status !== 403);
       if (response.ok && PICTURE_TYPES.has(type) && length <= PICTURE_MAX_BYTES) {
         const bytes = Buffer.from(await response.arrayBuffer());
         if (bytes.length <= PICTURE_MAX_BYTES) value = `data:${type};base64,${bytes.toString("base64")}`;
       } else await response.body?.cancel?.();
-    } catch { value = null; }
+    } catch { answered = false; }
+    if (!answered) return null;
     if (kept.size >= PICTURES_KEPT) kept.delete(kept.keys().next().value);
     kept.set(url, value);
     return value;

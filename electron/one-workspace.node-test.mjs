@@ -156,6 +156,7 @@ test("a picture is inlined once, and only an image small enough", async () => {
   tick(ROSTER_FRESH_MS);
   await one.view("computer");
   assert.equal(calls.cloud.filter((route) => route === "/api/attachments/ok.png").length, 1);
+  assert.equal(calls.cloud.filter((route) => route === "/api/attachments/page.html").length, 1);
   assert.equal(calls.cloud.some((route) => route.startsWith("https:")), false);
 });
 
@@ -311,4 +312,16 @@ test("the setting and My Cloud's last roster are kept in the app's own file, rea
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a picture whose read failed is tried again on the next roster, not dropped for the session", async () => {
+  let failing = true;
+  const { one, calls, tick } = harness({ cloudBody: (route) => route === "/api/attachments/a.png"
+    ? (failing ? Promise.reject(new Error("ECONNRESET")) : new Response(new Uint8Array([7]), { headers: { "content-type": "image/png" } }))
+    : { bots: [bot("atlas", { avatarUrl: "/api/attachments/a.png" })], groups: [], sections: [] } });
+  assert.equal((await one.view("computer")).other.bots[0].avatarUrl, null);
+  failing = false;
+  tick(ROSTER_FRESH_MS);
+  assert.equal((await one.view("computer")).other.bots[0].avatarUrl, "data:image/png;base64,Bw==");
+  assert.equal(calls.cloud.filter((route) => route === "/api/attachments/a.png").length, 2);
 });
