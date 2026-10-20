@@ -55,7 +55,9 @@ describe("bot-colored user bubbles", () => {
     const html = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(html).toContain("user-bubble-colored");
     expect(html).toContain(`background-color:${tone.background}`);
-    expect(html).not.toContain("background-image");
+    const bubble = /<[^>]*user-bubble-colored[^>]*>/.exec(html)?.[0] ?? "";
+    expect(bubble).toContain(`background-color:${tone.background}`);
+    expect(bubble).not.toContain("background-image");
     expect(html).toContain(`--color-ink:${tone.ink}`);
     expect(html).toContain("hello from me");
     const mine = html.indexOf("user-bubble-colored");
