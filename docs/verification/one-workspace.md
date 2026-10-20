@@ -1,7 +1,9 @@
 # This computer and My Cloud as one workspace
 
 The desktop app shows This computer's bots and My Cloud's in one sidebar and
-one Team map, each with its home. Main reads the other side's bots and rooms
+one Team map ("All bots"), each with its home. A bot on both sides (Send keeps
+its id) shows once, at its home: where it was made, or where the bots were last
+moved; what its copy out of sight has of its own shows as one line under it. Main reads the other side's bots and rooms
 for the page the window shows (`electron/one-workspace.mjs`) and moves the
 window to the other side when one of them is opened there. Every check below
 runs on two real servers in disposable homes; nothing reaches the user's app,
@@ -22,8 +24,11 @@ Cloud through the real Send (so the same id is on both sides), and wires
 every bot and room once with the same homes, that My Cloud is read with the
 window's sign-in in the background and never hands a page instructions or a
 model, that opening a Cloud bot hands My Cloud's page a link its own server
-resolves, and that an unreachable or asleep Cloud keeps its bots (an asleep one
-is never called), also after a restart.
+resolves, that after Send everything each bot still shows once at its home
+with its own history (a message lands there and reaches My Cloud's copy only
+with the next send, under the same id) and a chat or routine made on My Cloud's
+copy shows as the line that opens it there, and that an unreachable or asleep
+Cloud keeps its bots (an asleep one is never called), also after a restart.
 
 ## The real renderer
 
@@ -42,10 +47,12 @@ from main's own template.
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/one-workspace-ui.e2e.test.ts
 ```
 
-drives both pages in the pinned headless browser: rows and badges on both
-pages, the switcher's one entry, opening a Cloud bot on My Cloud and sending it
-a message that reaches only My Cloud's server, opening this computer's bot
-back, the Team map with My Cloud's computers, and an asleep Cloud. Set
+drives both pages in the pinned headless browser after Send everything: rows
+and badges on both pages, the switcher's All bots entry, opening a Cloud bot on
+My Cloud and sending it a message that reaches only My Cloud's server, opening
+this computer's bot back, the line under a bot on both sides opening My Cloud's
+own chat there, the Team map with My Cloud's computers, the setting off, and an
+asleep Cloud. Set
 `OMB_ONE_WORKSPACE_SHOTS` to keep its screenshots (1280 px, light and dark).
 
 ## What these do not cover

@@ -6,14 +6,14 @@ vi.mock("react", async (original) => ({
 }));
 
 import type { OneWorkspaceView } from "../../shared/one-workspace";
-import { setOneWorkspaceForTests, useMergedWorkspace, useOwnHome, useTwinWork } from "./one-workspace";
+import { oneWorkspaceBridge, setOneWorkspaceForTests, useMergedWorkspace, useOwnHome, useTwinWork } from "./one-workspace";
 
 const view: OneWorkspaceView = { page: "computer", twinHome: "computer", cloudName: "My Cloud",
   other: { side: "cloud", state: "ready", at: 1, bots: [{ id: "ember", threadId: "t", name: "Ember", title: "", color: "blue", avatarUrl: null, unread: false }], rooms: [], sections: [] } };
 const bots = [{ id: "ember" }];
 const groups: never[] = [];
 
-afterEach(() => setOneWorkspaceForTests(null));
+afterEach(() => { setOneWorkspaceForTests(null); vi.unstubAllGlobals(); });
 
 describe("the merged view's hooks", () => {
   it("merge nothing until this page's own store has loaded, so a bot both sides have never flashes as its other copy", () => {
@@ -36,5 +36,15 @@ describe("the merged view's hooks", () => {
     setOneWorkspaceForTests({ view: { ...view, other: { ...view.other, bots: [{ ...view.other.bots[0]!, threads: ["phone-1", "t"], automations: 1 }] } } });
     expect(useTwinWork({ id: "ember", threadId: "t", tasks: [{ threadId: "t" }] })).toEqual({ side: "cloud", chats: 1, unread: false, automations: 1, threadId: "phone-1" });
     expect(useTwinWork({ id: "juno", threadId: "j" })).toBeNull();
+  });
+
+  it("are never reached from a browser, a paired desktop or a page without main's bridge", () => {
+    const bridge = { view: async () => null, onView: () => () => {}, open: async () => {}, take: async () => null };
+    vi.stubGlobal("window", { ogb: { oneWorkspace: bridge } });
+    expect(oneWorkspaceBridge()).toBe(bridge);
+    vi.stubGlobal("window", { ogb: { oneWorkspace: bridge, remoteClient: { active: true } } });
+    expect(oneWorkspaceBridge()).toBeUndefined();
+    vi.stubGlobal("window", {});
+    expect(oneWorkspaceBridge()).toBeUndefined();
   });
 });
