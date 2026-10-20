@@ -22,6 +22,18 @@ describe("limitBackupAllowed", () => {
     expect(limitBackupAllowed(claude, { instanceId: "claude-api", driverKind: "claudeAgent" }, { access: "api" })).toBe(true);
     expect(limitBackupAllowed(claude, { instanceId: "claude-api", driverKind: "claudeAgent" }, { environment: { ANTHROPIC_API_KEY: " " } })).toBe(false);
   });
+
+  it("never moves an Antigravity conversation to another of the person's Google accounts, only to another engine", () => {
+    const work = { instanceId: "antigravity", driverKind: "antigravityAgent" };
+    const personal = { instanceId: "antigravity-6f1c", driverKind: "antigravityAgent" };
+    expect(limitBackupAllowed(work, personal, {})).toBe(false);
+    // Only a key for the engine itself counts as pay-per-use, and Antigravity has none.
+    expect(limitBackupAllowed(work, personal, { environment: { GOOGLE_API_KEY: "k", OPENAI_API_KEY: "k" } })).toBe(false);
+    expect(limitBackupAllowed(claude, { instanceId: "claude-work", driverKind: "claudeAgent" }, { environment: { OPENAI_API_KEY: "k" } })).toBe(false);
+    expect(limitBackupAllowed(work, claude)).toBe(true);
+    expect(limitBackupAllowed(work, { instanceId: "codex", driverKind: "codex" })).toBe(true);
+    expect(limitBackupAllowed(claude, personal)).toBe(true);
+  });
 });
 
 it("says in one plain line who took over and when the limit resets", () => {

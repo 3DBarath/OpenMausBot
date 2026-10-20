@@ -8,10 +8,12 @@ import { writeFileAtomic } from "./atomic.ts";
 import type { InstanceConfig } from "./contracts.ts";
 import { hostTimeZone } from "./turn-clock.ts";
 
-/** Engines a person signs in to with a subscription whose usage limit refuses turns. */
-const SUBSCRIPTION_DRIVERS = new Set(["claudeAgent", "codex", "grokAgent"]);
-/** An engine instance with one of these keys bills each use instead of drawing on a subscription's limit. */
-const PAY_PER_USE_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "XAI_API_KEY"];
+/** Engines a person signs in to with a subscription whose usage limit refuses turns, each with the keys that make an
+ * instance bill each use instead. Antigravity signs in with Google only: its driver strips GEMINI_API_KEY and GOOGLE_API_KEY. */
+const SUBSCRIPTION_DRIVERS = new Map<string, string[]>([
+  ["claudeAgent", ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]], ["codex", ["OPENAI_API_KEY", "CODEX_API_KEY"]], ["grokAgent", ["XAI_API_KEY"]],
+  ["antigravityAgent", []],
+]);
 
 type Engine = { instanceId: string; driverKind: string };
 
@@ -20,8 +22,9 @@ type Engine = { instanceId: string; driverKind: string };
  * accounts closed. Another engine, or a pay-per-use key on the same one, is fine. */
 export function limitBackupAllowed(from: Engine, to: Engine, toConfig?: Pick<InstanceConfig, "environment" | "access">): boolean {
   if (to.instanceId === from.instanceId) return false;
-  if (to.driverKind !== from.driverKind || !SUBSCRIPTION_DRIVERS.has(from.driverKind)) return true;
-  return toConfig?.access === "api" || PAY_PER_USE_KEYS.some((key) => Boolean(toConfig?.environment?.[key]?.trim()));
+  const keys = SUBSCRIPTION_DRIVERS.get(from.driverKind);
+  if (to.driverKind !== from.driverKind || !keys) return true;
+  return toConfig?.access === "api" || keys.some((key) => Boolean(toConfig?.environment?.[key]?.trim()));
 }
 
 export function resetClock(at: number, timeZone = hostTimeZone()): string {
