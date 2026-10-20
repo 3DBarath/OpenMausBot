@@ -84,7 +84,22 @@ describe("useExternalChatLinks", () => {
   it("does nothing without the desktop bridge", () => {
     vi.stubGlobal("window", {});
     const dispatch = vi.fn();
-    expect(render(loaded, dispatch)).toEqual([undefined, undefined]);
+    expect(render(loaded, dispatch)).toEqual([undefined, undefined, undefined]);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("opens the chat main hands over once the window moved here from the other side of the one workspace", async () => {
+    const take = vi.fn(async () => "openmausbot://bot/scout");
+    vi.stubGlobal("window", { ogb: { oneWorkspace: { take } } });
+    const dispatch = vi.fn();
+    render(loading, dispatch);
+    await Promise.resolve();
+    expect(take).toHaveBeenCalledTimes(1);
+    expect(fixture.link).toBe("openmausbot://bot/scout");
+    render(loaded, dispatch);
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "select", id: "scout" },
+      { type: "revealThread", threadId: "scout-main" },
+    ]);
   });
 });

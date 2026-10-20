@@ -1578,5 +1578,20 @@
   "room.holds.resume": "Reprendre {name}",
   "room.holds.stop": "Arrêter {name}",
   "room.holds.stopTitle": "Arrêter seulement {name} ; le reste du salon continue",
-  "room.holds.avatarHeld": "{name} — en pause (arrêté par vous)"
+  "room.holds.avatarHeld": "{name} — en pause (arrêté par vous)",
+  "oneWorkspace.name": "Cet ordinateur et {cloud}",
+  "oneWorkspace.thisComputer": "cet ordinateur",
+  "oneWorkspace.onComputer": "Sur cet ordinateur",
+  "oneWorkspace.onCloud": "Sur {cloud}",
+  "oneWorkspace.alsoOnComputer": "aussi sur cet ordinateur",
+  "oneWorkspace.alsoOnCloud": "aussi sur {cloud}",
+  "oneWorkspace.openOn": "Ouvrir {name} sur {place}",
+  "oneWorkspace.openingCloud": "Ouverture sur {cloud}…",
+  "oneWorkspace.openingComputer": "Ouverture sur cet ordinateur…",
+  "oneWorkspace.asleepBadge": "En veille · l’ouvrir le réveille",
+  "oneWorkspace.unreachableBadge": "Injoignable pour le moment",
+  "oneWorkspace.cloudAsleep": "{cloud} est en veille. Ouvrir l’un de ses bots le réveille.",
+  "oneWorkspace.cloudUnreachable": "{cloud} est injoignable pour le moment. Ses bots reviennent dès qu’il répond.",
+  "oneWorkspace.cloudSignedOut": "{cloud} vous demande de vous reconnecter. Ouvrir l’un de ses bots vous reconnecte.",
+  "oneWorkspace.computerUnreachable": "Cet ordinateur ne répond pas. Ses bots reviennent dès qu’il répond."
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { openChatLink } from "@/components/ThreadRefs";
+import { oneWorkspaceBridge } from "@/lib/one-workspace";
 import { useShowThreads } from "@/lib/thread-preferences";
 import type { Action, AppState } from "@/state/store";
 
@@ -7,6 +8,13 @@ export function useExternalChatLinks(state: AppState, dispatch: (action: Action)
   const [link, setLink] = useState<string | null>(null);
   const showThreads = useShowThreads();
   useEffect(() => window.ogb?.onChatLink?.(setLink), []);
+  useEffect(() => {
+    const bridge = oneWorkspaceBridge();
+    if (!bridge) return;
+    let live = true;
+    void bridge.take().then((taken) => { if (live && taken) setLink(taken); }, () => {});
+    return () => { live = false; };
+  }, []);
   useEffect(() => {
     if (!link || !state.hydrated) return;
     setLink(null);

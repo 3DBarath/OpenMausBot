@@ -5727,5 +5727,20 @@
   "history.empty": "記録された変更はまだありません。",
   "history.refreshError": "履歴を更新できませんでした。",
   "history.undo": "この変更を元に戻す",
-  "history.restoreUnavailable": "以前の指示を正確に復元できないため、この変更は元に戻せません。"
+  "history.restoreUnavailable": "以前の指示を正確に復元できないため、この変更は元に戻せません。",
+  "oneWorkspace.name": "このコンピューターと{cloud}",
+  "oneWorkspace.thisComputer": "このコンピューター",
+  "oneWorkspace.onComputer": "このコンピューター上",
+  "oneWorkspace.onCloud": "{cloud}上",
+  "oneWorkspace.alsoOnComputer": "このコンピューターにもあります",
+  "oneWorkspace.alsoOnCloud": "{cloud}にもあります",
+  "oneWorkspace.openOn": "{name}を{place}で開く",
+  "oneWorkspace.openingCloud": "{cloud}で開いています…",
+  "oneWorkspace.openingComputer": "このコンピューターで開いています…",
+  "oneWorkspace.asleepBadge": "スリープ中 · 開くと起動します",
+  "oneWorkspace.unreachableBadge": "現在接続できません",
+  "oneWorkspace.cloudAsleep": "{cloud}はスリープ中です。ボットを開くと起動します。",
+  "oneWorkspace.cloudUnreachable": "現在{cloud}に接続できません。応答があればボットが戻ります。",
+  "oneWorkspace.cloudSignedOut": "{cloud}にもう一度サインインしてください。ボットを開くとサインインします。",
+  "oneWorkspace.computerUnreachable": "このコンピューターが応答していません。応答があればボットが戻ります。"
 }

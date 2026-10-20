@@ -1,0 +1,56 @@
+# This computer and My Cloud as one workspace
+
+The desktop app shows This computer's bots and My Cloud's in one sidebar and
+one Team map, each with its home. Main reads the other side's bots and rooms
+for the page the window shows (`electron/one-workspace.mjs`) and moves the
+window to the other side when one of them is opened there. Every check below
+runs on two real servers in disposable homes; nothing reaches the user's app,
+data or a real Cloud.
+
+## Main's wiring on two real servers
+
+```sh
+pnpm exec vitest run scripts/testing/one-workspace.e2e.test.ts
+node --test electron/one-workspace.node-test.mjs electron/environments.node-test.mjs
+```
+
+The e2e test starts this computer's server and a Cloud home with the Send to My
+Cloud fixture (`scripts/testing/cloud-send-fixture.ts`), sends Ember to My
+Cloud through the real Send (so the same id is on both sides), and wires
+`installOneWorkspace` between them with a fake ipcMain
+(`scripts/testing/one-workspace-fixture.ts`). It checks that both pages list
+every bot and room once with the same homes, that My Cloud is read with the
+window's sign-in in the background and never hands a page instructions or a
+model, that opening a Cloud bot hands My Cloud's page a link its own server
+resolves, and that an unreachable or asleep Cloud keeps its bots (an asleep one
+is never called), also after a restart.
+
+## The real renderer
+
+```sh
+node --experimental-strip-types scripts/verify-one-workspace.ts
+```
+
+It seeds the same two servers and mounts the whole app twice through the
+isolated Vite preview: this computer's page and My Cloud's. Only main's bridges
+are stand-ins (`scripts/testing/one-workspace-preview.tsx`); the one workspace
+calls main's real wiring through `/__one`, and where main would move the
+window the page goes to the other preview. The switcher's native menu is drawn
+from main's own template.
+
+```sh
+OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/one-workspace-ui.e2e.test.ts
+```
+
+drives both pages in the pinned headless browser: rows and badges on both
+pages, the switcher's one entry, opening a Cloud bot on My Cloud and sending it
+a message that reaches only My Cloud's server, opening this computer's bot
+back, the Team map with My Cloud's computers, and an asleep Cloud. Set
+`OMB_ONE_WORKSPACE_SHOTS` to keep its screenshots (1280 px, light and dark).
+
+## What these do not cover
+
+The packaged app's real navigation between the two origins (main's
+`connectCloudHome` and `switchEnvironment`) and the window's real Cloud cookie.
+Both are the existing paths the switcher uses; check them on a packaged build
+with a disposable test Cloud, never a customer's.

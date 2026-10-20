@@ -5830,5 +5830,20 @@
   "cloudSend.strip.retry": "Tentar de novo",
   "cloudSend.strip.failed": "Alguns itens não puderam vir. Veja Configurações → MausBot Cloud em Este computador.",
   "cloudSend.strip.close": "Fechar",
-  "settings.logins.eachSide": "Os logins ficam em cada lado: este computador tem os seus, e o My Cloud tem os dele. Configurações → MausBot Cloud envia os deste computador para o My Cloud e os mantém em dia; Usar também no My Cloud envia um agora. Em ambos os casos a senha vai direto para o My Cloud, nunca por uma conversa."
+  "settings.logins.eachSide": "Os logins ficam em cada lado: este computador tem os seus, e o My Cloud tem os dele. Configurações → MausBot Cloud envia os deste computador para o My Cloud e os mantém em dia; Usar também no My Cloud envia um agora. Em ambos os casos a senha vai direto para o My Cloud, nunca por uma conversa.",
+  "oneWorkspace.name": "Este computador e o {cloud}",
+  "oneWorkspace.thisComputer": "este computador",
+  "oneWorkspace.onComputer": "Neste computador",
+  "oneWorkspace.onCloud": "No {cloud}",
+  "oneWorkspace.alsoOnComputer": "também neste computador",
+  "oneWorkspace.alsoOnCloud": "também no {cloud}",
+  "oneWorkspace.openOn": "Abrir {name} em {place}",
+  "oneWorkspace.openingCloud": "Abrindo no {cloud}…",
+  "oneWorkspace.openingComputer": "Abrindo neste computador…",
+  "oneWorkspace.asleepBadge": "Dormindo · abrir o acorda",
+  "oneWorkspace.unreachableBadge": "Sem conexão no momento",
+  "oneWorkspace.cloudAsleep": "O {cloud} está dormindo. Abrir um dos bots dele o acorda.",
+  "oneWorkspace.cloudUnreachable": "Não foi possível conectar ao {cloud} agora. Os bots dele voltam quando ele responder.",
+  "oneWorkspace.cloudSignedOut": "O {cloud} precisa que você entre de novo. Abrir um dos bots dele faz o login.",
+  "oneWorkspace.computerUnreachable": "Este computador não está respondendo. Os bots dele voltam quando ele responder."
 }
