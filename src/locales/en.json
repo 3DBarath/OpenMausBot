@@ -6247,7 +6247,7 @@
   "science.teaser": "Science sources come with Max. Connect research databases in one click, and run analysis on the biggest cloud machine.",
   "science.tenantPlaceholder": "Your Benchling address, like acme.benchling.com",
   "science.tenantHelp": "Benchling gives each company its own address. An admin must turn on Benchling AI for your tenant first.",
-  "science.accessHint": "Bots using every enabled MCP server can use {name} now. Open a bot’s Access settings to choose its servers. Changes apply to its next task.",
+  "science.accessHint": "Bots using every enabled MCP server can use {name} now. Open a bot’s Access settings to choose which MCP servers it uses. Changes apply to its next task.",
   "science.noMatch": "No science sources match.",
   "science.noAddress": "This one has no address to connect to yet.",
   "science.testFailed": "Couldn’t load its tools. {reason}",
