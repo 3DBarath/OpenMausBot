@@ -2709,42 +2709,52 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps one suggested specialist open per conversation and remembers Not now", async () => {
+  it("adds a specialist the Chief chose itself at once, at Ask too, with an Undo and no card, up to four a turn", async () => {
     const chief = (await api("POST", "/api/bots")).body.bot;
+    const created: string[] = [];
     try {
-      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
-      const before = (await api("GET", "/api/bots?messages=0")).body.bots.length;
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
       const token = await mintTestCapability(BASE, chief.id, chief.threadId);
-      const suggest = async (name: string) => {
+      const add = async (name: string) => {
         const response = await fetch(`${BASE}/api/internal/create-bot`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          // suggestion: true marks the Chief's own pick; it takes the same path as a requested one.
           body: JSON.stringify({ name, role: "Checker", instructions: "Check the totals.", suggestion: true }),
         });
-        return { status: response.status, body: await response.json() as { state?: string; requestId?: string; title?: string; error?: string } };
+        return { status: response.status, body: await response.json() as { id?: string; state?: string; requestId?: string; error?: string } };
       };
-      const first = await suggest(`Suggested ${chief.id}`);
-      expect(first).toMatchObject({ status: 201, body: { state: "pending", title: `Add @Suggested ${chief.id} to the team?` } });
-      const card = (await api("GET", `/api/threads/${chief.threadId}/messages?limit=20`)).body.messages.find((m: { card?: { requestId?: string } }) => m.card?.requestId === first.body.requestId).card;
-      expect(card.options).toEqual(["Add bot", "Not now"]);
-      expect(await suggest(`Second ${chief.id}`)).toMatchObject({ status: 409, body: { error: expect.stringMatching(/already waiting/) } });
-      const notNow = await fetch(`${BASE}/api/threads/${chief.threadId}/respond`, {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: BASE },
-        body: JSON.stringify({ requestId: first.body.requestId, behavior: "deny" }),
-      });
-      expect((await notNow.json() as { result: { state: string } }).result.state).toBe("denied");
-      const fresh = await mintTestCapability(BASE, chief.id, chief.threadId);
-      const again = await fetch(`${BASE}/api/internal/create-bot`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${fresh}`, "content-type": "application/json" },
-        body: JSON.stringify({ name: `Third ${chief.id}`, role: "Checker", instructions: "Check the totals.", suggestion: true }),
-      });
-      expect(again.status).toBe(409);
-      expect((await again.json() as { error: string }).error).toMatch(/not now/);
-      expect((await api("GET", "/api/bots?messages=0")).body.bots.length).toBe(before);
+      const first = await add(`Checker ${chief.id}`);
+      expect(first, "the Chief's own pick is created at once").toMatchObject({ status: 201, body: { state: "applied", id: expect.any(String) } });
+      created.push(first.body.id!);
+      const messages = (await api("GET", `/api/threads/${chief.threadId}/messages?limit=20`)).body.messages as Array<{ kind?: string; card?: any }>;
+      expect(messages.find((message) => message.card?.requestId === first.body.requestId)?.card)
+        .toMatchObject({ autoApplied: true, answered: "allow", options: [], teamSetupRequest: { undo: { created: [first.body.id] } } });
+      expect(messages.filter((message) => message.kind === "options" && !message.card?.answered && !message.card?.dismissed && !message.card?.expired),
+        "nothing waits on the person").toEqual([]);
+      for (const n of [2, 3, 4]) {
+        const next = await add(`Checker ${n} ${chief.id}`);
+        expect(next.status).toBe(201);
+        created.push(next.body.id!);
+      }
+      expect(await add(`Checker 5 ${chief.id}`), "the per-turn cap still holds").toMatchObject({ status: 429 });
+      expect((await api("POST", `/api/threads/${chief.threadId}/undo`, { requestId: first.body.requestId })).body).toEqual({ ok: true, undone: true });
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some((bot: { id: string }) => bot.id === first.body.id)).toBe(false);
     } finally {
+      for (const id of created) await api("DELETE", `/api/bots/${id}`);
       await api("DELETE", `/api/bots/${chief.id}`);
+    }
+  });
+
+  it("lets only a Chief read the team library from its turn", async () => {
+    const helper = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const token = await mintTestCapability(BASE, helper.id, helper.threadId);
+      const response = await fetch(`${BASE}/api/internal/team-library`, { headers: { authorization: `Bearer ${token}` } });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "Only an active Chief may plan team setup" });
+    } finally {
+      await api("DELETE", `/api/bots/${helper.id}`);
     }
   });
 
@@ -2796,21 +2806,14 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps Chief room changes behind pending user approvals", async () => {
-    const bot = (await api("POST", "/api/bots", { name: "Pending Chief", section: "Pending room" })).body.bot;
-    const peer = (await api("POST", "/api/bots", { name: "Pending peer", section: "Pending room" })).body.bot;
-    await api("PATCH", `/api/bots/${bot.id}`, { chiefOfStaff: true, approvalMode: "ask" });
-    const room = (await api("POST", "/api/groups", { name: "Pending room", memberIds: [bot.id], section: "Pending room" })).body.group;
+  it("keeps Chief room changes behind an approval still waiting on the person", async () => {
+    const state = (await api("GET", "/api/bots")).body;
+    const room = state.groups.find((group: { id: string }) => group.id === "test-stranded-room");
+    expect(room.messages.find((message: { id: string }) => message.id === "stranded-card").card.answered, "the fixture's approval is still open").toBeFalsy();
+    const chief = state.bots.find((bot: { id: string }) => bot.id === "test-bot-a");
+    expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
     try {
-      const roomToken = await mintTestCapability(BASE, bot.id, room.threadId);
-      // A suggested specialist waits on the person's answer at every level.
-      const proposed = await fetch(`${BASE}/api/internal/create-bot`, {
-        method: "POST", headers: { authorization: `Bearer ${roomToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ name: `Room helper ${peer.id}`, role: "Helper", instructions: "Help the room.", suggestion: true }),
-      });
-      expect(proposed.status).toBe(201);
-      expect((await proposed.json() as { state: string }).state).toBe("pending");
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
       const changed = await chiefRoomRequest(BASE, token, "manage-room", {
         roomId: room.id, action: "set_bulletin", bulletin: "Changed during approval",
       });
@@ -2818,9 +2821,7 @@ describe("harness HTTP API", () => {
       expect(changed.body.error).toMatch(/waiting on you/);
       expect((await chiefRoomRequest(BASE, token, "manage-room", { roomId: "test-dm", action: "rename", name: "A room" })).status).toBe(403);
     } finally {
-      await api("DELETE", `/api/groups/${room.id}`);
-      await api("DELETE", `/api/bots/${bot.id}`);
-      await api("DELETE", `/api/bots/${peer.id}`);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: false })).status).toBe(200);
     }
   });
 
@@ -3186,7 +3187,7 @@ describe("harness HTTP API", () => {
       roomId = room.id;
       expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "work in the virtual machine" })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body),
-        { timeout: 5_000 }).toMatch(/fixture-plain-model can't use a Local VM\. Choose a model that can, such as Claude or ChatGPT\. Choose another model in Room VM refusal's settings\./);
+        { timeout: 5_000 }).toMatch(/fixture-plain-model can't use a private desktop\. Choose a model that can, such as Claude or ChatGPT\. Choose another model in Room VM refusal's settings\./);
       expect(JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body)).not.toContain("Works on to Auto");
     } finally {
       if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
@@ -8828,7 +8829,7 @@ describe("harness HTTP API", () => {
 
       const sections = (await api("GET", `/api/bots/${bot.id}/system-prompt`)).body.sections as Array<{ id: string; text: string }>;
       const team = sections.find((section) => section.id === "coordination")?.text ?? "";
-      expect(team).toContain("You are the Chief of Staff for the Roster end section.");
+      expect(team).toContain("the Chief of Staff for the Roster end section: their one point of contact.");
       expect(team.endsWith(roster)).toBe(true);
 
       rmSync(fakeClaudeDump, { force: true });
@@ -9074,7 +9075,7 @@ describe("harness HTTP API", () => {
   it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
     const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(untouched.features?.skillAuthoring).toBeUndefined();
     expect(untouched.features?.skillReview).toBeUndefined();
@@ -9084,7 +9085,7 @@ describe("harness HTTP API", () => {
       features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     // Earlier browser coverage may have persisted its own toggle: opting out must preserve sibling settings.
@@ -9092,7 +9093,7 @@ describe("harness HTTP API", () => {
 
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
@@ -10407,7 +10408,7 @@ describe("harness HTTP API", () => {
       });
       expect(unavailableCloud.status).toBe(409);
       expect(await unavailableCloud.json()).toMatchObject({
-        error: expect.stringMatching(/^A cloud computer here needs your own Boat key, a paid service\. Add a Boat key in Settings → API keys\./),
+        error: expect.stringMatching(/^A cloud desktop here needs your own Boat key, a paid service\. Add a Boat key in Settings → API keys\./),
       });
 
       const proposed = await fetch(`${BASE}/api/internal/trigger-requests`, {
@@ -10537,12 +10538,13 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => {
         const destination = (await api("GET", `/api/threads/${teammate.threadId}/messages`)).body;
         return destination.messages.filter(
-          (message: { routineRun?: { runId?: string; status?: string } }) =>
-            message.routineRun?.runId === crossRun.body.run.id && message.routineRun?.status === "failed",
+          (message: { automation?: { runId?: string; failed?: true } }) =>
+            message.automation?.runId === crossRun.body.run.id && message.automation?.failed === true,
         );
       }, { timeout: 5_000 }).toHaveLength(1);
       expect((await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.some(
-        (message: { routineRun?: { runId?: string } }) => message.routineRun?.runId === crossRun.body.run.id,
+        (message: { automation?: { runId?: string }; routineRun?: { runId?: string } }) =>
+          message.automation?.runId === crossRun.body.run.id || message.routineRun?.runId === crossRun.body.run.id,
       )).toBe(false);
       const crossStateAfterRun = (await api("GET", "/api/bots?messages=0")).body;
       expect(crossStateAfterRun.bots.find((candidate: { id: string }) => candidate.id === teammate.id)
@@ -10556,7 +10558,8 @@ describe("harness HTTP API", () => {
         return runs.find((run: { id: string }) => run.id === movedRun.body.run.id)?.status;
       }, { timeout: 5_000 }).toBe("failed");
       expect((await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.some(
-        (message: { routineRun?: { runId?: string } }) => message.routineRun?.runId === movedRun.body.run.id,
+        (message: { automation?: { runId?: string }; routineRun?: { runId?: string } }) =>
+          message.automation?.runId === movedRun.body.run.id || message.routineRun?.runId === movedRun.body.run.id,
       )).toBe(false);
       await api("DELETE", `/api/bots/${teammate.id}`);
 
@@ -10593,12 +10596,12 @@ describe("harness HTTP API", () => {
           .find((candidate: { id: string }) => candidate.id === bot.id);
         expect(current.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId)?.unread).toBe(true);
         expect(current.tasks.find((task: { threadId: string }) => task.threadId === sibling.body.task.threadId)?.unread).toBeFalsy();
-        // Made in this chat, so the run shows on its live trigger card: no card per run, the chat still marked unread.
-        const runCards = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.filter(
-          (message: { kind?: string; routineRun?: { runId?: string } }) =>
-            message.kind === "routine.run" && message.routineRun?.runId === queued.body.run.id,
-        );
-        expect(runCards).toHaveLength(0);
+        // Made in this chat: no card per run, and the failure is one line there.
+        const chatLines = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages as Array<{
+          kind?: string; routineRun?: { runId?: string }; automation?: { runId?: string; failed?: true };
+        }>;
+        expect(chatLines.filter((message) => message.kind === "routine.run" && message.routineRun?.runId === queued.body.run.id)).toHaveLength(0);
+        expect(chatLines.filter((message) => message.automation?.runId === queued.body.run.id && message.automation?.failed)).toHaveLength(1);
         const failedRun = (await api("GET", "/api/routines")).body.runs.find((run: { id: string }) => run.id === queued.body.run.id);
         expect(failedRun).toMatchObject({ routineId, routineName: "Weekday brief", status: "failed" });
         expect(failedRun.threadId).not.toBe(bot.threadId);
@@ -11250,6 +11253,55 @@ describe("harness HTTP API", () => {
     expect((await api("PATCH", `/api/bots/${bot.id}`, { autoStartVps: "yes" })).status).toBe(400);
     const invalid = await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "daytona" });
     expect(invalid.status).toBe(400);
+
+    // A bot can be pointed at its own server; with none of its containers anywhere, the empty scan lets it move.
+    const perBot = await api("PATCH", `/api/bots/${bot.id}`, { vpsAlias: "alpha-vps" });
+    expect(perBot.status, JSON.stringify(perBot.body)).toBe(200);
+    expect(perBot.body.bot.vpsAlias).toBe("alpha-vps");
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { vpsAlias: "prod; reboot" })).status).toBe(400);
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { vpsAlias: "bad alias" })).status).toBe(400);
+
+    // A member's session learns a bot's own server as it learns the default one: configured, never the name.
+    const window = await api("POST", "/api/auth/pairing", { scopes: ["client"] });
+    const paired = await fetch(`${BASE}/api/auth/pair`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: window.body.code }),
+    });
+    const memberToken = ((await paired.json()) as any).token as string;
+    const asMember = async (method: string, path: string, payload?: unknown) => {
+      const res = await fetch(`${BASE}${path}`, {
+        method, headers: { authorization: `Bearer ${memberToken}`, ...(payload ? { "content-type": "application/json" } : {}) },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      return { status: res.status, body: await res.json() as any };
+    };
+    const memberStream = await openSse(`${BASE}/api/events`, { authorization: `Bearer ${memberToken}` });
+    const ownerStream = await openSse(`${BASE}/api/events`);
+    try {
+      expect((await asMember("GET", "/api/config")).body.vps).toEqual({ configured: true, sshAlias: "" });
+      const listed = (await asMember("GET", "/api/bots?messages=0")).body.bots.find((candidate: any) => candidate.id === bot.id);
+      expect(listed).toMatchObject({ id: bot.id, cloudBackend: "vps" });
+      expect(listed).not.toHaveProperty("vpsAlias");
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((candidate: any) => candidate.id === bot.id).vpsAlias).toBe("alpha-vps");
+      const display = await asMember("PATCH", `/api/bots/${bot.id}`, { pinned: true });
+      expect(display.status, JSON.stringify(display.body)).toBe(200);
+      expect(display.body.bot).not.toHaveProperty("vpsAlias");
+      expect((await asMember("PATCH", `/api/bots/${bot.id}`, { vpsAlias: "member-vps" })).status).toBe(403);
+      // The live frame for that same change: the owner's carries the alias, the member's does not.
+      const ownerFrame = await ownerStream.until((frame) => frame.kind === "bot" && frame.bot?.id === bot.id && frame.bot.pinned === true);
+      expect(ownerFrame.bot.vpsAlias).toBe("alpha-vps");
+      const memberFrame = await memberStream.until((frame) => frame.kind === "bot" && frame.bot?.id === bot.id && frame.bot.pinned === true);
+      expect(memberFrame.bot.cloudBackend).toBe("vps");
+      expect(memberFrame.bot).not.toHaveProperty("vpsAlias");
+      expect(JSON.stringify(memberStream.frames)).not.toContain("alpha-vps");
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { pinned: false })).status).toBe(200);
+    } finally {
+      memberStream.close();
+      ownerStream.close();
+    }
+    // Clearing the field falls back to the default server.
+    const cleared = await api("PATCH", `/api/bots/${bot.id}`, { vpsAlias: null });
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.bot.vpsAlias).toBeUndefined();
     expect((await api("PATCH", "/api/config", { vps: { sshAlias: "" } })).status).toBe(200);
   });
 

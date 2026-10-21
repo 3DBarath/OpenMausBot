@@ -21,6 +21,8 @@ import {
   TRIGGER_PROMPT,
   ROUTINE_EXECUTION_PROMPT,
   WEBHOOK_PROMPT,
+  AUTOMATION_REPLY_PROMPT,
+  SANDBOX_DESKTOP_INPUT,
   SIGN_IN_PROMPT,
   savedLoginsPrompt,
   type ComputerPromptKind,
@@ -100,6 +102,18 @@ describe("buildSystemPrompt", () => {
     expect(built.volatile).not.toContain("Search past sessions");
   });
 
+  it("keeps a turn's switched-on instructions volatile, and setup and the webhook's untrusted-data rule stable", () => {
+    const built = buildSystemPrompt("You are Kiwi.", "", [
+      { id: "setup", label: "Setup", text: " Set yourself up." },
+      { id: "skill-instructions", label: "Skill instructions", text: " Use the deploy skill." },
+      { id: "routine-execution", label: "Routine execution", text: ROUTINE_EXECUTION_PROMPT },
+      { id: "webhook", label: "Webhook provenance", text: WEBHOOK_PROMPT },
+    ]);
+    expect(built.volatile).toContain("Use the deploy skill.");
+    expect(built.volatile).toContain(ROUTINE_EXECUTION_PROMPT);
+    expect(built.stable).toBe(`You are Kiwi. Set yourself up.${WEBHOOK_PROMPT}`);
+  });
+
   it("has an empty volatile half when nothing mid-conversation is present", () => {
     const built = buildSystemPrompt("You are Kiwi.", "", [{ id: "recall", label: "Recall", text: " Search." }]);
     expect(built.volatile).toBe("");
@@ -146,6 +160,15 @@ describe("computerPrompt", () => {
     expect(prompt).toContain("including through shell scripts, AppleScript/System Events");
     expect(prompt).toContain("If a background action unexpectedly changes focus");
     expect(computerPrompt("vm-private")).not.toContain("user asked for foreground control");
+  });
+  it("tells sandbox desktops, and never the user's own computer, to send keys in the foreground", () => {
+    for (const kind of ["vm-private", "vm-shared", "vps"] as const) {
+      expect(computerPrompt(kind)).toContain(SANDBOX_DESKTOP_INPUT);
+      expect(computerPrompt(kind).indexOf(SANDBOX_DESKTOP_INPUT)).toBeLessThan(computerPrompt(kind).indexOf(SIGN_IN_PROMPT));
+    }
+    expect(SANDBOX_DESKTOP_INPUT).toContain('delivery_mode "foreground" for keys, typing, scrolling and pixel clicks');
+    expect(computerPrompt("local")).not.toContain(SANDBOX_DESKTOP_INPUT);
+    expect(computerPrompt("box")).not.toContain(SANDBOX_DESKTOP_INPUT);
   });
   it("is empty with no computer", () => {
     expect(computerPrompt(null)).toBe("");
@@ -212,7 +235,7 @@ describe("computerPrompt", () => {
 
 describe("shared sentences", () => {
   it("each begins with one space so they concatenate onto the persona line", () => {
-    for (const sentence of [COMPOSIO_PROMPT, CREDENTIAL_PROMPT, TRIGGER_PROMPT, ROUTINE_EXECUTION_PROMPT, LEARN_PROMPT, WEBHOOK_PROMPT, PROFILE_PROMPT, SIGN_IN_PROMPT]) {
+    for (const sentence of [COMPOSIO_PROMPT, CREDENTIAL_PROMPT, TRIGGER_PROMPT, ROUTINE_EXECUTION_PROMPT, AUTOMATION_REPLY_PROMPT, LEARN_PROMPT, WEBHOOK_PROMPT, PROFILE_PROMPT, SIGN_IN_PROMPT]) {
       expect(sentence.startsWith(" ")).toBe(true);
       expect(sentence.startsWith("  ")).toBe(false);
     }
@@ -306,8 +329,8 @@ describe("cloudHomePrompt", () => {
   });
 
   it("points to a lent computer only when the turn has the shared-computer tools", () => {
-    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer");
-    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this computer under Settings → MausBot Cloud in OpenMausBot on that computer");
+    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a computer they share with the Cloud is reachable through shared_computer");
+    expect(cloudHomePrompt(true)).toContain("turn on Let Cloud bots use this computer under Settings → MausBot Cloud in OpenMausBot on that computer");
     expect(cloudHomePrompt(true)).toContain("use its say field when it has one");
     expect(cloudHomePrompt(false)).not.toMatch(/shared_computer|list_shared_computers/);
     expect(cloudHomePrompt(false)).toContain("You cannot see or use their own computer, its screen or its files from here.");

@@ -2,8 +2,8 @@
 
 What it covers: Settings → MausBot Cloud's **This computer and My Cloud**
 (Send everything, Keep My Cloud up to date, Choose what goes), My Cloud's
-strip (**Bring them over**), the switcher's send line, and Settings → Logins'
-**Also use on My Cloud**, which is the same send for one login.
+strip (**Bring them over**) and the switcher's send line. Settings → Logins
+shows where each login is; it no longer sends one by hand.
 
 ## Two real servers
 
@@ -29,7 +29,61 @@ checks:
 - a password changed here goes on the next send;
 - My Cloud's page is told bot names and counts only, never a login's site;
 - every send signs its session out, and no answer or log carries a secret;
-- **Bring newer chats** adds a sent bot's chats to My Cloud.
+- **Bring newer chats** adds a sent bot's chats to My Cloud;
+- **Send everything** brings the chats too, by row, under the same bot and
+  conversation ids; a second send adds only the new messages, nothing twice; a
+  send of one item never carries chats;
+- **Keep My Cloud up to date**: the first check sends everything with no click,
+  chats included; a new message goes on a later check (chats alone at most
+  every five minutes), and only its rows; nothing goes once the switch is off;
+- when My Cloud's 1Password refuses this computer's token, everything else
+  arrives and the strip's notice says *1Password* and why, never a login's site;
+- **a long conversation, sent in pages by the real send** (tool-heavy turns, so
+  a few turns make several 300-row pages): a new bot's conversation of three
+  pages and more with the first send by itself, one My Cloud got from a Bring
+  and then sent from its first row, a later send of two pages and more, a
+  context summary that ends a send, and a room of three pages and more (made on
+  My Cloud under the same ids). Each is read back on both servers the way the
+  chat view pages it, and the path from each server's own leaf, which is what
+  its bot reads, must match row for row, summaries included.
+
+`server/cloud-send-chats.test.ts` covers the row cursor (pages, a deleted row
+starting a conversation over, each page's own leaf, a page never ending between
+a row and a row above it that was stored after it) and My Cloud's side (pages
+of one conversation continuing one another, summaries kept, a removed
+conversation or room never coming back, a busy one waiting, a room made under
+the sender's ids). `electron/cloud-send.node-test.mjs` covers main's paging (a
+page's `sent` as it goes, a conversation's later pages waiting once one is not
+taken) and a send that goes on once My Cloud is back after being away. `server/login-handoff.test.ts` and
+`electron/cloud-send.node-test.mjs` cover the
+rest of the reasons a person reads: a send that stops as a whole, logins this
+computer's server did not hand over, and a 1Password token 1Password already
+refused here.
+
+My Cloud's welcome (`src/components/cloud-welcome/CloudWelcome.test.ts`): while
+Keep My Cloud up to date is on, or once a send has run, **Bring your stuff** is
+done by itself, so the welcome goes straight on to the AI with no Copy, fresh
+start or button; back on that step it says so in one line, with a fresh start
+only behind **More**. With the switch off, the old choice is offered. Found by a
+real-user run on a packaged desktop and a test Cloud, where the welcome kept
+offering **Copy to My Cloud** after everything had already arrived.
+
+## The real utility port
+
+```sh
+pnpm build:server && pnpm exec electron scripts/smoke-login-handoff.cjs
+```
+
+CI's macOS smokes job runs it: main's own handoff client asks the packaged
+server, forked as a real Electron utility process, for a saved login. The
+fixture above emulates that port over Node's IPC.
+
+## A real Cloud
+
+Point the same pieces at a disposable Fly test Cloud set up like a customer's
+(never a customer's): this computer's server started as the app starts it,
+main's wiring with Node's own fetch, the Cloud paired through its signed
+pairing route. Print each failed item's error, never a value.
 
 ## The real renderer
 

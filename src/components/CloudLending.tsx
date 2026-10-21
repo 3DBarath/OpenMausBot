@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderPlus, X } from "lucide-react";
+import { ChevronRight, FolderPlus, X } from "lucide-react";
 import type { CloudLendingBridge, CloudLendingSnapshot, SharedFolder } from "../../electron/computer-sharing.mjs";
+import { ipcErrorText, listOf } from "@/lib/cloud-send";
 import { activeLocale, t } from "@/lib/i18n";
 import { localizedRelativeTime } from "@/lib/memory";
 import type { LocaleKey } from "@/locales";
@@ -26,6 +27,30 @@ const STOPPED: Partial<Record<string, LocaleKey>> = {
   "machine-changed": "lending.stopped.machineChanged",
 };
 
+/** Refusals main names (electron/cloud-lending-ipc.mjs LENDING_REFUSED): trying again never helps, so no Try again. */
+const REFUSED: Partial<Record<string, LocaleKey>> = {
+  "nothing-to-lend": "lending.refused.nothingToLend",
+  "home-or-root": "lending.refused.homeOrRoot",
+  "not-folder": "lending.refused.notFolder",
+  "too-many": "lending.refused.tooMany",
+};
+/** What to say when changing what is lent failed: the plain reason main named, or "Could not change … Try again." only
+ * when trying again can help. */
+export function lendingFailureKey(cause: unknown): LocaleKey {
+  const text = ipcErrorText(cause) ?? "";
+  return text.startsWith("lending-refused:") ? REFUSED[text.slice("lending-refused:".length)] ?? "lending.failed" : "lending.failed";
+}
+
+/** The words for why lending isn't working, from computer-sharing.mjs's problem code. */
+export const lendingProblemKey = (code: string): LocaleKey | null => PROBLEMS[code] ?? null;
+
+/** "Desktop, Documents and Downloads (read only)", or with apps and screen. */
+export function lentWhat(folders: ReadonlyArray<{ name: string; write: boolean }>, screen: boolean): string {
+  const names = folders.map((folder) => folder.write ? `${folder.name} (${t("lending.page.canEdit")})` : folder.name);
+  const list = listOf([...names, ...(screen ? [t("lending.cloudSide.screen")] : [])]);
+  return folders.length && folders.every((folder) => !folder.write) ? `${list} (${t("lending.page.readOnly")})` : list;
+}
+
 /** Why it is off and since when, kept across restarts: an off switch never hides that it was on. */
 export function lendingStoppedLine(state: CloudLendingSnapshot["state"]): string | null {
   if (!state || state.enabled || !state.stopped) return null;
@@ -48,7 +73,7 @@ export function lendingStatusKey(snapshot: CloudLendingSnapshot | null, switched
     if (state.connected) return "lending.status.lent";
     return PROBLEMS[state.problem ?? ""] ?? "lending.status.starting";
   }
-  if (switchedOn) return "lending.status.chooseSomething";
+  if (switchedOn) return "lending.status.starting";
   return state?.problem && state.problem !== "paused" ? PROBLEMS[state.problem] ?? null : null;
 }
 
@@ -59,7 +84,8 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
   const [folders, setFolders] = useState<SharedFolder[]>([]);
   const [screen, setScreen] = useState(false);
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<LocaleKey | null>(null);
+  const [more, setMore] = useState(false);
   const pending = useRef(false), mounted = useRef(false);
   const accept = (next: CloudLendingSnapshot) => {
     if (!mounted.current) return;
@@ -75,9 +101,9 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
   }, [bridge]);
   const perform = async (action: () => Promise<CloudLendingSnapshot>) => {
     if (pending.current) return;
-    pending.current = true; setWorking(true); setFailed(false);
+    pending.current = true; setWorking(true); setFailed(null);
     try { const next = await action(); pending.current = false; accept(next); }
-    catch { if (mounted.current) setFailed(true); }
+    catch (cause) { if (mounted.current) setFailed(lendingFailureKey(cause)); }
     finally { pending.current = false; if (mounted.current) setWorking(false); }
   };
   const lend = (nextFolders: SharedFolder[], nextScreen: boolean) => {
@@ -86,13 +112,15 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
   };
   const enabled = snapshot?.state?.enabled === true;
   const on = enabled || draftOn;
+  // Nothing chosen yet: main lends the usual folders, read only.
   const toggle = () => {
     if (on) { setDraftOn(false); void perform(() => bridge.stop()); return; }
     setDraftOn(true);
-    if (folders.length || screen) lend(folders, screen);
+    void perform(() => bridge.save({ folders, screen }));
   };
   if (!snapshot?.available) return null;
   const status = lendingStatusKey(snapshot, on);
+  const lent = enabled && snapshot.state?.connected && !snapshot.state.busy ? lentWhat(snapshot.state.folders, snapshot.state.screen) : "";
   const stopped = on ? null : lendingStoppedLine(snapshot.state);
   const lastUsed = lendingLastUsedLine(snapshot);
   const via = snapshot.state?.via === "access" ? t(snapshot.state.terminal ? "lending.viaAccessTerminal" : "lending.viaAccess") : null;
@@ -104,14 +132,14 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
       </div>
       <Switch checked={on} disabled={working} aria-label={t("lending.title")} onClick={toggle} />
     </div>
-    {status && <p role="status" className={`text-[13px] ${enabled && snapshot.state?.busy ? "font-medium text-ink" : "text-ink-secondary"}`}>{t(status)}</p>}
-    {stopped && <div data-lending-stopped={snapshot.state?.stopped?.reason} className="flex flex-wrap items-center gap-2">
-      <p className="text-[13px] text-ink-secondary">{stopped}</p>
-      {(folders.length > 0 || screen) && <button type="button" disabled={working} className="ui-button" onClick={() => { setDraftOn(true); lend(folders, screen); }}>{t("lending.lendAgain")}</button>}
-    </div>}
+    {status && <p role="status" className={`text-[13px] ${enabled && snapshot.state?.busy ? "font-medium text-ink" : "text-ink-secondary"}`}>{lent ? t("lending.page.lends", { what: lent }) : t(status)}</p>}
+    {stopped && <p data-lending-stopped={snapshot.state?.stopped?.reason} className="text-[13px] text-ink-secondary">{stopped}</p>}
     {via && <p data-lending-via="access" className="text-[12px] text-ink-secondary">{via}</p>}
     {lastUsed && <p data-lending-last-used className="text-[12px] text-ink-secondary">{lastUsed}</p>}
-    {on && <>
+    {on && <button type="button" aria-expanded={more} data-lending-more className="inline-flex w-fit items-center gap-1 text-[12.5px] text-ink-secondary hover:text-ink" onClick={() => setMore(!more)}>
+      <ChevronRight size={13} aria-hidden="true" className={more ? "rotate-90 transition-transform" : "transition-transform"} />{t("lending.more")}
+    </button>}
+    {on && more && <>
       <fieldset disabled={working} className="flex flex-col gap-2 disabled:opacity-60">
         <legend className="mb-1 text-[13px] font-medium text-ink">{t("lending.folders")}</legend>
         <p className="text-[12px] text-ink-secondary">{t("lending.foldersHelp")}</p>
@@ -139,7 +167,7 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
       <p className="text-[12px] text-ink-secondary">{t("lending.ownConversations")}</p>
       <p className="text-[12px] text-ink-secondary">{t("lending.stopHelp")}</p>
     </>}
-    {failed && <p role="alert" className="text-[13px] text-danger">{t("lending.failed")}</p>}
+    {failed && <p role="alert" data-lending-failed={failed} className="text-[13px] text-danger">{t(failed)}</p>}
     {(on || (snapshot.activity?.length ?? 0) > 0) && <LendingActivityList entries={snapshot.activity ?? []} />}
   </div>;
 }

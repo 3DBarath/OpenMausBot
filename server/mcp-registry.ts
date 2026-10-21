@@ -3,11 +3,21 @@ import { z } from "zod";
 import { CATALOG_ENTRY_ID, isBenchlingTenantUrl, type CatalogAuth } from "../shared/connector-catalog.ts";
 import type { McpServerSpec, RemoteMcpSpec, StdioMcpSpec } from "./contracts.ts";
 
+/** The computer a server runs on when its program, files or address are that computer's own: kept with its entry so a
+ * bot can reach it through that computer, and never started anywhere else. */
+export interface McpRunsOn {
+  /** That computer's OpenMausBot environment id. */
+  environmentId: string;
+  /** Its name, as the person knows it. */
+  label: string;
+}
+
 /** One config.json `mcpServers` entry: the block Claude Code, Cursor and Claude Desktop write. */
 export interface StoredStdioMcpServer extends StdioMcpSpec {
   enabled: boolean;
   /** Characters of one tool result allowed into context; 0 = never trim, absent = OMB_MCP_RESULT_BUDGET, else 8,000. */
   resultBudget?: number;
+  runsOn?: McpRunsOn;
 }
 /** An app pre-registered with the server's authorization server; its secret is a credential, never listed. */
 export interface McpOAuthClientConfig {
@@ -20,6 +30,7 @@ export interface StoredRemoteMcpServer extends RemoteMcpSpec {
   oauth?: McpOAuthClientConfig;
   resultBudget?: number;
   catalog?: { id: string; auth: CatalogAuth };
+  runsOn?: McpRunsOn;
 }
 export type StoredMcpServer = StoredStdioMcpServer | StoredRemoteMcpServer;
 
@@ -31,6 +42,7 @@ export interface StdioMcpServerListing {
   envKeys: string[];
   enabled: boolean;
   resultBudget?: number;
+  runsOn?: McpRunsOn;
 }
 export interface RemoteMcpServerListing {
   name: string;
@@ -41,6 +53,7 @@ export interface RemoteMcpServerListing {
   resultBudget?: number;
   oauth?: { clientId: string; scopes: string[]; clientSecretConfigured: boolean };
   catalog?: { id: string; auth: CatalogAuth };
+  runsOn?: McpRunsOn;
 }
 export type McpServerListing = StdioMcpServerListing | RemoteMcpServerListing;
 
@@ -117,16 +130,24 @@ const RESERVED_MCP_NAMES = new Set([
   "openmausbot_phone",
 ]);
 
+const runsOnSchema = z.object({
+  environmentId: z.string().regex(/^[\w-]{1,128}$/u),
+  label: z.string().trim().min(1).max(120),
+}).strict();
+
 const stdioEntrySchema = z.object({
   command: z.string().trim().min(1).max(1_024),
   args: z.array(z.string().max(4_096)).max(MAX_ARGS).optional(),
   env: z.record(z.string(), z.string().max(16_384)).optional(),
   enabled: z.boolean().optional(),
   resultBudget: resultBudgetSchema.optional(),
+  runsOn: runsOnSchema.optional(),
 }).strict();
 
+/** `runsOn: null` says it runs here after all; left out, an edit keeps the computer it runs on. */
 const stdioMutationSchema = stdioEntrySchema.extend({
   env: z.record(z.string(), z.union([z.string().max(16_384), z.literal(true)])).optional(),
+  runsOn: runsOnSchema.nullable().optional(),
 });
 
 /** RFC 6749 §A: a client id is visible ASCII; a scope is one token without spaces, quotes or backslashes. */
@@ -150,10 +171,12 @@ const remoteEntrySchema = z.object({
   enabled: z.boolean().optional(),
   resultBudget: resultBudgetSchema.optional(),
   catalog: z.object({ id: z.string().regex(CATALOG_ENTRY_ID), auth: z.enum(["cloud", "oauth", "tenant"]) }).strict().optional(),
+  runsOn: runsOnSchema.optional(),
 }).strict();
 
 const remoteMutationSchema = remoteEntrySchema.extend({
   headers: z.record(z.string(), z.union([z.string().max(16_384), z.literal(true)])).optional(),
+  runsOn: runsOnSchema.nullable().optional(),
   oauth: oauthClientSchema.extend({
     clientSecret: z.union([z.string().min(1).max(CLIENT_SECRET_MAX).regex(CLIENT_ID, "A client secret is printable text on one line."), z.literal(true)]).optional(),
   }).optional(),
@@ -236,6 +259,7 @@ function parseStdio(raw: unknown, mutation: boolean, existing?: StoredMcpServer)
       env: env.values,
       enabled: enabledFor(parsed.data.enabled, mutation, existing),
       ...(parsed.data.resultBudget !== undefined ? { resultBudget: parsed.data.resultBudget } : {}),
+      ...runsOnFor(parsed.data.runsOn, mutation, existing),
     },
   };
 }
@@ -275,8 +299,14 @@ function parseRemote(raw: unknown, mutation: boolean, existing?: StoredMcpServer
       ...(catalog ? { catalog } : {}),
       enabled: enabledFor(parsed.data.enabled, mutation, existing),
       ...(parsed.data.resultBudget !== undefined ? { resultBudget: parsed.data.resultBudget } : {}),
+      ...runsOnFor(parsed.data.runsOn, mutation, existing),
     },
   };
+}
+
+function runsOnFor(value: McpRunsOn | null | undefined, mutation: boolean, existing?: StoredMcpServer): { runsOn?: McpRunsOn } {
+  const runsOn = value === null ? undefined : value ?? (mutation ? existing?.runsOn : undefined);
+  return runsOn ? { runsOn: { environmentId: runsOn.environmentId, label: runsOn.label } } : {};
 }
 
 function enabledFor(value: boolean | undefined, mutation: boolean, existing?: StoredMcpServer): boolean {
@@ -314,7 +344,7 @@ export function mcpServerBody(body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!body || typeof body !== "object") return out;
   const record = body as Record<string, unknown>;
-  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget", "catalog"]) {
+  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget", "runsOn", "catalog"]) {
     if (record[key] !== undefined) out[key] = record[key];
   }
   return out;
@@ -363,6 +393,7 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
         ...(server.oauth ? {
           oauth: { clientId: server.oauth.clientId, scopes: server.oauth.scopes ?? [], clientSecretConfigured: Boolean(server.oauth.clientSecret) },
         } : {}),
+        ...(server.runsOn ? { runsOn: server.runsOn } : {}),
       }];
     }
     return [{
@@ -372,6 +403,7 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
       envKeys: Object.keys(server.env).sort(),
       enabled: server.enabled,
       ...(server.resultBudget !== undefined ? { resultBudget: server.resultBudget } : {}),
+      ...(server.runsOn ? { runsOn: server.runsOn } : {}),
     }];
   });
 }

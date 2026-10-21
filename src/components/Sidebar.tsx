@@ -40,6 +40,7 @@ import { liveActivityLabel } from "@/lib/live-activity";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
 
 import { BotAvatar } from "./Avatar";
+import { BotModelBadge, BotModelMark } from "./BotModelBadge";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { searchMatchesThreads, useSearchDisclosure } from "@/lib/search-disclosure";
@@ -51,6 +52,7 @@ import { copyText } from "@/lib/copy-text";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { BulkSelectFilters, ThreadListFooter, deleteThreadsInBulk, useBulkSelect } from "./BulkSelectBar";
+import { BotDeleteMenuItem, useDeleteAllThreads } from "./BotMenuDelete";
 import { StackedMauses } from "./StackedMauses";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { WorkingDots } from "./WorkingIndicator";
@@ -114,7 +116,7 @@ import {
 import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
-import { SidebarAppsButton, SidebarFooterNav } from "./SidebarFooterNav";
+import { SidebarBottomButtons, SidebarFooterNav, SidebarTodayNav } from "./SidebarFooterNav";
 import { GlassBar, GlassScrollFrame, GlassScroller } from "./GlassScrollFrame";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { useCloudOwner } from "./CloudOwner";
@@ -135,6 +137,7 @@ import { ShortcutHint } from "./ShortcutHint";
 import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { addBot } from "@/lib/add-bot";
 import { PinnedBotRoster, PinnedCircleThreadSection } from "./PinnedCircleThreads";
 import { archiveBotWithNotice, onArchiveNotice } from "./bot-archive";
 import { ArchivedBotsPanel, botConfirmCopy, type BotConfirmKind } from "./ArchivedBotsPanel";
@@ -673,6 +676,7 @@ export function BotContextMenu({
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
   const canChooseFolder = useOwnerOrAdmin();
+  const clearThreads = useDeleteAllThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const bot = shown ? state.bots.find((b) => b.id === shown.botId) : undefined;
   const menuRef = useRef<HTMLDivElement>(null);
@@ -735,7 +739,7 @@ export function BotContextMenu({
     };
   }, [menu, onClose]);
 
-  if (!motion.shown || !bot || !shown) return null;
+  if (!motion.shown || !bot || !shown) return clearThreads.dialog;
   const deleting = state.deletingBots[bot.id] === true;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
@@ -778,7 +782,7 @@ export function BotContextMenu({
   );
   const divider = (key: string) => <div key={key} className="mx-2 my-1 border-t border-hairline/40" />;
 
-  return createPortal(
+  return <>{clearThreads.dialog}{createPortal(
     <div
       ref={menuRef}
       data-bot-menu
@@ -793,8 +797,9 @@ export function BotContextMenu({
         {item(<Plus size={16} className="text-ink-secondary" />, t("task.newShort"), () => dispatch({ type: "newTask", botId: bot.id }))}
         {canChooseFolder && item(<FolderOpen size={16} className="shrink-0 text-ink-secondary" />, t("task.folder.new"), () => onNewTaskFolder(bot.id))}
         {item(<FolderPlus size={16} className="text-ink-secondary" />, t("folder.new"), () => onNewFolder(bot.id))}
-        {divider("threads")}
       </>}
+      {item(<Trash2 size={16} />, t("task.deleteAll"), () => clearThreads.ask(bot.id), { danger: true })}
+      {divider("threads")}
       {remoteClient ? [
         item(<FolderPlus size={16} className="text-ink-secondary" />, t("sidebar.bot.moveToSection"), () => {
           onClose();
@@ -869,7 +874,7 @@ export function BotContextMenu({
       {readError?.botId === bot.id && <p role="alert" className="px-3.5 py-2 text-[12px] text-danger">{readError.message}</p>}
     </div>,
     document.body,
-  );
+  )}</>;
 }
 
 /** A confirmation may span live fleet updates; never authorize from its snapshot. */
@@ -877,25 +882,6 @@ export function currentArchivableBot(bots: readonly Bot[], id: string): Bot | un
   const active = bots.filter((candidate) => !candidate.hidden);
   if (active.length <= 1) return undefined;
   return active.find((candidate) => candidate.id === id && !candidate.chiefOfStaff);
-}
-
-export function BotDeleteMenuItem({ deleting, onClick }: { deleting: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      disabled={deleting}
-      aria-busy={deleting || undefined}
-      onClick={onClick}
-      title={deleting ? t("sidebar.bot.deleteCheckingTitle") : undefined}
-      className={cn(
-        "flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger",
-        deleting ? "cursor-default opacity-40" : "hover:bg-raised/70",
-      )}
-    >
-      {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-      {deleting ? t("sidebar.bot.deleteChecking") : t("common.delete")}
-    </button>
-  );
 }
 
 const NO_FOLDERS: BotProject[] = [];
@@ -976,7 +962,7 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       selectMode={bulk.active} checked={selection.has(task.threadId)} onToggleSelect={bulk.toggle} />;
   };
   const ungrouped = visibleTasks.filter((task) => !projects.some((project) => project.id === task.projectId));
-  const shownRows = [...orderedProjects.filter((project) => query || !collapsed.has(project.id)).flatMap((project) => visibleTasks.filter((task) => task.projectId === project.id)), ...ungrouped]
+  const shownRows = [...orderedProjects.filter((project) => query || bulk.active || !collapsed.has(project.id)).flatMap((project) => visibleTasks.filter((task) => task.projectId === project.id)), ...ungrouped]
     .map((task) => { const thread = currentTaskBot(bot, task.threadId); return { ...task, busy: thread.busy, activity: thread.activity }; });
   const selection = bulk.forRows(shownRows);
   const projectToEdit = projects.find((project) => project.id === editingProject);
@@ -1012,7 +998,7 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
         const projectTasks = tasks.filter((task) => task.projectId === project.id);
         const visible = visibleTasks.filter((task) => task.projectId === project.id);
         if (query && visible.length === 0 && !project.name.toLowerCase().includes(query.toLowerCase())) return null;
-        const open = Boolean(query) || !collapsed.has(project.id);
+        const open = Boolean(query) || bulk.active || !collapsed.has(project.id);
         const waiting = projectTasks.some((task) => task.activity === "waiting-on-you");
         const working = projectTasks.some((task) => task.busy);
         return <div key={project.id} data-sidebar-project={project.id}>
@@ -1158,9 +1144,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const hasThreadList = (bot.tasks?.filter((task) => !task.routineRunId).length ?? 1) > 1 || (bot.projects?.length ?? 0) > 0 || Boolean(query);
   const iconOnly = density === "icons";
   const expanded = showThreads && !iconOnly && threadsOpen && hasThreadList;
-  useEffect(() => {
-    if (iconOnly) setRenaming(false);
-  }, [iconOnly]);
+  useEffect(() => { if (iconOnly) setRenaming(false); }, [iconOnly]);
   const simpleRow = !advanced && !showThreads && density === "comfortable";
   const railTile = iconOnly && !advanced;
   const avatarSize = iconOnly ? (railTile ? 36 : 44) : density === "compact" ? (showThreads ? 26 : 36) : (showThreads ? 32 : simpleRow ? 36 : 44);
@@ -1197,6 +1181,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
           motionKey={mascotMotion?.nonce ?? 0}
           animated={working || unread || (mascotMotion?.kind ?? "none") !== "none"}
         />
+        {advanced && iconOnly && <BotModelBadge bot={bot} instances={instances} avatarSize={avatarSize} />}
         {working && (
           <span
             data-testid="working-dot"
@@ -1264,6 +1249,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
               {formatTime(last.at)}
             </span>
           )}
+          {advanced && density === "compact" && <BotModelMark bot={bot} instances={instances} />}
           {(expanded || (quiet && !statusLine)) && unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {(!expanded || deleting) && (!quiet || statusLine) && <div className="flex items-center justify-between gap-2">
@@ -1284,9 +1270,8 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
               )}
             </span>
           )}
-          {unread && (
-            <span className="size-2 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />
-          )}
+          {advanced && density === "comfortable" && <BotModelMark bot={bot} instances={instances} />}
+          {unread && <span className="size-2 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>}
       </div>
     </>
@@ -1716,10 +1701,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             {t("sidebar.newChat.title")}
           </button>
           <button
-            onClick={() => {
-              setPlusOpen(false);
-              dispatch({ type: "toggleNewBot", open: true });
-            }}
+            onClick={() => { setPlusOpen(false); addBot(dispatch, state.bots, showThreads, advanced); }}
             className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
           >
             <BotIcon size={16} className="text-ink-secondary" />
@@ -1736,23 +1718,20 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <Users size={16} className="text-ink-secondary" />
             {t("sidebar.newChannel.title")}
           </button>
-          {!remoteClient && <button
+          {advanced && !remoteClient && <button
             onClick={() => { setPlusOpen(false); setNewTeam(true); }}
             className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
           >
             <FolderPlus size={16} className="text-ink-secondary" /> {t("team.create")}
           </button>}
           {!remoteClient && <>
-          <button
-            onClick={() => {
-              setPlusOpen(false);
-              setTeamLibraryOpen(true);
-            }}
+          {advanced && <button
+            onClick={() => { setPlusOpen(false); setTeamLibraryOpen(true); }}
             className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
           >
             <Library size={16} className="text-ink-secondary" />
             {t("sidebar.teamLibrary")}
-          </button>
+          </button>}
           {archivedBots.length > 0 && (
             <button
               onClick={() => {
@@ -1916,7 +1895,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           />
         </div>
       </div>}
-
+      <SidebarTodayNav density={density} />
       {universalPins && pinnedBots.length > 0 && (
         <div
           data-sidebar-universal-pins=""
@@ -2143,8 +2122,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <div className="min-w-0 flex-1">
               <SidebarProfileMenu />
             </div>
-            <UpdateIndicator />
-            <SidebarAppsButton />
+            <SidebarBottomButtons />
           </div>
         )}
       </div>}
@@ -2274,7 +2252,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           anchor={sidebarRef.current}
           style={windowNoDragStyle}
           onClose={() => setNewChatOpen(false)}
-          onNewBot={() => { setNewChatOpen(false); dispatch({ type: "toggleNewBot", open: true }); }}
+          onNewBot={() => { setNewChatOpen(false); addBot(dispatch, state.bots, showThreads, advanced); }}
           onNewGroup={() => { setNewChatOpen(false); setNewRoom(true); }}
         />,
         document.body,

@@ -9,7 +9,8 @@ export interface SendItem {
   bot?: string;
   parts: Record<string, string>;
 }
-export interface SendSummary { v: 1; appVersion: string | null; items: SendItem[] }
+/** `chats`: the server takes chats by row (server/cloud-send-chats.ts). */
+export interface SendSummary { v: 1; appVersion: string | null; items: SendItem[]; chats?: true }
 
 export type RowState = "only-here" | "on-both" | "to-update" | "differs" | "removed" | "off";
 export interface PlanRow {
@@ -48,3 +49,5 @@ export declare function parseSendSummary(value: unknown): SendSummary | null;
 export declare function planSend(input: { local: SendSummary | null; cloud: SendSummary | null; sent?: SentRecord; off?: Record<string, OffReason>; force?: string[] }): SendPlan;
 export declare function pendingRows(plan: SendPlan): PlanRow[];
 export declare function differenceSignature(plan: SendPlan): string;
+export function failedSummary(outcome: import("./cloud-send.mjs").CloudSendOutcome): import("./cloud-send.mjs").CloudSendFailure;
+export function resultKey(last: { at: number }): string;

@@ -1,7 +1,7 @@
 import { z, type ZodString } from "zod";
 import * as boat from "../boat.ts";
 import type { ComputerControl } from "../computer-control.ts";
-import { localVmMaxInstances, localVmMode, type AppConfig } from "../config.ts";
+import { isValidSshAlias, localVmMaxInstances, localVmMode, type AppConfig } from "../config.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -13,6 +13,7 @@ import {
   type Runtime,
 } from "../container-computer.ts";
 import { localVmViewerStatus, viewerTargetId } from "../desktop-viewer-targets.ts";
+import { keepFirefoxProfileBeforeRemove } from "../local-vm-profiles.ts";
 import type { ComputerIdleTimer } from "../computer-idle.ts";
 import type { LocalVmLease } from "../local-vm-lease.ts";
 import { redactSecretsInText } from "../redact.ts";
@@ -22,10 +23,17 @@ import type { SessionRegistry } from "../sessions.ts";
 import { sectionKey, type BotRecord, type Store } from "../store.ts";
 import { teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord, type TeamComputers } from "../team-computers.ts";
 import * as vps from "../vps-computer.ts";
+import { vpsAliasesInPlay } from "../vps-hosts.ts";
 import type { BusyFlag, RemoteComputerProvider } from "./config.ts";
 import { createComputerFramesRoutes } from "./computer-frames.ts";
 import { createComputerUsageRoutes } from "./computer-usage.ts";
 import { PASS, type RouteHandler } from "./table.ts";
+
+/** "Delete" and "Delete and recreate" keep the desktop's website sign-ins: its Firefox profile moves into the workspace first. */
+async function keepSignInsBeforeRemove(target: LocalVmTarget): Promise<void> {
+  const before = await containerComputerStatus(undefined, undefined, target);
+  await keepFirefoxProfileBeforeRemove(target, before, () => containerComputerAction("stop", undefined, undefined, target));
+}
 
 export interface ComputerRouteDeps {
   store: Pick<Store, "bot" | "bots" | "sections">;
@@ -225,7 +233,13 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
     }
     if (method === "GET" && path === "/api/computers/vps") {
       res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, await vps.listManagedVpsComputers(cfg, managedBoatOwners()));
+      // Computers live on the default server and on each bot's own: list them all, tagged by alias.
+      return json(res, 200, await vps.listManagedVpsComputers(
+        cfg,
+        managedBoatOwners(),
+        undefined,
+        vpsAliasesInPlay(cfg, store.bots),
+      ));
     }
     m = path.match(/^\/api\/computers\/vps\/([\w-]+)\/remove$/);
     if (m && method === "POST") {
@@ -239,10 +253,19 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
       if (typeof body?.confirmName !== "string" || body.confirmName.length > 100) {
         return json(res, 400, { error: "confirmName must be the VPS computer name shown in Settings" });
       }
+      const alias = body?.alias;
+      if (alias !== undefined && !isValidSshAlias(alias)) {
+        return json(res, 400, { error: "alias must be a simple SSH config alias" });
+      }
+      // An explicit alias may only name a server the inventory scans: anything else would open
+      // docker-over-SSH to an arbitrary host from the user's SSH config.
+      if (alias !== undefined && !vpsAliasesInPlay(cfg, store.bots).includes(alias)) {
+        return json(res, 400, { error: "alias must be the default server or a bot's own SSH alias" });
+      }
       const releaseComputerLifecycle = claimManagedVpsMutation(m[1]);
       try {
         return json(res, 200, await vps.removeManagedVpsComputer(
-          cfg,
+          alias ? { vps: { sshAlias: alias } } : cfg,
           managedBoatOwners(),
           m[1],
           body.confirmName,
@@ -286,6 +309,7 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
       if (action === "pull") localVmImageBusy.set(true);
       else localVmLifecycleBusy.add(SHARED_LOCAL_VM_TARGET.key);
       try {
+        if (action === "remove") await keepSignInsBeforeRemove(SHARED_LOCAL_VM_TARGET);
         const status = await containerComputerAction(action, undefined, undefined, SHARED_LOCAL_VM_TARGET);
         if (action === "run" || action === "start") {
           localVmSeen.add(SHARED_LOCAL_VM_TARGET.key);
@@ -360,6 +384,7 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
             }
           }
         }
+        if (action === "remove") await keepSignInsBeforeRemove(target);
         const status = await containerComputerAction(action, undefined, undefined, target);
         if (action === "run" || action === "start") {
           localVmSeen.add(target.key);

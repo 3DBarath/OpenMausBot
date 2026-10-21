@@ -26,7 +26,6 @@ import { cacheUntilConfigChanges,
   threadEventLogMaxBytes,
   threadEventLogRetentionDays,
   showToolCallsEnabled,
-  routinesInConversationEnabled,
   saveConfig,
   skillAuthoringEnabled,
   sharedComputersEnabled,
@@ -74,6 +73,15 @@ describe("configuration boundaries", () => {
     expect(parseConfigPatch({ profile: { aboutMe: "" } })).toEqual({ profile: { aboutMe: "" } });
     expect(reloaded({ profile })).toEqual([]);
     expect(() => parseConfigPatch({ profile: { aboutMe: "x".repeat(24_001) } })).toThrow();
+  });
+  it("keeps the profile photo to a stored attachment picture, never an outside address or SVG", () => {
+    const avatarUrl = "/api/attachments/5f0c2b1e-8a43-4c1d-9e7a-2b6f1d3c4e5a.webp";
+    expect(parseConfigPatch({ profile: { avatarUrl } })).toEqual({ profile: { avatarUrl } });
+    expect(parseStoredConfig({ profile: { name: "Ada", avatarUrl } })).toEqual({ profile: { name: "Ada", avatarUrl } });
+    expect(parseConfigPatch({ profile: { avatarUrl: "" } })).toEqual({ profile: { avatarUrl: "" } });
+    for (const outside of ["https://tracker.example/me.png", "/api/attachments/me.svg", "javascript:alert(1)", "/api/attachments/../config.json", "data:image/png;base64,AAAA"]) {
+      expect(() => parseConfigPatch({ profile: { avatarUrl: outside } }), outside).toThrow();
+    }
   });
   it("validates context budgets and keeps changes independent of provider reload", () => {
     const context = { autoCompact: false, compactAt: 0.7, rebuildBytes: 32_000 };
@@ -616,12 +624,10 @@ describe("configuration boundaries", () => {
     );
   });
 
-  it("keeps routine runs in a hidden thread unless the conversation option is on", () => {
-    expect(routinesInConversationEnabled({})).toBe(false);
-    expect(parseConfigPatch({ features: { routinesInConversation: true } })).toEqual({
-      features: { routinesInConversation: true },
+  it("drops the retired routines-in-conversation switch instead of refusing the config", () => {
+    expect(parseConfigPatch({ features: { routinesInConversation: true, showToolCalls: true } })).toEqual({
+      features: { showToolCalls: true },
     });
-    expect(routinesInConversationEnabled({ features: { routinesInConversation: true } })).toBe(true);
   });
 
   it("keeps tool-call chips off by default and accepts an explicit opt-in", () => {
@@ -1285,9 +1291,12 @@ describe("credential env narrowing", () => {
     expect(own.claude.environment).toEqual({});
     for (const anthropic of [{ key: "SECRET-ANT" }, { key: "SECRET-ANT", everyClaudeBot: true }]) {
       const every = instanceConfigs({ anthropic });
-      expect(every.claude.environment).toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT" });
-      expect(every.claudeApi.environment).toEqual({});
+      expect(every.claude.environment, "a plain Claude bot runs on the key").toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT" });
+      expect(every.claudeApi.environment, "a bot already set to Claude (API key) keeps running on it").toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT" });
     }
+    const routed = instanceConfigs({ anthropic: { key: "SECRET-ANT", url: "https://gateway.example.test", everyClaudeBot: true } });
+    expect(routed.claudeApi.environment).toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT", ANTHROPIC_BASE_URL: "https://gateway.example.test" });
+    expect(instanceConfigs({ anthropic: { everyClaudeBot: true } }).claudeApi.environment, "no key, nothing injected").toEqual({});
   });
 
   it("keeps the built-in routing of a provider instance in a saved fleet", () => {
@@ -1924,7 +1933,7 @@ describe("changedInstanceIds", () => {
     expect(reloaded({ mistral: { key: "m2" } }, saved)).toEqual(["mistral"]);
     expect(reloaded({ openaiCompat: { key: "c2", url: "https://compat.example/v1" } }, saved)).toEqual(["openaiCompat"]);
     expect(reloaded({ openaiCompat: { key: "c1", url: "https://other.example/v1" } }, saved)).toEqual(["openaiCompat"]);
-    expect(reloaded({ anthropic: { key: "a" } }, saved)).toEqual(["claude"]);
+    expect(reloaded({ anthropic: { key: "a" } }, saved), "Claude (API key) runs on the key too").toEqual(["claude", "claudeApi"]);
   });
   it("replaces nothing for sections no driver reads", () => {
     expect(reloaded({ onboarding: { hintsSeen: ["tour.composer"] } })).toEqual([]);

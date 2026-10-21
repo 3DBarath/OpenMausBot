@@ -650,8 +650,20 @@ The switch always says where lending stands, whichever way it got there:
 
 On My Cloud's own page, **Settings → MausBot Cloud** lists **Computers lent to
 My Cloud**: each by name and platform, **Online now**, **Offline, last online
-…**, or **No longer lent**, what it lends and when My Cloud last used it, with
-**Change what's lent** opening this computer's switch.
+…**, or **No longer lent**, what it lends and when My Cloud last used it. In
+the desktop app it starts with this computer's own **Let My Cloud use this
+computer** switch and its one line (electron/cloud-lending-ipc.mjs), so nobody
+leaves My Cloud to change it: the page learns only on/off, how it is going and
+folder names, never a path; turning it on needs the person's click and a
+native confirmation naming what goes. Turned on with nothing chosen (here or
+on this computer), lending lends Desktop, Documents and Downloads, read only;
+other folders, editing and the screen wait under **Choose what's lent** on
+this computer. Where the system names the home folder itself for one of them
+(Linux without user-dirs.dirs), the folder of that name in the home folder is
+lent instead; one that can't be found is left out. With none of the three,
+nothing is lent and the line says so plainly. A refusal a person can act on
+(the whole home folder or a disk, a file, more than 20 folders) is said in
+plain words; only a failure that trying again can fix says Try again.
 
 While lending is on, a menu-bar item shows it (**In use** while the Cloud is
 running something on this Mac) with **Stop lending**. Turning the switch off or
@@ -1730,7 +1742,13 @@ screen's note.
 - **The dialog** (`components/CloudAddDialog.tsx`, one state→view function,
   `lib/cloud-plan` `cloudAddView`) covers the buying journey only: the offer
   (the Admin's plans, Pro preselected and marked most popular, each row
-  leading with cloud computers at once and storage; the trial's timeline with
+  with its promise and its cloud desktop hours a month, how many cloud
+  desktops at once only as small print; under them the chosen plan's card in
+  the website's words (with the app's "cloud desktop" for the website's
+  "cloud computer"), every number from the Admin's `allowances`: always on (or
+  sleeping), cloud desktops as many as the bots need with the month's hours,
+  voice, apps, the phone, the machine with its swap, storage with its backup
+  days, and what it adds over the plan listed before it; the trial's timeline with
   the reminder line only while the Admin sends one; the Claude credit;
   money-back beside the button; prices plus tax), the sign-in (its last step
   names the checkout only when the sign-in is on the way to one), the next
@@ -1763,7 +1781,8 @@ screen's note.
 - **Desktop session** `GET /api/cloud/desktop/session`, beside `cloud`:
   `offer: {plans, recommended?, trialDays?, creditUsd?, reminderDays?, refundDays?, checkout?}`,
   only while this account can buy. `plans[]` are the catalog entries on sale
-  (`{tier, label, price: {currency: "USD", amount, interval: "month"}, allowances?, trialDays?}`):
+  (`{tier, label, price: {currency: "USD", amount, interval: "month"}, allowances?, trialDays?}`;
+  `allowances` may carry `cpuKind`, `swapMb` and `snapshotDays`, each said only when present and valid):
   a plan's own `trialDays` is its trial; with none on any plan, a top-level
   `trialDays` is every plan's. `creditUsd` and `reminderDays` (days before the
   end that the reminder email goes out, sent only while it does) count only
